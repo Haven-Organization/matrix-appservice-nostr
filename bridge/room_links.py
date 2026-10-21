@@ -107,8 +107,47 @@ def _owner_marked(state: dict[tuple[str, str], dict[str, Any]], owner: str) -> b
     return content.get("user_id") == owner
 
 
-async def _room_problem(app: FastAPI, room_id: str, sender: str, nostr_id: NostrId) -> str | None:
-    """Why ``room_id`` can't become ``nostr_id``'s Profile Room, if it can't."""
+# What each piece of room state the bot sets is for, in plain words.
+_STATE_PURPOSES = {
+    "m.room.name": "change the room's name",
+    "m.room.topic": "change the room's topic",
+    "m.room.avatar": "change the room's avatar",
+    PROFILE_BANNER_STATE_TYPE: "change the room's banner",
+    PROFILE_EXTRA_STATE_TYPE: "set the profile's website and Lightning address",
+    SOCIAL_PROFILE_USER_ID_STATE_TYPE: "mark whose profile the room is (MSC4501)",
+    "m.bridge": "mark the room as bridged to Nostr",
+}
+
+
+def _level_name(level: int) -> str:
+    return "Admin" if level >= 100 else "Moderator" if level >= 50 else "a custom role"
+
+
+def _power_warning(app: FastAPI, bot: str, have: int, needed: int, missing: list[str], retry: str) -> tuple[str, str]:
+    purposes = list(dict.fromkeys(_STATE_PURPOSES.get(t, "") for t in missing if _STATE_PURPOSES.get(t)))
+    head = (f"⚠️ I can't link this room yet: I need power level {needed} ({_level_name(needed)}) here, "
+            f"and I have {have}.")
+    why = "That lets me keep the room and the Nostr profile in sync. Right now I can't:"
+    fix = f"Give {bot} power level {needed} in the room's settings (Roles & Permissions), then send this again:"
+    plain = "\n".join([head, why, *(f"- {p}" for p in purposes), fix, retry])
+    rich = (f"<p>⚠️ {html.escape(head)}</p><p>{html.escape(why)}</p><ul>"
+            + "".join(f"<li>{html.escape(p)}</li>" for p in purposes)
+            + f"</ul><p>{html.escape(fix)}</p><pre><code>{html.escape(retry)}</code></pre>")
+    return plain, rich
+
+
+async def _room_problem(
+    app: FastAPI, room_id: str, sender: str, nostr_id: NostrId, retry: str
+) -> tuple[str, str | None] | None:
+    """Why ``room_id`` can't become ``nostr_id``'s Profile Room, if it can't,
+    as (plain, html). ``retry`` is the command to send once it's fixed."""
+    problem = await _room_problem_text(app, room_id, sender, nostr_id, retry)
+    return (problem, None) if isinstance(problem, str) else problem
+
+
+async def _room_problem_text(
+    app: FastAPI, room_id: str, sender: str, nostr_id: NostrId, retry: str
+) -> str | tuple[str, str] | None:
     repository = app.state.repository
     prefix = app.state.config.appservice.command_prefix
     linked = await repository.get_id_for_profile_room(room_id)
@@ -135,12 +174,11 @@ async def _room_problem(app: FastAPI, room_id: str, sender: str, nostr_id: Nostr
     # State another bridge already set correctly needn't be set again: rooms
     # the bridges create keep that one at 100, which the owner can't grant.
     types = [t for t in _BOT_STATE_TYPES if not (t == SOCIAL_PROFILE_USER_ID_STATE_TYPE and _owner_marked(state, sender))]
-    needed = max(_level_for_state(state, t) for t in types)
-    if _power_of(state, bot) < needed:
-        return (
-            f"I need power level {needed} in this room to keep its profile in sync with Nostr. "
-            f"Give {bot} that level and try again."
-        )
+    have = _power_of(state, bot)
+    missing = [t for t in types if _level_for_state(state, t) > have]
+    if missing:
+        needed = max(_level_for_state(state, t) for t in missing)
+        return _power_warning(app, bot, have, needed, missing, retry)
     return None
 
 
@@ -332,9 +370,10 @@ async def handle_link(app: FastAPI, room_id: str, sender: str, argument: str) ->
         await notice(app, room_id, f'Usage: "{prefix}link <number or ID> [keep]", sent in the room to link. '
                                    f'"{prefix}profiles" lists your IDs.')
         return
-    problem = await _room_problem(app, room_id, sender, target)
+    retry = f"{prefix}link {target.name}" + (" keep" if keep else "")
+    problem = await _room_problem(app, room_id, sender, target, retry)
     if problem is not None:
-        await notice(app, room_id, problem)
+        await notice(app, room_id, problem[0], html_message=problem[1])
         return
     handle = _handle(app, target)
     lines = [
@@ -373,9 +412,11 @@ async def _execute_link(app: FastAPI, room_id: str, sender: str, args: dict[str,
             or target.profile_room_id != args.get("from"):
         await notice(app, room_id, "That has changed since; nothing was linked.")
         return
-    problem = await _room_problem(app, room_id, sender, target)
+    prefix = app.state.config.appservice.command_prefix
+    retry = f"{prefix}link {target.name}" + (" keep" if args.get("keep") else "")
+    problem = await _room_problem(app, room_id, sender, target, retry)
     if problem is not None:
-        await notice(app, room_id, problem)
+        await notice(app, room_id, problem[0], html_message=problem[1])
         return
     profile = {} if args.get("keep") else await _current_profile(app, target)
     old_room = target.profile_room_id

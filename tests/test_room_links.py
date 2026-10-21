@@ -96,8 +96,26 @@ def test_link_refusals(client, homeserver, relay_pool) -> None:
     assert "need to be an admin" in last_body(homeserver, room)
 
     room = established_room(homeserver, bot_level=0)
-    send(client, message("[link 1", room=room))
+    send(client, message("[link 1 keep", room=room))
+    warning = homeserver.sent_to(room)[-1]
+    assert "I need power level 50 (Moderator) here, and I have 0" in warning["body"]
+    assert "- change the room's name" in warning["body"] and "- mark the room as bridged to Nostr" in warning["body"]
+    assert warning["body"].endswith("then send this again:\n[link q keep")
+    assert "<pre><code>[link q keep</code></pre>" in warning["formatted_body"]
+    assert ids_of(client)[0].profile_room_id == q.profile_room_id
+
+    # Fixed: the same command now asks to confirm. Power taken away again
+    # before confirming: the warning comes back and nothing is linked.
+    levels = homeserver.state_of(room, "m.room.power_levels")
+    homeserver._store(room, "m.room.power_levels", {**levels, "users": {**levels["users"], BOT: 50}}, "@q:example.org", "")
+    send(client, message("[link 1 keep", room=room))
+    ask = homeserver.sent_to(room)[-1]
+    assert "Make this room the Profile Room" in ask["body"]
+    homeserver._store(room, "m.room.power_levels", levels, "@q:example.org", "")
+    ask_id = next(e for e in homeserver.rooms[room]["events"].values() if e["content"] is ask)["event_id"]
+    send(client, message("confirm", room=room, reply_to=ask_id))
     assert "I need power level 50" in last_body(homeserver, room)
+    assert ids_of(client)[0].profile_room_id == q.profile_room_id
 
     room = established_room(homeserver, encrypted=True)
     send(client, message("[link 1", room=room))
