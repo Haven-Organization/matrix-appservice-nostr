@@ -40,11 +40,72 @@ class BotIdentity:
     pubkey: str
 
 
+def client_key_purpose(id_number: int) -> str:
+    return f"client:{id_number}"
+
+
+class SigningUnavailable(Exception):
+    """A remote signer couldn't sign or decrypt; the message is safe to show."""
+
+
 class Signer:
     def __init__(self, repository: BridgeRepository, vault: KeyVault) -> None:
         self._repository = repository
         self._vault = vault
         self.bot: BotIdentity | None = None
+        # The relay pool, for remote signers (set once the pool exists).
+        self.pool = None
+        self._remotes: dict[tuple[int, str], object] = {}
+        self.last_error: dict[str, str] = {}
+
+    async def remote_signer(self, nostr_id):
+        """The NIP-46 client for an ID whose key is in a signer app."""
+        from bridge.nostr.nip46 import RemoteSigner, parse_bunker_uri
+
+        if nostr_id is None or not nostr_id.bunker_uri or not nostr_id.client_key or self.pool is None:
+            return None
+        key = (nostr_id.id, nostr_id.pubkey)
+        signer = self._remotes.get(key)
+        if signer is None:
+            client_secret = self._vault.decrypt(nostr_id.client_key, client_key_purpose(nostr_id.id))
+            signer = RemoteSigner(
+                self.pool, client_secret=client_secret, bunker=parse_bunker_uri(nostr_id.bunker_uri), user_pubkey=nostr_id.pubkey
+            )
+            self._remotes[key] = signer
+        return signer
+
+    async def _remote_for_pubkey(self, pubkey: str):
+        return await self.remote_signer(await self._repository.get_id_by_pubkey(pubkey))
+
+    async def nip44_encrypt(self, pubkey: str, other: str, plaintext: str) -> str:
+        from bridge.nostr import nip44
+        from bridge.nostr.nip46 import RemoteSignerError
+
+        secret = await self._secret_for(pubkey)
+        if secret is not None:
+            return nip44.encrypt(plaintext, nip44.get_conversation_key(secret, other))
+        remote = await self._remote_for_pubkey(pubkey)
+        if remote is None:
+            raise SigningUnavailable("The bridge doesn't hold this ID's key.")
+        try:
+            return await remote.nip44_encrypt(other, plaintext)
+        except RemoteSignerError as exc:
+            raise SigningUnavailable(str(exc)) from exc
+
+    async def nip44_decrypt(self, pubkey: str, other: str, ciphertext: str) -> str:
+        from bridge.nostr import nip44
+        from bridge.nostr.nip46 import RemoteSignerError
+
+        secret = await self._secret_for(pubkey)
+        if secret is not None:
+            return nip44.decrypt(ciphertext, nip44.get_conversation_key(secret, other))
+        remote = await self._remote_for_pubkey(pubkey)
+        if remote is None:
+            raise SigningUnavailable("The bridge doesn't hold this ID's key.")
+        try:
+            return await remote.nip44_decrypt(other, ciphertext)
+        except RemoteSignerError as exc:
+            raise SigningUnavailable(str(exc)) from exc
 
     async def load_bot_identity(self) -> BotIdentity:
         """The bot's identity, creating its key on first start."""
@@ -80,12 +141,23 @@ class Signer:
         created_at: int,
         tags: Iterable[Iterable[str]] = (),
     ) -> nostr_event.Event | None:
-        """A new event by ``pubkey``, or ``None`` if the bridge doesn't hold
-        that key."""
+        """A new event by ``pubkey``, or ``None`` if the bridge can't sign
+        for it (no key; or a remote signer that refused or didn't answer, in
+        which case ``last_error[pubkey]`` says why)."""
+        from bridge.nostr.nip46 import RemoteSignerError
+
         secret = await self._secret_for(pubkey)
-        if secret is None:
+        tag_list = [list(tag) for tag in tags]
+        if secret is not None:
+            return nostr_event.build(secret, kind=kind, content=content, created_at=created_at, tags=tag_list)
+        remote = await self._remote_for_pubkey(pubkey)
+        if remote is None:
             return None
-        return nostr_event.build(secret, kind=kind, content=content, created_at=created_at, tags=tags)
+        try:
+            return await remote.sign_event(kind=kind, content=content, created_at=created_at, tags=tag_list)
+        except RemoteSignerError as exc:
+            self.last_error[pubkey] = str(exc)
+            return None
 
     async def auth_event(self, pubkey: str, relay_url: str, challenge: str) -> nostr_event.Event | None:
         """A NIP-42 authentication event, for ``bridge.nostr.relay_pool``."""

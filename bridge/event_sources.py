@@ -103,20 +103,57 @@ async def _fetch(app: FastAPI, room_id: str, event_id: str | None) -> dict[str, 
     return await app.state.homeserver.get_event(room_id, event_id, as_user_id=bot_mxid(app.state.config))
 
 
+def profile_content_v2(
+    *, name: str | None, about: str | None, picture: str | None, banner: str | None, nip05: str,
+    website: str | None, lud16: str | None,
+) -> str:
+    """Version 2: v1 plus ``website`` and ``lud16`` (a Lightning address),
+    from the Profile Room's ``software.haven.nostr.profile_extra`` state
+    (set when an existing key is imported)."""
+    profile: dict[str, str] = {}
+    if name:
+        profile["name"] = name
+        profile["display_name"] = name
+    if about:
+        profile["about"] = about
+    if picture:
+        profile["picture"] = picture
+    if banner:
+        profile["banner"] = banner
+    if website:
+        profile["website"] = website
+    if lud16:
+        profile["lud16"] = lud16
+    profile["nip05"] = nip05
+    return json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
+
+
 async def profile_content_from_source(app: FastAPI, source: dict[str, Any]) -> str:
-    """The kind 0 content a ``profile`` v1 recipe produces. Raises
+    """The kind 0 content a ``profile`` recipe produces (v1 or v2). Raises
     ``HomeserverError`` if the homeserver can't be asked."""
-    if source.get("v") != 1:
-        raise ValueError(f"Unknown profile source version {source.get('v')!r}")
+    version = source.get("v")
+    if version not in (1, 2):
+        raise ValueError(f"Unknown profile source version {version!r}")
     room_id = source["room_id"]
     name_event = await _fetch(app, room_id, source.get("name_event"))
     topic_event = await _fetch(app, room_id, source.get("topic_event"))
-    return profile_content_v1(
+    if version == 1:
+        return profile_content_v1(
+            name=_state_text(name_event, "name"),
+            about=_state_text(topic_event, "topic"),
+            picture=source.get("picture"),
+            banner=source.get("banner"),
+            nip05=source["nip05"],
+        )
+    extra_event = await _fetch(app, room_id, source.get("extra_event"))
+    return profile_content_v2(
         name=_state_text(name_event, "name"),
         about=_state_text(topic_event, "topic"),
         picture=source.get("picture"),
         banner=source.get("banner"),
         nip05=source["nip05"],
+        website=_state_text(extra_event, "website"),
+        lud16=_state_text(extra_event, "lud16"),
     )
 
 

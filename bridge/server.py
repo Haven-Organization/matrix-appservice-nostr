@@ -252,6 +252,7 @@ def create_app(
             auth_signer=app.state.signer.auth_event,
             fetcher=app.state.fetcher,
         )
+        app.state.signer.pool = app.state.relay_pool
         app.state.nip05_self_check = None
         app.state.background_tasks = set()
         app.state.identity_locks = {}

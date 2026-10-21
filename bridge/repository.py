@@ -37,6 +37,8 @@ class NostrId:
     profile_room_id: str | None
     created_at: str
     renamed_at: str | None = None
+    # A remote signer's (NIP-46) client key, vault-encrypted.
+    client_key: str | None = None
 
 
 @dataclass(frozen=True)

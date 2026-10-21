@@ -110,7 +110,13 @@ async def _store_and_send(
 ) -> EventRow | None:
     event = await app.state.signer.sign(author.pubkey, kind=kind, content=content, created_at=created_at, tags=tags)
     if event is None:
-        logger.warning("Can't sign for %s: the bridge doesn't hold its key", author.name)
+        reason = app.state.signer.last_error.pop(author.pubkey, "the bridge doesn't hold this ID's key")
+        logger.warning("Can't sign for %s: %s", author.name, reason)
+        if notify is not None:
+            await notice(
+                app, notify.room_id, f"That wasn't published on Nostr: {reason}",
+                extra={"m.relates_to": {"m.in_reply_to": {"event_id": notify.event_id}}},
+            )
         return None
     row = EventRow(
         id=event.id,
@@ -225,7 +231,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
     if row is not None:
         logger.info("Published %s from %s as %s@%s", row.id, event_id, author.name, config.bridge.domain)
         if parent is not None:
-            await notify_local_author(app, author, parent, "replied to", link_event=event_id if parent.room_id == room_id else None)
+            await notify_local_author(app, author, parent, "reply", theirs=(room_id, event_id))
     return True
 
 

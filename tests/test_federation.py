@@ -155,7 +155,15 @@ def test_reply_threads_under_local_post(client, homeserver, relay_pool, style) -
     assert reply["content"]["body"] == "Sup dude"
     assert reply["content"]["m.relates_to"]["rel_type"] == "m.thread"
     assert reply["content"]["m.relates_to"]["event_id"] == message["event_id"]
-    assert any("replied to your post: Sup dude" in body for body in notifications(client, homeserver))
+    # The siblings' notification format: type emoji, pill, phrase with
+    # "your post" linked, then a quote of what they said.
+    room = run(client, client.app.state.repository.get_user_rooms, "@q:example.org").notifications_room_id
+    [notice] = [c for c in homeserver.sent_to(room) if "replied to your post" in c["body"]]
+    assert notice["body"].startswith("💬 ") and "replied to your post\n> Sup dude\nhttps://matrix.to/#/" in notice["body"]
+    assert notice["formatted_body"].startswith(f'<p>💬 <a href="https://matrix.to/#/@nostr_{stranger.pubkey}:example.org" title="')
+    assert f'<a href="https://matrix.to/#/{q.profile_room_id}/{message["event_id"]}?via=example.org">your post</a>' in notice["formatted_body"]
+    assert notice["formatted_body"].endswith("<blockquote>Sup dude</blockquote>")
+    assert "View" not in notice["formatted_body"]
     # Served back from the relay, rebuilt from the Matrix event.
     events, _ = relay_req(client, {"#e": [note.id]})
     assert raw in events
@@ -172,7 +180,10 @@ def test_reaction_and_repost(client, homeserver, relay_pool) -> None:
     assert keys == ["👍", "🔁"]
     assert all(r["content"]["m.relates_to"]["event_id"] == message["event_id"] for r in reactions)
     bodies = notifications(client, homeserver)
-    assert any("reacted 👍 to your post" in b for b in bodies) and any("reposted your post" in b for b in bodies)
+    assert any(b.startswith("👍 ") and "liked your post\n> hello nostr" in b for b in bodies)
+    assert any(b.startswith("🔁 ") and "reposted your post\n> hello nostr" in b for b in bodies)
+    assert relay_send(client, stranger.event(7, "🔥", tags))[2] is True
+    assert any(b.startswith("🔥 ") and "reacted to your post with 🔥" in b for b in notifications(client, homeserver))
     assert relay_send(client, stranger.event(7, "-", tags))[2] is False  # dislikes aren't shown
 
 
@@ -193,6 +204,7 @@ def test_follow_notification_once(client, homeserver, relay_pool) -> None:
     assert first[2] is False and "not stored" in first[3]
     relay_send(client, stranger.event(3, "", [["p", q.pubkey], ["p", "ab" * 32]]))
     assert sum("followed you" in b for b in notifications(client, homeserver)) == 1
+    assert [b for b in notifications(client, homeserver) if "followed you" in b][0].startswith("👤 ")
     assert run(client, client.app.state.repository.count_followers, q.id) == 1
 
 

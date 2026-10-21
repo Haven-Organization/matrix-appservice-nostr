@@ -30,6 +30,8 @@ from bridge.event_sources import PROFILE_KIND, inline_source, profile_content_fr
 from bridge.homeserver_client import HomeserverError
 from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
+
+PROFILE_EXTRA_STATE_TYPE = "software.haven.nostr.profile_extra"
 from bridge.nostr.event import Event, compute_id
 from bridge.repository import EventRow, NostrId
 from bridge.publishing import publish_in_background
@@ -67,7 +69,7 @@ def media_server_tags(app: FastAPI) -> list[list[str]]:
 async def _room_state(app: FastAPI, room_id: str) -> dict[str, dict[str, Any]]:
     """The room's current state events (with their event IDs), by type,
     for the ones a profile is made of."""
-    wanted = {"m.room.name", "m.room.topic", "m.room.avatar", PROFILE_BANNER_STATE_TYPE}
+    wanted = {"m.room.name", "m.room.topic", "m.room.avatar", PROFILE_BANNER_STATE_TYPE, PROFILE_EXTRA_STATE_TYPE}
     events = await app.state.homeserver.get_full_state(room_id, as_user_id=bot_mxid(app.state.config))
     return {e["type"]: e for e in events if e.get("type") in wanted and e.get("state_key") == ""}
 
@@ -94,9 +96,12 @@ async def profile_source(app: FastAPI, nostr_id: NostrId, previous: dict[str, An
     previous = previous or {}
     avatar = await _image_entry(app, state.get("m.room.avatar"), previous.get("avatar_image"))
     banner = await _image_entry(app, state.get(PROFILE_BANNER_STATE_TYPE), previous.get("banner_image"))
+    extra = state.get(PROFILE_EXTRA_STATE_TYPE)
     return {
         "kind": "profile",
-        "v": 1,
+        # v2 only when the room has extra fields: v1 events keep rebuilding as v1.
+        "v": 2 if extra else 1,
+        **({"extra_event": extra["event_id"]} if extra else {}),
         "room_id": nostr_id.profile_room_id,
         "name_event": (state.get("m.room.name") or {}).get("event_id"),
         "topic_event": (state.get("m.room.topic") or {}).get("event_id"),

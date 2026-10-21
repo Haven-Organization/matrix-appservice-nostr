@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS ids (
     bunker_uri TEXT,
     profile_room_id TEXT UNIQUE,
     created_at TEXT NOT NULL,
-    renamed_at TEXT
+    renamed_at TEXT,
+    -- For a remote signer (NIP-46): the bridge's own client key, encrypted.
+    client_key TEXT
 );
 
 -- Which ID each Matrix user is acting as.
@@ -231,6 +233,7 @@ CREATE TABLE IF NOT EXISTS bridge_state (
 # Columns added after a table first shipped: (table, column, definition).
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("nostr_events", "scope", "TEXT NOT NULL DEFAULT 'public'"),
+    ("ids", "client_key", "TEXT"),
 )
 
 _INDEXES = """
@@ -249,7 +252,8 @@ CREATE INDEX IF NOT EXISTS mirrored_events_nostr ON mirrored_events (nostr_id);
 _STARTUP_FIXUPS: tuple[str, ...] = ()
 
 _ID_COLUMNS = (
-    "id, name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, created_at, renamed_at"
+    "id, name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, created_at, renamed_at, "
+    "client_key"
 )
 _RETIRED_COLUMNS = "name, matrix_user_id, id_ref, reason, retired_at, resolves_until"
 _EVENT_COLUMNS = "id, pubkey, kind, created_at, sig, source, d_tag, room_id, matrix_event_id, expires_at, scope"
@@ -342,12 +346,13 @@ class SqliteBridgeRepository:
         created_at: str,
         profile_room_id: str | None = None,
         bunker_uri: str | None = None,
+        client_key: str | None = None,
     ) -> NostrId | None:
         def insert(conn: Any) -> NostrId | None:
             row = conn.execute(
-                "INSERT INTO ids (name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, created_at) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING {_ID_COLUMNS}",
-                (name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, created_at),
+                "INSERT INTO ids (name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, "
+                f"created_at, client_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING {_ID_COLUMNS}",
+                (name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, created_at, client_key),
             ).fetchone()
             if row is None:
                 return None
@@ -390,6 +395,22 @@ class SqliteBridgeRepository:
             return [_nostr_id(row) for row in conn.execute(f"SELECT {_ID_COLUMNS} FROM ids ORDER BY id").fetchall()]
 
         return await self._run(query)
+
+    async def replace_key(
+        self, id: int, *, pubkey: str, secret_key: str | None, key_origin: str,
+        bunker_uri: str | None = None, client_key: str | None = None,
+    ) -> bool:
+        """Give an ID a different key. False if another ID already has it."""
+        def update(conn: Any) -> bool:
+            if conn.execute("SELECT 1 FROM ids WHERE pubkey = ? AND id <> ?", (pubkey, id)).fetchone():
+                return False
+            conn.execute(
+                "UPDATE ids SET pubkey = ?, secret_key = ?, key_origin = ?, bunker_uri = ?, client_key = ? WHERE id = ?",
+                (pubkey, secret_key, key_origin, bunker_uri, client_key, id),
+            )
+            return True
+
+        return await self._run(update)
 
     async def set_profile_room(self, id: int, room_id: str) -> None:
         await self._run(lambda conn: conn.execute("UPDATE ids SET profile_room_id = ? WHERE id = ?", (room_id, id)))

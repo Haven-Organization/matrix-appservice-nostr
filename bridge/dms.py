@@ -99,15 +99,18 @@ async def receive_dm(app: FastAPI, raw: dict[str, Any], *, origin: str, ip: str 
     stored = False
     for local in recipients:
         secret = await app.state.signer.secret_key(local.pubkey)
-        if secret is None:
-            continue
         try:
             if raw["kind"] == nip59.GIFT_WRAP_KIND:
-                unwrapped = nip59.unwrap(raw, secret)
-                sender, rumor = unwrapped.sender, unwrapped.rumor
-            else:
+                if secret is not None:
+                    unwrapped = nip59.unwrap(raw, secret)
+                    sender, rumor = unwrapped.sender, unwrapped.rumor
+                else:
+                    sender, rumor = await _unwrap_via_signer(app, local, raw)
+            elif secret is not None:
                 sender = raw["pubkey"]
                 rumor = {**raw, "content": nip04.decrypt(raw["content"], secret, sender), "kind": 14}
+            else:
+                continue  # legacy DMs to a remote-signer ID: NIP-04 isn't asked of signers
         except Exception as exc:
             logger.info("Could not open a DM for %s: %s", local.name, exc)
             continue
@@ -191,6 +194,44 @@ async def _rumor_content(app: FastAPI, rumor: dict[str, Any], *, as_user_id: str
     return {"msgtype": msgtype, "body": "attachment", "url": mxc, "info": {"mimetype": mime, "size": len(data)}}
 
 
+async def _unwrap_via_signer(app: FastAPI, local: NostrId, raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Open a gift wrap for an ID whose key is in a remote signer (NIP-46):
+    the same checks as ``nip59.unwrap``, with the signer decrypting."""
+    from bridge.nostr import event as nostr_event
+    from bridge.nostr.event import compute_id
+
+    wrap = nostr_event.verify(raw)
+    seal = nostr_event.verify(json.loads(await app.state.signer.nip44_decrypt(local.pubkey, wrap.pubkey, wrap.content)))
+    if seal.kind != nip59.SEAL_KIND:
+        raise ValueError("not a seal")
+    rumor = json.loads(await app.state.signer.nip44_decrypt(local.pubkey, seal.pubkey, seal.content))
+    if not isinstance(rumor, dict) or rumor.get("pubkey") != seal.pubkey:
+        raise ValueError("the rumor isn't from the seal's signer")
+    expected = compute_id(rumor["pubkey"], rumor["created_at"], rumor["kind"], rumor.get("tags") or [], rumor.get("content") or "")
+    if rumor.get("id") not in (None, expected):
+        raise ValueError("rumor id mismatch")
+    rumor["id"] = expected
+    return seal.pubkey, rumor
+
+
+async def _wrap(app: FastAPI, local: NostrId, rumor: dict[str, Any], recipient: str):
+    """Seal and gift-wrap a rumor from a local ID to ``recipient``; through
+    the remote signer when the bridge doesn't hold the key."""
+    secret = await app.state.signer.secret_key(local.pubkey)
+    if secret is not None:
+        return nip59.wrap_message(rumor, secret, recipient)
+    from bridge.signing import SigningUnavailable
+
+    sealed_content = await app.state.signer.nip44_encrypt(local.pubkey, recipient, json.dumps(rumor))
+    seal = await app.state.signer.sign(
+        local.pubkey, kind=nip59.SEAL_KIND, content=sealed_content,
+        created_at=int(time.time()) - secrets.randbelow(2 * 86400), tags=[],
+    )
+    if seal is None:
+        raise SigningUnavailable(app.state.signer.last_error.get(local.pubkey, "The remote signer didn't sign."))
+    return nip59.gift_wrap(seal, recipient)
+
+
 # -- sending --------------------------------------------------------------------------
 
 
@@ -272,14 +313,16 @@ async def send_dm(app: FastAPI, local: NostrId, recipient: str, event: dict[str,
         rumor_id = await repository.get_mirrored_nostr_id(reply_to)
         if rumor_id:
             tags.append(["e", rumor_id, app.state.config.nostr.relay_url, "reply"])
-    secret = await app.state.signer.secret_key(local.pubkey)
-    if secret is None:
-        await notice(app, room_id, "This ID's key isn't held by the bridge, so it can't send DMs yet.")
-        return
+    from bridge.signing import SigningUnavailable
+
     created_at = int(event.get("origin_server_ts", 0)) // 1000 or int(time.time())
     rumor = nip59.make_rumor(local.pubkey, kind, text, tags, created_at)
-    to_recipient = nip59.wrap_message(rumor, secret, recipient)
-    to_self = nip59.wrap_message(rumor, secret, local.pubkey)
+    try:
+        to_recipient = await _wrap(app, local, rumor, recipient)
+        to_self = await _wrap(app, local, rumor, local.pubkey)
+    except SigningUnavailable as exc:
+        await notice(app, room_id, f"That wasn't sent: {exc}")
+        return
 
     # The sender's copy: kept in Matrix (hidden event), served by the relay.
     copy_id = await app.state.homeserver.send_message_event(

@@ -48,6 +48,7 @@ from bridge.homeserver_client import HomeserverError
 from bridge.msc4501 import EXTERNAL_HANDLE_FIELD, external_handle_value
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19
+from bridge import notify_format
 from bridge.notifications import notify
 from bridge.render import message_content, render
 from bridge.repository import EventRow, NostrId, RemoteAccount
@@ -395,17 +396,14 @@ async def _contact_list(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
         if await repository.set_follower(local.id, raw["pubkey"], int(raw["created_at"]), following):
             touched = True
             if following and not await repository.is_blocked_by_any(raw["pubkey"], [local.id]):
-                remote = await remotes.get_or_create_remote(app, raw["pubkey"])
-                label = await _ghost_label(app, remote)
-                await notify(
-                    app, local, f"{label} followed you", f"{_pill(remote.ghost_user_id, label)} followed you"
-                )
+                await notify_format.send(app, local, "follow", raw["pubkey"])
     return IngestResult(False, "restricted: not stored") if not touched else IngestResult(False, "restricted: noted, not stored")
 
 
 async def _zap_receipt(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     """A zap receipt (NIP-57) for a local ID: a notification, which is also
     the receipt's home."""
+    repository = app.state.repository
     locals_ = await _local_ids_for(app, [t[1] for t in _tags(raw, "p")])
     if not locals_:
         return REJECTED
@@ -414,25 +412,24 @@ async def _zap_receipt(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
         request = json.loads(description) if description else {}
     except ValueError:
         request = {}
-    sender = request.get("pubkey") if isinstance(request, dict) else None
-    amount_msats = next((t[1] for t in (request.get("tags") or []) if isinstance(t, list) and len(t) >= 2 and t[0] == "amount"), None) if isinstance(request, dict) else None
+    if not isinstance(request, dict):
+        request = {}
+    sender = request.get("pubkey")
+    amount_msats = next((t[1] for t in (request.get("tags") or []) if isinstance(t, list) and len(t) >= 2 and t[0] == "amount"), None)
     sats = int(amount_msats) // 1000 if amount_msats and str(amount_msats).isdigit() else None
-    who_plain, who_html = "Someone", "Someone"
-    if isinstance(sender, str) and len(sender) == 64:
-        remote = await remotes.get_or_create_remote(app, sender)
-        who_plain = await _ghost_label(app, remote)
-        who_html = _pill(remote.ghost_user_id, who_plain)
-    amount = f" {sats:,} sats" if sats else ""
-    note = (request.get("content") or "").strip() if isinstance(request, dict) else ""
+    note = str(request.get("content") or "").strip()
     local = locals_[0]
-    event_id = await notify(
-        app, local,
-        f"⚡ {who_plain} zapped you{amount}" + (f": {note}" if note else ""),
-        f"⚡ {who_html} zapped you{html.escape(amount)}" + (f": {html.escape(note)}" if note else ""),
-        extra={EMBED_FIELD: raw},
-    )
+    zapped = next((t[1] for t in _tags(raw, "e")), None)
+    row = await repository.get_event(zapped) if zapped else None
+    own = (row.room_id, row.matrix_event_id) if row and row.room_id and row.matrix_event_id else None
+    extra = {EMBED_FIELD: raw}
+    if isinstance(sender, str) and len(sender) == 64:
+        event_id = await notify_format.send(app, local, "zap", sender, own=own, sats=sats, their_text=note, extra=extra)
+    else:
+        amount = f" {sats:,} sats" if sats else ""
+        event_id = await notify(app, local, f"⚡ Someone zapped you{amount}", f"<p>⚡ Someone zapped you{html.escape(amount)}</p>", extra=extra)
     if event_id:
-        room = (await app.state.repository.get_user_rooms(local.matrix_user_id)).notifications_room_id
+        room = (await repository.get_user_rooms(local.matrix_user_id)).notifications_room_id
         await _store(app, raw, room_id=room or "", matrix_event_id=event_id, scope="public")
     return IngestResult(True, "", stored=bool(event_id))
 
@@ -471,14 +468,13 @@ async def _reaction(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
         return IngestResult(False, "error: could not store this reaction")
     await _store(app, raw, room_id=target.room_id, matrix_event_id=reaction_id, scope="public" if local else "followed")
     if local is not None:
-        label = await _ghost_label(app, remote)
-        shown = reaction if not reaction.startswith("mxc://") else raw.get("content", "")
-        link = _event_link(target.room_id, target.matrix_event_id)
-        await notify(
-            app, local,
-            f"{label} reacted {shown} to your post: {link}",
-            f'{_pill(remote.ghost_user_id, label)} reacted {html.escape(shown)} to <a href="{link}">your post</a>',
-        )
+        own = (target.room_id, target.matrix_event_id)
+        if reaction == "👍":
+            await notify_format.send(app, local, "like", raw["pubkey"], own=own)
+        elif reaction.startswith("mxc://"):
+            await notify_format.send(app, local, "like", raw["pubkey"], own=own, reaction=raw.get("content", ""), reaction_mxc=reaction)
+        else:
+            await notify_format.send(app, local, "like", raw["pubkey"], own=own, reaction=reaction)
     return IngestResult(True, "", stored=True)
 
 
@@ -515,12 +511,7 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
         )
         reaction_id = await _send(app, target.room_id, content, sender=remote.ghost_user_id, ts=None, event_type="m.reaction")
         await _store(app, raw, room_id=target.room_id, matrix_event_id=reaction_id, scope="public")
-        label = await _ghost_label(app, remote)
-        link = _event_link(target.room_id, target.matrix_event_id)
-        await notify(
-            app, local, f"{label} reposted your post: {link}",
-            f'{_pill(remote.ghost_user_id, label)} reposted <a href="{link}">your post</a>',
-        )
+        await notify_format.send(app, local, "repost", raw["pubkey"], own=(target.room_id, target.matrix_event_id))
         return IngestResult(True, "", stored=True)
     if not followed:
         return REJECTED
@@ -674,24 +665,16 @@ async def _reply_in_matrix(
         ts=int(raw["created_at"]) * 1000,
     )
     await _store(app, raw, room_id=parent.room_id, matrix_event_id=event_id, scope="public" if parent_local or mentioned else "followed")
-    label = await _ghost_label(app, remote)
-    rendered = await render(app, raw)
     notified: set[int] = set()
+    theirs = (parent.room_id, event_id)
     if parent_local is not None:
-        link = _event_link(parent.room_id, event_id)
-        await notify(
-            app, parent_local,
-            f"{label} replied to your post: {rendered.body}\n{link}",
-            f'{_pill(remote.ghost_user_id, label)} <a href="{link}">replied</a> to your post: {rendered.html}',
+        await notify_format.send(
+            app, parent_local, "reply", raw["pubkey"], own=(parent.room_id, parent.matrix_event_id), theirs=theirs
         )
         notified.add(parent_local.id)
     for local in mentioned:
         if local.id not in notified and not await repository.is_blocked_by_any(raw["pubkey"], [local.id]):
-            link = _event_link(parent.room_id, event_id)
-            await notify(
-                app, local, f"{label} mentioned you: {rendered.body}\n{link}",
-                f'{_pill(remote.ghost_user_id, label)} <a href="{link}">mentioned you</a>: {rendered.html}',
-            )
+            await notify_format.send(app, local, "mention", raw["pubkey"], theirs=theirs)
     if followed:
         # A copy in the replier's own room keeps it a full timeline.
         remote = await remotes.ensure_room(app, remote)
@@ -730,26 +713,17 @@ async def _followed_post(app: FastAPI, raw: dict[str, Any], *, parent_id: str | 
     )
     await _store(app, raw, room_id=remote.room_id, matrix_event_id=event_id, scope="followed")
     mentioned = await _local_ids_for(app, [t[1] for t in raw.get("tags") or [] if len(t) >= 2 and t[0] in ("p", "P")])
-    if mentioned:
-        label = await _ghost_label(app, remote)
-        rendered = await render(app, raw)
-        link = _event_link(remote.room_id, event_id)
-        for local in mentioned:
-            await notify(
-                app, local, f"{label} mentioned you: {rendered.body}\n{link}",
-                f'{_pill(remote.ghost_user_id, label)} <a href="{link}">mentioned you</a>: {rendered.html}',
-            )
+    for local in mentioned:
+        if not await app.state.repository.is_blocked_by_any(raw["pubkey"], [local.id]):
+            await notify_format.send(app, local, "mention", raw["pubkey"], theirs=(remote.room_id, event_id))
     return IngestResult(True, "", stored=True)
 
 
 async def _mention(app: FastAPI, raw: dict[str, Any], mentioned: list[NostrId], quoted_ids: list[str]) -> IngestResult:
     """A post tagging local IDs that has no other home: the notification
-    is its home."""
+    is its home (it carries the raw event)."""
     repository = app.state.repository
-    remote = await remotes.get_or_create_remote(app, raw["pubkey"])
-    label = await _ghost_label(app, remote)
     rendered = await render(app, raw)
-    link = _viewer_link(app, raw["id"])
     quoted_local = None
     for quoted in quoted_ids:
         row = await repository.get_event(quoted)
@@ -759,10 +733,10 @@ async def _mention(app: FastAPI, raw: dict[str, Any], mentioned: list[NostrId], 
     for local in mentioned:
         if await repository.is_blocked_by_any(raw["pubkey"], [local.id]):
             continue
-        verb = "quoted your post" if quoted_local is not None and quoted_local.pubkey == local.pubkey else "mentioned you"
-        event_id = await notify(
-            app, local, f"{label} {verb}: {rendered.body}\n{link}",
-            f'{_pill(remote.ghost_user_id, label)} <a href="{html.escape(link)}">{verb}</a>: {rendered.html}',
+        is_quote = quoted_local is not None and quoted_local.pubkey == local.pubkey
+        own = (quoted_local.room_id, quoted_local.matrix_event_id) if is_quote and quoted_local.room_id and quoted_local.matrix_event_id else None
+        event_id = await notify_format.send(
+            app, local, "quote" if is_quote else "mention", raw["pubkey"], own=own, their_text=rendered.body,
             extra={EMBED_FIELD: raw} if not stored else None,
         )
         if event_id and not stored:

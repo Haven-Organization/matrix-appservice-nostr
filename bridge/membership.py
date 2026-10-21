@@ -26,7 +26,9 @@ from bridge.users import bot_mxid, is_local_user
 
 logger = logging.getLogger(__name__)
 
-PROFILE_STATE_TYPES = frozenset({"m.room.name", "m.room.topic", "m.room.avatar", PROFILE_BANNER_STATE_TYPE})
+PROFILE_STATE_TYPES = frozenset(
+    {"m.room.name", "m.room.topic", "m.room.avatar", PROFILE_BANNER_STATE_TYPE, "software.haven.nostr.profile_extra"}
+)
 
 
 def _membership(event: dict) -> str | None:

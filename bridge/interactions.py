@@ -69,17 +69,19 @@ async def extra_relays_for(app: FastAPI, pubkeys: list[str]) -> list[str]:
     return relays
 
 
-async def notify_local_author(app: FastAPI, actor: NostrId, target: EventRow, verb: str, link_event: str | None = None) -> None:
+async def notify_local_author(
+    app: FastAPI, actor: NostrId, target: EventRow, reason: str, *, reaction: str | None = None,
+    theirs: tuple[str, str] | None = None,
+) -> None:
     """A local user acting on another local user's post: the bridge made the
     event itself, so it never comes back in to notify them; tell them here."""
+    from bridge import notify_format
+
     owner = await app.state.repository.get_id_by_pubkey(target.pubkey)
-    if owner is None or owner.matrix_user_id == actor.matrix_user_id or not target.room_id:
+    if owner is None or owner.matrix_user_id == actor.matrix_user_id or not target.room_id or not target.matrix_event_id:
         return
-    handle = f"{actor.name}@{app.state.config.bridge.domain}"
-    link = f"https://matrix.to/#/{target.room_id}/{link_event or target.matrix_event_id}"
-    await notify(
-        app, owner, f"{handle} {verb} your post: {link}",
-        f'<a href="https://matrix.to/#/{actor.matrix_user_id}">{handle}</a> {verb} <a href="{link}">your post</a>',
+    await notify_format.send(
+        app, owner, reason, actor.pubkey, own=(target.room_id, target.matrix_event_id), theirs=theirs, reaction=reaction,
     )
 
 
@@ -130,7 +132,7 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
         recipe = {"kind": "repost", **base}
         content, tags = repost_v1(event, recipe)
         kind = repost_kind(recipe)
-        verb = "reposted"
+        reason, shown = "repost", None
     else:
         emoji = None
         shortcode = (event.get("content") or {}).get("com.beeper.reaction.shortcode") or (event.get("content") or {}).get("shortcode")
@@ -143,7 +145,7 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
         recipe = {"kind": "reaction", **base, "emoji": emoji}
         content, tags = reaction_v1(event, recipe)
         kind = 7
-        verb = f"reacted {key if not emoji else content} to"
+        reason, shown = "like", (None if content == "+" else content)
     created_at = int(event.get("origin_server_ts", 0)) // 1000
     row = await _sign_and_store(
         app, actor, kind=kind, content=content, tags=tags, created_at=created_at, recipe=recipe,
@@ -151,7 +153,7 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
         extra_relays=await extra_relays_for(app, [target.pubkey]), notify_target=None,
     )
     if row is not None:
-        await notify_local_author(app, actor, target, verb)
+        await notify_local_author(app, actor, target, reason, reaction=shown)
     return True
 
 
