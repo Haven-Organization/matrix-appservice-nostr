@@ -426,7 +426,15 @@ async def _execute_link(app: FastAPI, room_id: str, sender: str, args: dict[str,
     if problem is not None:
         await notice(app, room_id, problem[0], html_message=problem[1])
         return
-    profile = {} if args.get("keep") else await _current_profile(app, target)
+    profile = await _current_profile(app, target)
+    if args.get("keep"):
+        # The room's own name, topic and avatar, but the fields a room has no
+        # place for (website, Lightning address) come along unless it has some.
+        try:
+            has_extra = (PROFILE_EXTRA_STATE_TYPE, "") in await _state(app, room_id)
+        except HomeserverError:
+            has_extra = True
+        profile = {} if has_extra else {k: v for k, v in profile.items() if k == PROFILE_EXTRA_STATE_TYPE}
     old_room = target.profile_room_id
     if profile:
         await _apply_profile(app, room_id, profile)

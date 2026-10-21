@@ -109,7 +109,7 @@ Makes an existing room the ID's Profile Room. Invite the bot to the room first, 
 - You must be an admin of the room (power level 100). The bot needs a power level high enough to change the room's name, topic, avatar and the bridge's own state (50 in most rooms). If it doesn't have that, nothing is linked: the bot says which level it needs, what it can't do without it, and the exact command to send again once you've raised its level. That's checked again when you confirm.
 - The room can't be encrypted, a space, your notifications room, or another ID's Profile Room.
 - From then on, everything you post in the room is published on Nostr as that ID. So are replies to your posts there from other local users who have Nostr IDs. Nothing already in the room is published.
-- By default the room takes on the ID's current profile (name, topic, avatar, banner, website and Lightning address), so the ID's Nostr profile doesn't change. With `keep`, the room keeps its own name, topic and avatar, and they become the ID's Nostr profile.
+- By default the room takes on the ID's current profile (name, topic, avatar, banner, website and Lightning address), so the ID's Nostr profile doesn't change. With `keep`, the room keeps its own name, topic and avatar, and they become the ID's Nostr profile. The website and Lightning address, which a room has no place to show, still come along.
 - If the ID already has a Profile Room, it moves here. The old room stays, with its history, and is no longer published from.
 
 ### `[create room <number or id>`

@@ -76,14 +76,19 @@ def test_link_keep_moves_directly(client, homeserver, relay_pool) -> None:
     send(client, message("[create profile"))
     [q] = ids_of(client)
     old_room = q.profile_room_id
+    send(client, homeserver._store(old_room, "software.haven.nostr.profile_extra", {"lud16": "q@wallet.example"},
+                                   "@q:example.org", ""))
     room = established_room(homeserver)
     body = ask_and_confirm(client, homeserver, "[link 1 keep", room)
+    # The Lightning address came along; the room's own name stayed.
+    assert homeserver.state_of(room, "software.haven.nostr.profile_extra") == {"lud16": "q@wallet.example"}
     assert "become the Nostr profile" in body and old_room in body
     [q] = ids_of(client)
     assert q.profile_room_id == room
     assert homeserver.state_of(room, "m.room.name") == {"name": "Q's Hangout"}
     profile = latest_profile(client, q.pubkey)
     assert profile["name"] == "Q's Hangout" and profile["about"] == "where Q hangs out"
+    assert profile["lud16"] == "q@wallet.example"
     assert "no longer the Profile Room" in homeserver.sent_to(old_room)[-1]["body"]
     assert homeserver.state_of(old_room, SOCIAL_PROFILE_USER_ID_STATE_TYPE) == {}
 
