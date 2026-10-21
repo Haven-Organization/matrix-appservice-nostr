@@ -386,3 +386,20 @@ def test_every_ghost_gets_profile_fields(repository, homeserver, relay_pool) -> 
         assert profile["org.matrix.msc4501.social.profile_room"] == {"room_id": remote.room_id, "via": ["example.org"]}
         assert profile["org.matrix.msc4503.external_handle"]["protocol"]["id"] == "nostr"
         assert profile["org.matrix.msc4503.external_handle"]["url"].startswith("https://ditto.pub/npub1")
+
+
+def test_posts_from_another_app_are_mirrored_with_external_url(client, homeserver, relay_pool) -> None:
+    """A post made with the ID's key in another Nostr app shows in its Profile
+    Room, from the bot as the user (MSC4144), linked to the post on the web."""
+    q = create_id(client)
+    homeserver._store(q.profile_room_id, "m.room.avatar", {"url": "mxc://example.org/qface"}, "@q:example.org", "")
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    raw = nostr_event.build(secret, kind=1, content="posted from my phone", created_at=int(time.time())).to_dict()
+    assert run(client, ingest, client.app, raw, origin="client").stored
+    mirrored = homeserver.messages(q.profile_room_id)[-1]
+    content = mirrored["content"]
+    assert mirrored["sender"] == "@nostrbot:example.org" and content["body"] == "posted from my phone"
+    assert content["external_url"].startswith("https://ditto.pub/nevent1")
+    assert nip19.decode(content["external_url"].rsplit("/", 1)[1]).id == raw["id"]
+    assert content["com.beeper.per_message_profile"] == {
+        "id": "@q:example.org", "displayname": "Q Person", "avatar_url": "mxc://example.org/qface"}

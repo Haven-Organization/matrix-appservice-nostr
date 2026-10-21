@@ -45,7 +45,7 @@ from fastapi import FastAPI
 from bridge import remote as remotes
 from bridge.event_sources import EMBED_FIELD, embedded_source
 from bridge.homeserver_client import HomeserverError
-from bridge.msc4501 import EXTERNAL_HANDLE_FIELD, external_handle_value
+from bridge.msc4501 import EXTERNAL_HANDLE_FIELD, PER_MESSAGE_PROFILE_FIELD, external_handle_value
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19
 from bridge import notify_format
@@ -879,6 +879,25 @@ async def _mention(app: FastAPI, raw: dict[str, Any], mentioned: list[NostrId], 
 # -- events by local IDs, from their other clients ------------------------------------
 
 
+async def _per_message_profile(app: FastAPI, local: NostrId) -> dict[str, Any]:
+    """MSC4144: the bot's message shown as the user, as the sibling bridges
+    do it (their Matrix ID), with the ID's profile: its Profile Room's name
+    and avatar."""
+    profile: dict[str, Any] = {"id": local.matrix_user_id}
+    bot = bot_mxid(app.state.config)
+    name = avatar = None
+    if local.profile_room_id:
+        try:
+            name = (await app.state.homeserver.get_room_state(local.profile_room_id, "m.room.name", as_user_id=bot) or {}).get("name")
+            avatar = (await app.state.homeserver.get_room_state(local.profile_room_id, "m.room.avatar", as_user_id=bot) or {}).get("url")
+        except HomeserverError:
+            pass
+    profile["displayname"] = name if isinstance(name, str) and name.strip() else f"{local.name}@{app.state.config.bridge.domain}"
+    if isinstance(avatar, str) and avatar.startswith("mxc://"):
+        profile["avatar_url"] = avatar
+    return profile
+
+
 async def _from_local_author(app: FastAPI, raw: dict[str, Any], local: NostrId, *, origin: str) -> IngestResult:
     """An event signed by a local ID that the bridge didn't make: posted from
     the user's other Nostr app (an imported key). Posts are mirrored into the
@@ -892,9 +911,9 @@ async def _from_local_author(app: FastAPI, raw: dict[str, Any], local: NostrId, 
     room_id = local.profile_room_id
     content = await message_content(app, raw, as_user_id=bot_mxid(app.state.config))
     if app.state.config.bridge.msc4144_per_message_profiles:
-        content["com.beeper.per_message_profile"] = {
-            "id": local.pubkey, "displayname": f"{local.name}@{app.state.config.bridge.domain}",
-        }
+        content[PER_MESSAGE_PROFILE_FIELD] = await _per_message_profile(app, local)
+    # Where the post is on the web, as for every post the bridge shows.
+    content["external_url"] = event_url(app, raw)
     parent_id, _ = reply_targets(raw)
     parent = await app.state.repository.get_event(parent_id) if parent_id else None
     if parent is not None and parent.room_id == room_id and parent.matrix_event_id:
