@@ -197,7 +197,7 @@ class NostrSection:
     relay_max_subscriptions: int = 20
     # Web page a Nostr profile or event can be opened on, followed by its
     # NIP-19 identifier (npub1..., nevent1...).
-    web_viewer_url: str = "https://njump.me/"
+    web_viewer_url: str = "https://ditto.pub/"
     # Largest file (image, video, audio, document) published from Matrix,
     # and later the largest copied into Matrix, in MB.
     max_media_mb: int = 50
@@ -423,7 +423,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         publish_relays=_relay_list(nostr_raw, "publish_relays", DEFAULT_PUBLISH_RELAYS),
         discovery_relays=_relay_list(nostr_raw, "discovery_relays", DEFAULT_DISCOVERY_RELAYS),
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
-        web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://njump.me/").rstrip("/") + "/",
+        web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://ditto.pub/").rstrip("/") + "/",
         backfill_on_follow=int(nostr_raw.get("backfill_on_follow", 20)),
         serve_followed_to_local_clients=bool(nostr_raw.get("serve_followed_to_local_clients", False)),
         relay_max_limit=int(nostr_raw.get("relay_max_limit", 500)),

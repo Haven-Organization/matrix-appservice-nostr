@@ -36,6 +36,7 @@ from bridge.interactions import maybe_handle_reaction
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave, maybe_handle_profile_state
 from bridge.messages import notice
 from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
+from bridge.secret_guard import maybe_catch_secret
 from bridge.users import bot_mxid, is_local_user
 from bridge.homeserver_client import HomeserverError
 
@@ -114,6 +115,8 @@ _HANDLERS = (
     maybe_handle_leave,
     maybe_handle_redaction,
     maybe_handle_profile_state,
+    # Before anything that could act on (or publish) the message.
+    maybe_catch_secret,
     # Before commands: a bare "confirm" is recognized by what it replies
     # to, not by a prefix or a tag.
     maybe_handle_confirmation,

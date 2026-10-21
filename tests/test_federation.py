@@ -361,3 +361,28 @@ def test_quote_post(client, homeserver, relay_pool) -> None:
     from bridge.event_sources import rebuild
 
     assert run(client, rebuild, client.app, row).event == quote.to_dict()
+
+
+def test_remote_posts_carry_external_url(client, homeserver, relay_pool) -> None:
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    url = mirrored["content"]["external_url"]
+    assert url.startswith("https://ditto.pub/nevent1")
+    assert nip19.decode(url.rsplit("/", 1)[1]).id == raw["id"]
+
+
+def test_every_ghost_gets_profile_fields(repository, homeserver, relay_pool) -> None:
+    from bridge.config import parse_config
+    from tests.conftest import make_client, raw_config
+
+    config = parse_config(raw_config(bridge={"set_msc4501_profile_room": True, "msc4503_external_handle": "profile"}))
+    with make_client(config, repository, homeserver, relay_pool) as client:
+        q, message, note = local_post(client, homeserver, relay_pool)
+        stranger = Stranger()
+        relay_send(client, stranger.event(1, "hi", [["e", note.id, "", "root", q.pubkey], ["p", q.pubkey]]))
+        remote = run(client, client.app.state.repository.get_remote_account, stranger.pubkey)
+        # A stranger who only replied still has a room (nobody invited) and the fields.
+        assert remote.room_id and not [u for r, u in homeserver.invites if r == remote.room_id and u.startswith("@q")]
+        profile = homeserver.profiles[remote.ghost_user_id]
+        assert profile["org.matrix.msc4501.social.profile_room"] == {"room_id": remote.room_id, "via": ["example.org"]}
+        assert profile["org.matrix.msc4503.external_handle"]["protocol"]["id"] == "nostr"
+        assert profile["org.matrix.msc4503.external_handle"]["url"].startswith("https://ditto.pub/npub1")

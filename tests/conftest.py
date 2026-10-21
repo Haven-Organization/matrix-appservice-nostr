@@ -61,6 +61,7 @@ class FakeHomeserver(HomeserverClient):
         self.invites: list[tuple[str, str]] = []
         self.created: list[dict[str, Any]] = []
         self.redactions: list[tuple[str, str, str]] = []
+        self.openid_tokens: dict[str, str] = {}
         # Overrides for get_room_state: (room, type) -> content.
         self.room_state: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -177,6 +178,9 @@ class FakeHomeserver(HomeserverClient):
     async def leave_room(self, room_id, *, as_user_id):
         self._room(room_id)["members"].discard(as_user_id)
 
+    async def verify_openid_token(self, access_token):
+        return self.openid_tokens.get(access_token)
+
     def messages(self, room_id: str, event_type: str = "m.room.message") -> list[dict]:
         return [e for e in self._room(room_id)["events"].values() if e["type"] == event_type]
 
@@ -198,9 +202,13 @@ class FakeRelayPool:
         # Events "on the network", found by query().
         self.network: list[dict] = []
         self.subscriptions: list[tuple[str, list[dict]]] = []
+        self.handlers: list[tuple[str, list[dict], Any]] = []
+        self.publish_hooks: list[Any] = []
 
     async def publish(self, event: Event, relays: list[str], timeout: float | None = None) -> list[PublishResult]:
         self.published.append((event, list(relays)))
+        for hook in self.publish_hooks:
+            hook(event, relays)
         return [PublishResult(relay, *self.answers.get(relay, (True, ""))) for relay in relays]
 
     def of_kind(self, kind: int) -> list[Event]:
@@ -220,7 +228,16 @@ class FakeRelayPool:
 
     def subscribe(self, url, filters, on_event, **kwargs):
         self.subscriptions.append((url, filters))
+        self.handlers.append((url, filters, on_event))
         return f"sub{len(self.subscriptions)}"
+
+    def deliver(self, url, event):
+        """Hand ``event`` to every subscription on ``url`` it matches."""
+        from bridge.relay_server import matches
+
+        for sub_url, filters, handler in list(self.handlers):
+            if sub_url == url and any(matches(f, event) for f in filters):
+                handler(url, "sub", event)
 
     async def unsubscribe(self, url, sub_id):
         pass

@@ -293,7 +293,7 @@ def test_msc4503_value() -> None:
     assert external_handle_value(config, pubkey=pubkey, nip05="alice@example.com") == {
         "handle": "alice@example.com",
         "protocol": {"id": "nostr", "displayname": "Nostr", "avatar_url": "mxc://example.org/logo"},
-        "url": f"https://njump.me/{npub}",
+        "url": f"https://ditto.pub/{npub}",
     }
     assert external_handle_value(config, pubkey=pubkey)["handle"] == npub
     with pytest.raises(ConfigError):

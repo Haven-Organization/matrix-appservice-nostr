@@ -217,7 +217,9 @@ async def export_key(app: FastAPI, nostr_id: NostrId, password: str | None) -> s
     if secret is None:
         raise KeyProblem("This ID's key is in a remote signer, not the bridge: export it from there.")
     if password:
-        return nip49.encrypt(secret, password)
+        import asyncio
+
+        return await asyncio.to_thread(nip49.encrypt, secret, password)
     return nip19.nsec_encode(secret)
 
 

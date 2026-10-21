@@ -214,8 +214,25 @@ def _expiration(raw: dict[str, Any]) -> int | None:
     return int(value) if value and value.isdigit() else None
 
 
-def _with_extras(app: FastAPI, content: dict[str, Any], raw: dict[str, Any], remote: RemoteAccount) -> dict[str, Any]:
+def event_url(app: FastAPI, raw: dict[str, Any]) -> str:
+    """Where the event can be seen on the web (``nostr.web_viewer_url``)."""
+    viewer = app.state.config.nostr.web_viewer_url
+    kind = int(raw.get("kind", 1))
+    if 30000 <= kind < 40000:
+        d = next((t[1] for t in raw.get("tags") or [] if len(t) >= 2 and t[0] == "d"), "")
+        return viewer + nip19.naddr_encode(nip19.Address(d, raw["pubkey"], kind))
+    return viewer + nip19.nevent_encode(nip19.EventPointer(raw["id"], (), raw["pubkey"], kind))
+
+
+def _with_extras(
+    app: FastAPI, content: dict[str, Any], raw: dict[str, Any], remote: RemoteAccount, *, link: str | None = None
+) -> dict[str, Any]:
+    """The raw event (the relay's copy), and for a post shown in Matrix its
+    ``external_url`` (the original on the web, as the sibling bridges set
+    it) and MSC4503 handle per ``bridge.msc4503_external_handle``."""
     content = {**content, EMBED_FIELD: raw}
+    if link is not None:
+        content["external_url"] = link
     if app.state.config.bridge.msc4503_external_handle in ("events", "both"):
         content[EXTERNAL_HANDLE_FIELD] = external_handle_value(app.state.config, pubkey=remote.pubkey, nip05=remote.nip05)
     return content
@@ -539,7 +556,7 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
             **({"content_inline": True} if app.state.config.bridge.use_msc4501_content_inline else {}),
         }
     event_id = await _send(
-        app, remote.room_id, _with_extras(app, content, raw, remote), sender=remote.ghost_user_id,
+        app, remote.room_id, _with_extras(app, content, raw, remote, link=event_url(app, original)), sender=remote.ghost_user_id,
         ts=int(raw["created_at"]) * 1000, event_type=_post_event_type(app),
     )
     await _store(app, raw, room_id=remote.room_id, matrix_event_id=event_id, scope="followed")
@@ -611,7 +628,7 @@ async def _ensure_post_in_matrix(app: FastAPI, raw: dict[str, Any]) -> EventRow 
     remote = await remotes.get_or_create_remote(app, raw["pubkey"])
     remote = await remotes.ensure_room(app, remote)
     assert remote.room_id is not None
-    content = _with_extras(app, await message_content(app, raw, as_user_id=remote.ghost_user_id), raw, remote)
+    content = _with_extras(app, await message_content(app, raw, as_user_id=remote.ghost_user_id), raw, remote, link=event_url(app, raw))
     event_id = await _send(app, remote.room_id, content, sender=remote.ghost_user_id, ts=int(raw["created_at"]) * 1000, event_type=_post_event_type(app))
     await _store(app, raw, room_id=remote.room_id, matrix_event_id=event_id, scope="followed")
     return await repository.get_event(raw["id"])
@@ -661,7 +678,7 @@ async def _reply_in_matrix(
         "m.in_reply_to": {"event_id": parent.matrix_event_id},
     }
     event_id = await _send(
-        app, parent.room_id, _with_extras(app, content, raw, remote), sender=remote.ghost_user_id,
+        app, parent.room_id, _with_extras(app, content, raw, remote, link=event_url(app, raw)), sender=remote.ghost_user_id,
         ts=int(raw["created_at"]) * 1000,
     )
     await _store(app, raw, room_id=parent.room_id, matrix_event_id=event_id, scope="public" if parent_local or mentioned else "followed")
@@ -692,6 +709,7 @@ async def _reply_in_matrix(
                     "room_id": parent.room_id, "sender": await _author_mxid(app, parent.pubkey),
                     "via": [app.state.config.homeserver.server_name],
                 }
+            copy["external_url"] = event_url(app, raw)
             copy_id = await _send(app, remote.room_id, copy, sender=remote.ghost_user_id, ts=int(raw["created_at"]) * 1000)
             await repository.put_mirrored_event(copy_id, raw["id"], remote.room_id)
     return IngestResult(True, "", stored=True)
@@ -708,7 +726,7 @@ async def _followed_post(app: FastAPI, raw: dict[str, Any], *, parent_id: str | 
         header_html = f'⤵️ Reply to a <a href="{html.escape(link)}">post</a>:'
     content = await message_content(app, raw, as_user_id=remote.ghost_user_id, header_plain=header_plain, header_html=header_html)
     event_id = await _send(
-        app, remote.room_id, _with_extras(app, content, raw, remote), sender=remote.ghost_user_id,
+        app, remote.room_id, _with_extras(app, content, raw, remote, link=event_url(app, raw)), sender=remote.ghost_user_id,
         ts=int(raw["created_at"]) * 1000, event_type=_post_event_type(app),
     )
     await _store(app, raw, room_id=remote.room_id, matrix_event_id=event_id, scope="followed")

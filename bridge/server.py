@@ -34,6 +34,7 @@ from bridge.nip05_routes import router as nip05_router
 from bridge.relay_server import RelayHub
 from bridge.relay_server import router as relay_router
 from bridge.spam import SpamGuard
+from bridge.widget import router as widget_router
 from bridge.publishing import retry_loop
 from bridge.nip05_routes import self_check_soon
 from bridge.nostr.relay_pool import RelayPool
@@ -283,6 +284,12 @@ def create_app(
                 tasks.append(asyncio.create_task(_housekeeping_loop(app), name="housekeeping"))
                 tasks.append(asyncio.create_task(_spam_tick_loop(app), name="spam tick"))
                 app.state.feeds.start()
+                from bridge.room_widget import add_missing_widgets
+
+                run_in_background(app, add_missing_widgets(app), name="widgets")
+                from bridge.remote import converge_all
+
+                run_in_background(app, converge_all(app), name="remote accounts")
             logger.info(
                 "Bridge identity: _@%s (%s)", config.bridge.domain, app.state.bot_identity.pubkey
             )
@@ -308,6 +315,7 @@ def create_app(
     app.include_router(nip05_router)
     app.include_router(appservice_router)
     app.include_router(relay_router)
+    app.include_router(widget_router)
     # Last: its "/{blob}" path would otherwise shadow single-segment routes.
     app.include_router(media_router)
     return app

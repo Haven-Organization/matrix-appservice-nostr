@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "profiles|create|switch|rename|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|status|help"
+    "profiles|create|switch|rename|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
+    "widget|import|export|status|help"
 )
 
 _COMMAND_RE = re.compile(rf"\b({_COMMAND_KEYWORDS})\b\s*(.*)", re.IGNORECASE)
@@ -129,6 +130,14 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ),
     ),
     (
+        "Keys",
+        (
+            ("widget", "Add the bridge's widget to this room: IDs, following, and bringing your own key."),
+            ("import key", "Explains how to bring a key you already have (it's done in the widget, never in chat)."),
+            ("export key", "Explains how to get an ID's key out (also only in the widget)."),
+        ),
+    ),
+    (
         "Admin",
         (
             ("ban <npub, handle or IP> [1h|1d|7d|forever] [purge] [reason]", "Ban from the relay; purge also removes their events here."),
@@ -169,7 +178,9 @@ async def _handle_help(app: FastAPI, room_id: str, argument: str = "") -> None:
 # -- create profile -----------------------------------------------------------
 
 
-async def _finish_creating(app: FastAPI, room_id: str, sender: str, nostr_id: NostrId) -> None:
+async def _finish_creating(
+    app: FastAPI, room_id: str, sender: str, nostr_id: NostrId, *, profile_event: dict | None = None
+) -> None:
     """After the ID row exists: its Profile Room, the user's other rooms,
     the identity events, and telling the user."""
     repository = app.state.repository
@@ -189,6 +200,13 @@ async def _finish_creating(app: FastAPI, room_id: str, sender: str, nostr_id: No
         )
         return
     await ensure_user_rooms(app, sender)
+    if profile_event is not None:
+        from bridge.keys import seed_profile_room
+
+        try:
+            await seed_profile_room(app, nostr_id, profile_event)
+        except HomeserverError:
+            logger.info("Could not start %s's Profile Room from its existing profile", handle, exc_info=True)
     try:
         await sync_identity(app, nostr_id)
     except HomeserverError:
@@ -768,4 +786,16 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_ban(app, room_id, sender, argument, ban=keyword == "ban")
     elif keyword == "bans":
         await _handle_bans(app, room_id, sender)
+    elif keyword == "widget":
+        from bridge.room_widget import add_bridge_widget
+
+        added = await add_bridge_widget(app, room_id)
+        await notice(app, room_id, "Added the Nostr Bridge widget to this room." if added else
+                     "Couldn't add the widget here: the bot needs permission to change room settings.")
+    elif keyword in ("import", "export"):
+        await notice(
+            app, room_id,
+            f"Keys never go through chat messages: a homeserver stores those unencrypted. Open the Nostr Bridge widget "
+            f'(add it with "{prefix}widget" if this room doesn\'t have it) to {"import a key or connect a remote signer" if keyword == "import" else "export a key"}.',
+        )
     return True

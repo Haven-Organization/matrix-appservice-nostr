@@ -77,6 +77,9 @@ async def create_profile_room(app: FastAPI, nostr_id: NostrId, *, first: bool) -
         ],
     )
     await app.state.repository.set_profile_room(nostr_id.id, room_id)
+    from bridge.room_widget import add_widget_once
+
+    await add_widget_once(app, room_id)
     logger.info("Created Profile Room %s for %s@%s", room_id, nostr_id.name, config.bridge.domain)
     updated = await app.state.repository.get_id(nostr_id.id)
     assert updated is not None

@@ -49,6 +49,9 @@ async def ensure_notifications_room(app: FastAPI, matrix_user_id: str) -> str | 
         logger.warning("Could not create a notifications room for %s", matrix_user_id, exc_info=True)
         return None
     await repository.set_user_notifications_room(matrix_user_id, room_id)
+    from bridge.room_widget import add_widget_once
+
+    await add_widget_once(app, room_id)
     await add_room_to_space(app, matrix_user_id, room_id, order=NOTIFICATIONS_ROOM_SPACE_ORDER)
     name = config.bridge.notifications_room_name
     # An ordinary message with a bold header: the first thing in a new room

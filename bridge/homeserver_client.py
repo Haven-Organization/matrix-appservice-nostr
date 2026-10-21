@@ -161,6 +161,12 @@ class HomeserverClient:
             as_user_id=user_id,
         )
 
+    async def delete_profile_field(self, user_id: str, key: str) -> None:
+        """Remove a custom profile field (MSC4133)."""
+        await self._request(
+            "DELETE", f"/_matrix/client/v3/profile/{quote(user_id, safe='@:')}/{quote(key, safe='')}", as_user_id=user_id
+        )
+
     # -- rooms ---------------------------------------------------------------
 
     async def create_room(

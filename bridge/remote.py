@@ -181,9 +181,60 @@ async def _register_ghost(app: FastAPI, ghost: str) -> None:
             raise
 
 
+async def apply_profile_fields(app: FastAPI, remote: RemoteAccount) -> None:
+    """The ghost's extended profile fields (MSC4133), as the sibling bridges
+    keep them: its Remote User Room (MSC4501, ``{"room_id", "via"}``) and
+    its handle on Nostr (MSC4503), each set where its setting wants it and
+    removed where it doesn't. Only what differs is written. Best-effort: a
+    homeserver without MSC4133 refuses, and that's fine."""
+    config = app.state.config
+    homeserver = app.state.homeserver
+    ghost = remote.ghost_user_id
+    wanted: dict[str, Any] = {
+        SOCIAL_PROFILE_ROOM_FIELD: (
+            {"room_id": remote.room_id, "via": [config.homeserver.server_name]}
+            if config.bridge.set_msc4501_profile_room and remote.room_id else None
+        ),
+        EXTERNAL_HANDLE_FIELD: (
+            external_handle_value(config, pubkey=remote.pubkey, nip05=remote.nip05)
+            if config.bridge.msc4503_external_handle in ("profile", "both") else None
+        ),
+    }
+    try:
+        current = await homeserver.get_profile(ghost)
+    except HomeserverError:
+        current = {}
+    for key, value in wanted.items():
+        if current.get(key) == value:
+            continue
+        try:
+            if value is None:
+                if key in current:
+                    await homeserver.delete_profile_field(ghost, key)
+            else:
+                await homeserver.set_profile_field(ghost, key, value)
+        except HomeserverError:
+            logger.debug("Homeserver won't take %s on %s (needs MSC4133)", key, ghost)
+
+
+async def converge_all(app: FastAPI) -> None:
+    """Startup pass: every remote account has its Remote User Room, and its
+    ghost the profile fields the config asks for."""
+    for remote in await app.state.repository.list_remote_accounts():
+        try:
+            if not remote.room_id:
+                await ensure_room(app, remote)
+            else:
+                await apply_profile_fields(app, remote)
+        except Exception:
+            logger.warning("Could not bring %s up to date", remote.pubkey, exc_info=True)
+
+
 async def get_or_create_remote(app: FastAPI, pubkey: str) -> RemoteAccount:
-    """The account's record and ghost, created (and its profile fetched) on
-    first sight. Raises ``HomeserverError`` if the ghost can't be made."""
+    """The account's record, ghost and Remote User Room, created (and its
+    profile fetched) on first sight: every ghost has a room, so it always
+    carries its MSC4501 profile room. Nobody is invited to a room made this
+    way. Raises ``HomeserverError`` if the ghost can't be made."""
     repository = app.state.repository
     remote = await repository.get_remote_account(pubkey)
     if remote is not None:
@@ -196,7 +247,12 @@ async def get_or_create_remote(app: FastAPI, pubkey: str) -> RemoteAccount:
         await app.state.homeserver.set_display_name(ghost, short_npub(pubkey))
     except HomeserverError:
         pass
-    return await refresh(app, remote, force=True)
+    remote = await refresh(app, remote, force=True)
+    try:
+        remote = await ensure_room(app, remote)
+    except HomeserverError:
+        logger.warning("Could not make a room for %s", pubkey, exc_info=True)
+    return remote
 
 
 async def refresh(app: FastAPI, remote: RemoteAccount, *, force: bool = False, hints: tuple[str, ...] = ()) -> RemoteAccount:
@@ -280,14 +336,8 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
             await homeserver.set_avatar_url(ghost, avatar_mxc)
     except HomeserverError:
         logger.info("Could not update the profile of %s", ghost, exc_info=True)
-    if config.bridge.msc4503_external_handle in ("profile", "both"):
-        try:
-            await homeserver.set_profile_field(
-                ghost, EXTERNAL_HANDLE_FIELD, external_handle_value(config, pubkey=remote.pubkey, nip05=nip05)
-            )
-        except HomeserverError:
-            logger.debug("Homeserver won't take %s on %s (needs MSC4133)", EXTERNAL_HANDLE_FIELD, ghost)
     await app.state.repository.save_remote_account(remote)
+    await apply_profile_fields(app, remote)
     if remote.room_id:
         await _dress_room(app, remote, raw, profile, name, avatar_mxc)
     return remote
@@ -368,14 +418,13 @@ async def ensure_room(app: FastAPI, remote: RemoteAccount) -> RemoteAccount:
             initial_state=[{"type": SOCIAL_PROFILE_USER_ID_STATE_TYPE, "state_key": "", "content": {"user_id": ghost}}],
         )
         await homeserver.join_room(room_id, as_user_id=ghost)
+        from bridge.room_widget import add_widget_once
+
+        await add_widget_once(app, room_id)
         remote = replace(fresh or remote, room_id=room_id)
         await app.state.repository.save_remote_account(remote)
     logger.info("Created Remote User Room %s for %s", room_id, remote.pubkey)
-    if config.bridge.set_msc4501_profile_room:
-        try:
-            await homeserver.set_profile_field(ghost, SOCIAL_PROFILE_ROOM_FIELD, room_id)
-        except HomeserverError:
-            logger.debug("Homeserver won't take %s (needs MSC4133)", SOCIAL_PROFILE_ROOM_FIELD)
+    await apply_profile_fields(app, remote)
     # Re-apply the profile now there's a room to dress.
     events = await app.state.relay_pool.query(
         [*remote.write_relays, *config.nostr.discovery_relays], [{"authors": [remote.pubkey], "kinds": [0], "limit": 1}]

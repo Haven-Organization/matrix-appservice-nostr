@@ -52,6 +52,9 @@ async def ensure_user_space(app: FastAPI, matrix_user_id: str) -> str | None:
         logger.warning("Could not create a space for %s", matrix_user_id, exc_info=True)
         return None
     await repository.set_user_space(matrix_user_id, room_id)
+    from bridge.room_widget import add_widget_once
+
+    await add_widget_once(app, room_id)
     logger.info("Created space %s for %s", room_id, matrix_user_id)
     return room_id
 

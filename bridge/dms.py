@@ -78,6 +78,9 @@ async def ensure_dm_room(app: FastAPI, nostr_id: NostrId, remote: RemoteAccount)
     )
     await homeserver.join_room(room_id, as_user_id=remote.ghost_user_id)
     await repository.set_dm_room(room_id, nostr_id.id, remote.pubkey)
+    from bridge.room_widget import add_widget_once
+
+    await add_widget_once(app, room_id)
     logger.info("Created DM room %s for %s and %s", room_id, nostr_id.name, remote.pubkey)
     return room_id
 
