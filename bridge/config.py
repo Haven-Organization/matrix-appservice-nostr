@@ -144,6 +144,9 @@ class AppserviceSection:
     # never published or answered here.
     other_command_prefixes: tuple[str, ...] = ()
     other_bot_users: tuple[str, ...] = ()
+    # Regexes over the whole MXID matching other bridges' ghosts
+    # ("@atproto_.*:example\.org"). Their messages are never acted on.
+    other_bridge_users: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -409,6 +412,14 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
     for user in other_bots:
         if not re.fullmatch(r"@[^:\s]+:\S+", user):
             raise ConfigError(f"appservice.other_bot_users: {user!r} isn't a Matrix user ID (@name:server)")
+    other_ghosts = tuple(dict.fromkeys(p.strip() for p in _string_list(appservice_raw, "other_bridge_users", "appservice")))
+    for pattern in other_ghosts:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ConfigError(f"appservice.other_bridge_users: {pattern!r} isn't a valid regex ({exc})") from exc
+        if not pattern:
+            raise ConfigError("appservice.other_bridge_users must not contain an empty pattern")
     user_prefix = str(appservice_raw.get("user_prefix", "nostr_"))
     bot_localpart = str(appservice_raw.get("bot_localpart", "nostrbot"))
     if bot_localpart.startswith(user_prefix):
@@ -425,6 +436,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         command_prefix=command_prefix,
         other_command_prefixes=other_prefixes,
         other_bot_users=other_bots,
+        other_bridge_users=other_ghosts,
     )
 
     storage_raw = _section(raw, "storage")

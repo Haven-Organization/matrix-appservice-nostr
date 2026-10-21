@@ -4,6 +4,8 @@ unlinking leave other bridges' state alone."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from bridge.commands import message_addresses_other_bot
@@ -14,7 +16,8 @@ from tests.test_ids import ids_of, last_body, message, send
 from tests.test_room_links import ask_and_confirm, established_room
 
 ATPROTO_BOT = "@atprotobot:example.org"
-OTHERS = {"other_command_prefixes": [";", "]"], "other_bot_users": [ATPROTO_BOT]}
+OTHERS = {"other_command_prefixes": [";", "]"], "other_bot_users": [ATPROTO_BOT],
+          "other_bridge_users": [r"@atproto_.*:example\.org"]}
 
 
 @pytest.fixture
@@ -50,7 +53,8 @@ def test_other_bot_mention_by_pill() -> None:
 
 @pytest.mark.parametrize(
     "appservice",
-    [{"other_command_prefixes": [""]}, {"other_command_prefixes": ["["]}, {"other_bot_users": ["atprotobot"]}],
+    [{"other_command_prefixes": [""]}, {"other_command_prefixes": ["["]}, {"other_bot_users": ["atprotobot"]},
+     {"other_bridge_users": ["@atproto_(:example.org"]}, {"other_bridge_users": [""]}],
 )
 def test_bad_other_bot_config(appservice) -> None:
     with pytest.raises(ConfigError):
@@ -115,3 +119,25 @@ def test_link_and_unlink_in_a_shared_room(client, homeserver, relay_pool) -> Non
     pubkey = ids_of(client)[0].pubkey
     assert homeserver._room(room)["state"][("m.bridge", f"nostr://{pubkey}")]["content"] == {}
     assert homeserver._room(room)["state"][("m.bridge", "atproto://did:plc:abc")]["content"]
+
+
+def test_other_bridges_ghosts_and_bots_are_never_acted_on(shared, homeserver, relay_pool) -> None:
+    send(shared, message("[create profile"))
+    [q] = ids_of(shared)
+    room = q.profile_room_id
+    note_count = len(relay_pool.of_kind(1))
+    answered = len(homeserver.sent_to(room))
+    ghost = "@atproto_alice:example.org"
+    # A Bluesky user's "[create profile", mirrored into the room by their ghost.
+    send(shared, message("[create profile", sender=ghost, room=room))
+    send(shared, message("[help", sender=ATPROTO_BOT, room=room))
+    assert ids_of(shared, ghost) == []
+    assert len(homeserver.sent_to(room)) == answered
+    # Not this bridge's ghost-pattern: an ordinary local user still can.
+    send(shared, message("[create profile", sender="@atprotofan:example.org"))
+    assert ids_of(shared, "@atprotofan:example.org")
+    # Room state another bridge sets still updates the Nostr profile.
+    send(shared, homeserver._store(room, "m.room.topic", {"topic": "synced from Bluesky"}, ATPROTO_BOT, ""))
+    profiles = relay_pool.of_kind(0)
+    assert json.loads(profiles[-1].content)["about"] == "synced from Bluesky"
+    assert len(relay_pool.of_kind(1)) == note_count

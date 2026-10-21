@@ -38,7 +38,7 @@ from bridge.messages import notice
 from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
 from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
-from bridge.users import bot_mxid, is_local_user
+from bridge.users import bot_mxid, is_local_user, is_other_bot
 from bridge.homeserver_client import HomeserverError
 
 logger = logging.getLogger(__name__)
@@ -133,6 +133,12 @@ _HANDLERS = (
 
 
 async def handle_event(request: Request, event: dict[str, Any]) -> None:
+    # Other bots and bridges' ghosts: their messages, reactions, votes and
+    # redactions are never acted on (they're not people with Nostr IDs, even
+    # when they're on this server). Room state they set still counts: another
+    # bridge updating the room's name or avatar changes the profile here too.
+    if "state_key" not in event and is_other_bot(request.app.state.config, event.get("sender", "")):
+        return
     for handler in _HANDLERS:
         if await handler(request, event):
             return

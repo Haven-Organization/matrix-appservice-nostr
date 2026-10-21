@@ -81,6 +81,8 @@ appservice:
   # to Nostr.
   # other_command_prefixes: [";", "]"]
   # other_bot_users: ["@apbot:example.org", "@atprotobot:example.org"]
+  # Their ghosts, as regexes over the whole MXID (see their registrations):
+  # other_bridge_users: ['@fedi_.*:example\.org', '@bsky_.*:example\.org']
   # Decide these before going live: changing them later orphans users.
   # user_prefix: nostr_
   # bot_localpart: nostrbot

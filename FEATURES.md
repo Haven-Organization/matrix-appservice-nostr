@@ -75,7 +75,7 @@ One room can be your Profile Room on several networks at once: link it with this
 
 - **Commands:** give each bridge a different `command_prefix` (the defaults already differ: `[` Nostr, `;` ActivityPub, `]` Bluesky). List the other bridges' prefixes in `appservice.other_command_prefixes`, and their bots in `appservice.other_bot_users`, so a command for one bridge is never posted by another. Do the same in each sibling bridge's config.
 - **Replies:** a reply to something that isn't on Nostr and isn't your own message, such as a reply mirrored from Bluesky or another bridge's "reply confirm" question, stays in Matrix. Only replies to Nostr posts, and to your own messages, are published.
-- **Other bridges' users:** their bots and ghosts are never published as you. A ghost replying to one of your posts isn't published on Nostr either.
+- **Other bridges' users:** list their ghosts in `appservice.other_bridge_users` and their bots in `other_bot_users`. Nothing they say is acted on: a Bluesky reply mirrored into the room that happens to start with `[create profile` doesn't make the ghost a Nostr ID. Changes they make to the room's name or avatar still update your Nostr profile.
 - **Power:** each bridge's bot needs enough power to set the room's profile state (50 in most rooms). The MSC4501 "whose profile this is" state is shared: once one bridge has set it, the others don't need the power to set it again, and unlinking one bridge leaves it in place for the rest.
 - **Linking:** `[link` says which other bridges are already in the room. Without `keep`, the room takes on the Nostr ID's profile, which changes the profile on those networks too; `[link <id> keep` uses the room's own.
 
