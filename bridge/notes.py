@@ -388,6 +388,32 @@ def share_v1(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
     return text, tags
 
 
+# Version 2: "🔁 reposted X's post: <link>" as the heading, so the link sits
+# where "post" is (kind 1 is plain text: no markdown links), then the
+# original's text and media. Same recipe as v1.
+
+
+def share_v2(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    _, tags = share_v1(event, original, recipe)
+    content = original.get("content") or {}
+    if content.get("msgtype") in MEDIA_MSGTYPES:
+        original_text = message_body(content) if has_caption(content) else ""
+    else:
+        original_text = message_body(content)
+    link = content.get("external_url") if isinstance(content.get("external_url"), str) else ""
+    author = str(recipe.get("author") or "").strip()
+    heading = f"🔁 reposted {author}'s post:" if author else "🔁 reposted a post:"
+    if link:
+        heading = f"{heading} {link}"
+    media = recipe.get("media")
+    parts = [share_caption(event.get("content") or {}), heading, original_text.strip(), media["url"] if media else ""]
+    return "\n\n".join(part for part in parts if part), tags
+
+
+SHARE_CONVERTERS = {1: share_v1, 2: share_v2}
+SHARE_VERSION = 2
+
+
 CONVERTERS = {
     ("note", 1): note_v1,
     ("note", 2): note_v2,

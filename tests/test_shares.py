@@ -66,9 +66,9 @@ def test_fediverse_bridge_repost_card(shared, homeserver, relay_pool) -> None:
     [note] = relay_pool.of_kind(1)
     assert note.pubkey == q.pubkey
     lines = note.content.split("\n\n")
-    assert lines[0] == "🔁 JoeBravo77:"
+    assert lines[0] == f"🔁 reposted JoeBravo77's post: {POST_URL}"
     assert lines[1].startswith("https://nostr.example.org/") and lines[1].endswith(".png")
-    assert lines[2] == POST_URL
+    assert len(lines) == 2
     tags = [list(t) for t in note.tags]
     assert ["r", POST_URL] in tags and any(t[0] == "imeta" for t in tags)
     row = shared.portal.call(shared.app.state.repository.get_event, note.id)
@@ -107,7 +107,7 @@ def test_haven_repost_record_of_a_fediverse_post(shared, homeserver, relay_pool,
                                    {"msgtype": "m.text", "body": body,
                                     RELATION: {**relation_to(original), "content_inline": not caption}}, "@q:example.org"))
     [note] = relay_pool.of_kind(1)
-    expected = ["🔁 JoeBravo77:", "the original words", POST_URL]
+    expected = [f"🔁 reposted JoeBravo77's post: {POST_URL}", "the original words"]
     assert note.content.split("\n\n") == ([caption] if caption else []) + expected
     assert "matrix.to" not in note.content
 
@@ -149,4 +149,16 @@ def test_bluesky_quote_card_uses_only_the_commentary(shared, homeserver, relay_p
     }
     send(shared, homeserver._store(q.profile_room_id, "m.room.message", card, FEDI_BOT))
     [note] = relay_pool.of_kind(1)
-    assert note.content.split("\n\n") == ["so good", "🔁 Alice:", "skeet text", "https://bsky.app/profile/a/post/1"]
+    assert note.content.split("\n\n") == [
+        "so good", "🔁 reposted Alice's post: https://bsky.app/profile/a/post/1", "skeet text"]
+
+
+def test_share_v1_still_rebuilds() -> None:
+    """Reposts published before v2 keep rebuilding to the same event."""
+    from bridge.notes import share_v1
+
+    record = {"content": {"msgtype": "m.text", "body": "https://matrix.to/#/!r/$e",
+                          RELATION: {"rel_type": REPOST, "content_inline": True}}}
+    original = {"content": {"msgtype": "m.text", "body": "words", "external_url": POST_URL}}
+    text, tags = share_v1(record, original, {"author": "JoeBravo77", "media": None})
+    assert text == f"🔁 JoeBravo77:\n\nwords\n\n{POST_URL}" and tags == [["r", POST_URL]]

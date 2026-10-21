@@ -16,8 +16,8 @@ In a Profile Room shared with those bridges, the repost reaches Nostr too:
 - of a post that's on Nostr: the 🔁 reaction already reposts it (kind 6/16),
   so a bare record adds nothing; a captioned one is a quote (note v2);
 - of anything else (a fediverse or Bluesky post, or a Matrix message the
-  bot can read): a note crediting the original's author, with its text,
-  media and its own link (``notes.share_v1``).
+  bot can read): a note saying whose post was reposted, with a link to it,
+  its text and media (``notes.share_v2``).
 
 Redacting the record (undoing the repost) deletes the note, as for any post.
 """
@@ -31,7 +31,9 @@ from fastapi import FastAPI, Request
 
 from bridge.homeserver_client import HomeserverError
 from bridge.media import MediaProblem, publish_matrix_media
-from bridge.notes import MEDIA_MSGTYPES, _PERMALINK_RE, event_kind_of, note_v2, share_caption, share_v1
+from bridge.notes import (
+    MEDIA_MSGTYPES, SHARE_CONVERTERS, SHARE_VERSION, _PERMALINK_RE, event_kind_of, note_v2, share_caption,
+)
 from bridge.publishing import NotifyTarget
 from bridge.users import bot_mxid, is_other_bot
 
@@ -91,7 +93,7 @@ async def maybe_publish_share(request: Request, event: dict[str, Any]) -> bool:
         return True  # reposting your own Matrix message: it's already yours
     recipe: dict[str, Any] = {
         "kind": "share",
-        "v": 1,
+        "v": SHARE_VERSION,
         "room_id": room_id,
         "event_id": event.get("event_id", ""),
         "original_room": original_room,
@@ -109,7 +111,7 @@ async def maybe_publish_share(request: Request, event: dict[str, Any]) -> bool:
                 "url": media.url, "m": media.mime_type, "x": media.sha256, "size": media.size,
                 "dim": f"{media.width}x{media.height}" if media.width and media.height else None,
             }
-    text, tags = share_v1(event, original, recipe)
+    text, tags = SHARE_CONVERTERS[SHARE_VERSION](event, original, recipe)
     await _publish(app, owner_id, event, recipe, text, tags)
     return True
 
