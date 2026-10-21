@@ -38,6 +38,7 @@ from bridge.messages import notice
 from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
 from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
+from bridge.shares import maybe_publish_share, repost_relation
 from bridge.users import bot_mxid, is_local_user, is_other_bot
 from bridge.homeserver_client import HomeserverError
 
@@ -126,6 +127,9 @@ _HANDLERS = (
     maybe_publish_poll,
     maybe_handle_vote,
     maybe_send_dm,
+    # A repost (MSC4501) made in a Profile Room, by the user or through
+    # another bridge sharing the room.
+    maybe_publish_share,
     # Last: anything else in a Profile Room may be a post, and a reply to a
     # Nostr post anywhere is a reply.
     maybe_publish_message,
@@ -137,7 +141,14 @@ async def handle_event(request: Request, event: dict[str, Any]) -> None:
     # redactions are never acted on (they're not people with Nostr IDs, even
     # when they're on this server). Room state they set still counts: another
     # bridge updating the room's name or avatar changes the profile here too.
-    if "state_key" not in event and is_other_bot(request.app.state.config, event.get("sender", "")):
+    # The exceptions: a bridge's card for a repost its user made (published
+    # here too, bridge.shares), and redactions (undoing such a repost).
+    if (
+        "state_key" not in event
+        and is_other_bot(request.app.state.config, event.get("sender", ""))
+        and event.get("type") != "m.room.redaction"
+        and repost_relation(event) is None
+    ):
         return
     for handler in _HANDLERS:
         if await handler(request, event):

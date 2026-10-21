@@ -52,7 +52,7 @@ from fastapi import FastAPI
 
 from bridge.homeserver_client import HomeserverError
 from bridge.nostr.event import compute_id
-from bridge.notes import CONVERTERS, event_kind_of, is_redacted, matrix_event_id_of
+from bridge.notes import CONVERTERS, event_kind_of, is_redacted, matrix_event_id_of, share_v1
 from bridge.repository import EventRow
 from bridge.users import bot_mxid
 
@@ -200,6 +200,13 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
             event_kind = PROFILE_KIND
         elif kind == "embedded":
             return await _rebuild_embedded(app, row)
+        elif (kind, source.get("v")) == ("share", 1):
+            record = await _fetch(app, source["room_id"], source["event_id"])
+            original = await _fetch(app, source["original_room"], source["original_event"])
+            if record is None or is_redacted(record) or original is None or is_redacted(original):
+                return Rebuilt("gone")
+            content, tags = share_v1(record, original, source)
+            event_kind = event_kind_of(source)
         elif (kind, source.get("v")) in CONVERTERS:
             matrix_event = await _fetch(app, source["room_id"], matrix_event_id_of(source))
             # A redaction with no reason has empty content in older room

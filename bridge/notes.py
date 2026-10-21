@@ -330,6 +330,56 @@ def deletion_v1(redaction: dict[str, Any], recipe: dict[str, Any]) -> tuple[str,
     return content, tags
 
 
+# -- kind 1 "share": reposting something that isn't on Nostr ----------------------
+# A repost made in Matrix (MSC4501 ``social.relates_to`` with rel_type repost)
+# of a post from another network (the fediverse or Bluesky, through their
+# bridges) or plain Matrix. Nostr reposts (kind 6/16) can only point at Nostr
+# events, so this is an ordinary note: the reposter's words (if any), who
+# wrote the original, its text and media, and its own link (which Nostr apps
+# show as a preview card).
+# Built from two Matrix events: the repost record (``event``) and the
+# original (``original``). Recipe: {"room_id", "event_id", "original_room",
+# "original_event", "author", "media": like note's, or None}.
+
+_PERMALINK_RE = re.compile(r"(?:https://matrix\.to/#/|matrix:)\S+")
+
+
+def share_caption(record_content: dict[str, Any]) -> str:
+    """What the reposter wrote: the record's body without the permalink to
+    the original (a bridge's own repost card has nothing else)."""
+    body = record_content.get("body")
+    if not isinstance(body, str) or record_content.get("filename") == body:
+        return ""
+    return _PERMALINK_RE.sub("", body).strip()
+
+
+def share_v1(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    record = event.get("content") or {}
+    content = original.get("content") or {}
+    if content.get("msgtype") in MEDIA_MSGTYPES:
+        original_text = message_body(content) if has_caption(content) else ""
+    else:
+        original_text = message_body(content)
+    link = content.get("external_url") if isinstance(content.get("external_url"), str) else ""
+    author = str(recipe.get("author") or "").strip()
+    media = recipe.get("media")
+    parts = [share_caption(record), f"🔁 {author}:" if author else "🔁", original_text.strip(),
+             media["url"] if media else "", link]
+    text = "\n\n".join(part for part in parts if part)
+    tags: list[list[str]] = []
+    if link:
+        tags.append(["r", link])
+    if media:
+        imeta = ["imeta", f"url {media['url']}", f"m {media['m']}", f"x {media['x']}", f"size {media['size']}"]
+        if media.get("dim"):
+            imeta.append(f"dim {media['dim']}")
+        tags.append(imeta)
+    reason = spoiler_reason(content)
+    if reason is not None:
+        tags.append(["content-warning", reason] if reason else ["content-warning"])
+    return text, tags
+
+
 CONVERTERS = {
     ("note", 1): note_v1,
     ("note", 2): note_v2,
@@ -340,7 +390,7 @@ CONVERTERS = {
     ("poll", 1): poll_v1,
     ("vote", 1): vote_v1,
 }
-EVENT_KINDS = {"note": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND, "poll": 1068, "vote": 1018}
+EVENT_KINDS = {"note": NOTE_KIND, "share": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND, "poll": 1068, "vote": 1018}
 
 
 def event_kind_of(recipe: dict[str, Any]) -> int:

@@ -44,7 +44,7 @@ from bridge.remote import pubkey_of_ghost
 from bridge.publishing import NotifyTarget, publish_in_background
 from bridge.repository import EventRow, NostrId
 from bridge.homeserver_client import HomeserverError
-from bridge.users import bot_mxid, is_bridge_user, is_local_user
+from bridge.users import bot_mxid, is_bridge_user, is_local_user, is_other_bot
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +269,8 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
     row = await repository.get_event_by_matrix_event(target, include_copies=False)
     if row is None or row.kind == DELETION_KIND:
         return False
+    if is_other_bot(app.state.config, event.get("sender", "")) and json.loads(row.source).get("kind") != "share":
+        return True  # another bridge may only undo the reposts made through it
     author = await repository.get_id_by_pubkey(row.pubkey)
     await repository.delete_event(row.id)
     hub = getattr(app.state, "relay_hub", None)
