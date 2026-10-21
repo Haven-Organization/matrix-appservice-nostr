@@ -41,7 +41,9 @@ from bridge.users import bot_mxid, is_bridge_user, is_local_user, localpart
 logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
-_COMMAND_KEYWORDS = "profiles|create|switch|rename|status|help"
+_COMMAND_KEYWORDS = (
+    "profiles|create|switch|rename|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|status|help"
+)
 
 _COMMAND_RE = re.compile(rf"\b({_COMMAND_KEYWORDS})\b\s*(.*)", re.IGNORECASE)
 
@@ -112,6 +114,26 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("profiles", "List your Nostr IDs, numbered, and which one is active."),
             ("switch <number or id>", "Make one of your IDs the active one."),
             ("rename <number or id> <new id>", "Give an ID a new name. Followers and posts stay."),
+        ),
+    ),
+    (
+        "Following",
+        (
+            ("follow <account>", "Follow a Nostr account (npub, nprofile, name@domain or profile link) as your active ID."),
+            ("unfollow <account>", "Stop following it (leaving its room does the same)."),
+            ("following", "The accounts your active ID follows."),
+            ("backfill [N]", "In an account's room: bring in its latest N posts (default 20)."),
+            ("block <account>", "Block an account for your active ID: its replies, mentions and reactions stop."),
+            ("unblock <account>", "Unblock it."),
+            ("dm <account>", "Start (or get back into) a DM with an account, as your active ID."),
+        ),
+    ),
+    (
+        "Admin",
+        (
+            ("ban <npub, handle or IP> [1h|1d|7d|forever] [purge] [reason]", "Ban from the relay; purge also removes their events here."),
+            ("unban <npub, handle or IP>", "Lift a ban."),
+            ("bans", "List current bans."),
         ),
     ),
     (
@@ -412,6 +434,236 @@ confirm.register(CREATE_ID_ACTION, _execute_create)
 confirm.register(RENAME_ID_ACTION, _execute_rename)
 
 
+# -- following ----------------------------------------------------------------
+
+
+async def _actor(app: FastAPI, room_id: str, sender: str) -> NostrId | None:
+    from bridge.interactions import acting_id
+
+    actor = await acting_id(app, sender, room_id)
+    if actor is None:
+        prefix = app.state.config.appservice.command_prefix
+        await notice(app, room_id, f'You need a Nostr ID first: "{prefix}create profile".')
+    return actor
+
+
+async def _resolve(app: FastAPI, room_id: str, argument: str):
+    from bridge.follows import ReferenceError, resolve_reference
+
+    if not argument.strip():
+        await notice(app, room_id, "Which account? Give an npub, an nprofile, a handle (name@domain) or a profile link.")
+        return None
+    try:
+        return await resolve_reference(app, argument.split()[0])
+    except ReferenceError as exc:
+        await notice(app, room_id, str(exc))
+        return None
+
+
+async def _account_label(app: FastAPI, pubkey: str, nip05: str | None = None) -> str:
+    from bridge.remote import short_npub
+
+    remote = await app.state.repository.get_remote_account(pubkey)
+    return nip05 or (remote.nip05 if remote else None) or short_npub(pubkey)
+
+
+async def _handle_follow(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    from bridge.follows import safe_follow
+
+    actor = await _actor(app, room_id, sender)
+    reference = await _resolve(app, room_id, argument) if actor else None
+    if actor is None or reference is None:
+        return
+    if await app.state.repository.get_id_by_pubkey(reference.pubkey) is not None:
+        await notice(app, room_id, "That's an ID on this server: join its Profile Room to follow it in Matrix.")
+        return
+    await notice(app, room_id, f"Following {reference.nip05 or argument.split()[0]}…")
+    remote, new, problem = await safe_follow(app, actor, reference)
+    if remote is None:
+        await notice(app, room_id, problem or "Couldn't follow that account.")
+        return
+    label = await _account_label(app, reference.pubkey, reference.nip05)
+    handle = _handle(app, actor)
+    what = "Now following" if new else "Already following"
+    await notice(
+        app, room_id, f"{what} {label} as {handle}. Its posts arrive in {remote.room_id}.",
+        html_message=f"{what} <strong>{html.escape(label)}</strong> as {html.escape(handle)}. Its posts arrive in "
+        f"{room_link_html(remote.room_id or '', label)}.",
+    )
+
+
+async def _handle_unfollow(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    from bridge.follows import unfollow
+
+    actor = await _actor(app, room_id, sender)
+    reference = await _resolve(app, room_id, argument) if actor else None
+    if actor is None or reference is None:
+        return
+    label = await _account_label(app, reference.pubkey, reference.nip05)
+    if await unfollow(app, actor, reference.pubkey):
+        await notice(app, room_id, f"{_handle(app, actor)} no longer follows {label}.")
+    else:
+        await notice(app, room_id, f"{_handle(app, actor)} doesn't follow {label}.")
+
+
+async def _handle_following(app: FastAPI, room_id: str, sender: str) -> None:
+    actor = await _actor(app, room_id, sender)
+    if actor is None:
+        return
+    pubkeys = await app.state.repository.list_follows(actor.id)
+    if not pubkeys:
+        await notice(app, room_id, f"{_handle(app, actor)} doesn't follow anyone yet.")
+        return
+    plain = [f"{_handle(app, actor)} follows:"]
+    rich = [f"<p>{html.escape(_handle(app, actor))} follows:</p><ul>"]
+    for pubkey in pubkeys:
+        label = await _account_label(app, pubkey)
+        remote = await app.state.repository.get_remote_account(pubkey)
+        plain.append(f"- {label}")
+        link = room_link_html(remote.room_id, label) if remote and remote.room_id else html.escape(label)
+        rich.append(f"<li>{link}</li>")
+    rich.append("</ul>")
+    await notice(app, room_id, "\n".join(plain), html_message="".join(rich))
+
+
+async def _handle_block(app: FastAPI, room_id: str, sender: str, argument: str, *, blocked: bool) -> None:
+    from bridge.follows import block
+
+    actor = await _actor(app, room_id, sender)
+    reference = await _resolve(app, room_id, argument) if actor else None
+    if actor is None or reference is None:
+        return
+    label = await _account_label(app, reference.pubkey, reference.nip05)
+    changed = await block(app, actor, reference.pubkey, blocked)
+    if blocked:
+        await notice(app, room_id, f"{'Blocked' if changed else 'Already blocked'} {label} for {_handle(app, actor)}.")
+    else:
+        await notice(app, room_id, f"{'Unblocked' if changed else 'Not blocked:'} {label} for {_handle(app, actor)}.")
+
+
+async def _handle_backfill(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    from bridge.follows import backfill_posts
+    from bridge.tasks import run_in_background
+
+    remote = await app.state.repository.get_remote_account_for_room(room_id)
+    if remote is None:
+        await notice(app, room_id, "Run this in a Nostr account's room.")
+        return
+    count = int(argument.split()[0]) if argument.split() and argument.split()[0].isdigit() else 20
+    if count > 100 and not await is_admin(app.state.config, app.state.homeserver, sender):
+        count = 100
+    await notice(app, room_id, f"Bringing in up to {count} posts…")
+
+    async def run() -> None:
+        found = await backfill_posts(app, remote, count)
+        await notice(app, room_id, f"Done: {found} posts brought in." if found else "No more posts found.")
+
+    run_in_background(app, run(), name=f"backfill {remote.pubkey[:8]}")
+
+
+async def _handle_dm(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    from bridge.dms import open_dm
+
+    actor = await _actor(app, room_id, sender)
+    reference = await _resolve(app, room_id, argument) if actor else None
+    if actor is None or reference is None:
+        return
+    if await app.state.repository.get_id_by_pubkey(reference.pubkey) is not None:
+        await notice(app, room_id, "That's an ID on this server: message its owner directly in Matrix instead.")
+        return
+    try:
+        dm_room = await open_dm(app, actor, reference.pubkey)
+    except HomeserverError:
+        await notice(app, room_id, "Couldn't create the DM room just now; try again in a minute.")
+        return
+    label = await _account_label(app, reference.pubkey, reference.nip05)
+    await notice(
+        app, room_id, f"DMs with {label}, as {_handle(app, actor)}: {dm_room}",
+        html_message=f"DMs with <strong>{html.escape(label)}</strong>, as {html.escape(_handle(app, actor))}: "
+        f"{room_link_html(dm_room, 'open the room')}",
+    )
+
+
+# -- admin: bans ----------------------------------------------------------------
+
+_DURATIONS = {"1h": 3600, "6h": 21600, "1d": 86400, "7d": 604800, "30d": 2592000}
+
+
+async def _handle_ban(app: FastAPI, room_id: str, sender: str, argument: str, *, ban: bool) -> None:
+    import ipaddress
+    from datetime import timedelta
+
+    if not await is_admin(app.state.config, app.state.homeserver, sender):
+        await notice(app, room_id, "Only bridge admins can do that.")
+        return
+    guard = getattr(app.state, "spam", None)
+    words = argument.split()
+    if guard is None or not words:
+        await notice(app, room_id, "Give an npub, a handle or an IP address.")
+        return
+    target = words[0]
+    try:
+        ipaddress.ip_address(target)
+        kind, key, label = "ip", target, target
+    except ValueError:
+        reference = await _resolve(app, room_id, target)
+        if reference is None:
+            return
+        kind, key, label = "pubkey", reference.pubkey, await _account_label(app, reference.pubkey, reference.nip05)
+    if not ban:
+        await guard.unban(kind, key)
+        await notice(app, room_id, f"Unbanned {label}.")
+        return
+    rest = words[1:]
+    duration = None
+    if rest and (rest[0] in _DURATIONS or rest[0] == "forever"):
+        duration = timedelta(seconds=_DURATIONS[rest[0]]) if rest[0] != "forever" else None
+        rest = rest[1:]
+    else:
+        duration = timedelta(days=7)
+    purge = bool(rest) and rest[0] == "purge"
+    if purge:
+        rest = rest[1:]
+    reason = " ".join(rest) or f"banned by {sender}"
+    await guard.ban(kind, key, duration, reason)
+    removed = await purge_pubkey(app, key) if purge and kind == "pubkey" else 0
+    until = "for good" if duration is None else f"for {words[1] if len(words) > 1 and words[1] in _DURATIONS else '7d'}"
+    await notice(app, room_id, f"Banned {label} {until}." + (f" Removed {removed} of their events." if purge else ""))
+
+
+async def purge_pubkey(app: FastAPI, pubkey: str) -> int:
+    """Redact everything an account has in bridge rooms (and so remove it
+    from the relay). Returns how many events went."""
+    repository = app.state.repository
+    rows = await repository.query_events({"authors": [pubkey]}, limit=10000, now=0,
+                                         dm_readers=frozenset({"*"}), followed_readers=frozenset())
+    removed = 0
+    for row in rows:
+        places = [(row.room_id, row.matrix_event_id)] if row.room_id and row.matrix_event_id else []
+        places += await repository.list_mirrored_copies(row.id)
+        for place_room, place_event in places:
+            try:
+                await app.state.homeserver.redact_event(place_room, place_event, as_user_id=bot_mxid(app.state.config), reason="Banned from the relay")
+            except HomeserverError:
+                logger.info("Could not redact %s", place_event, exc_info=True)
+        await repository.delete_event(row.id)
+        removed += 1
+    return removed
+
+
+async def _handle_bans(app: FastAPI, room_id: str, sender: str) -> None:
+    if not await is_admin(app.state.config, app.state.homeserver, sender):
+        await notice(app, room_id, "Only bridge admins can do that.")
+        return
+    guard = getattr(app.state, "spam", None)
+    bans = await guard.list_bans() if guard else []
+    if not bans:
+        await notice(app, room_id, "No bans.")
+        return
+    lines = ["Bans:"] + [f"- {b.kind} {b.key}: until {b.until or 'forever'} ({b.reason})" for b in bans]
+    await notice(app, room_id, "\n".join(lines))
+
+
 # -- status -------------------------------------------------------------------
 
 
@@ -500,4 +752,20 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_switch(app, room_id, sender, argument)
     elif keyword == "rename":
         await _handle_rename(app, room_id, sender, argument)
+    elif keyword == "follow":
+        await _handle_follow(app, room_id, sender, argument)
+    elif keyword == "unfollow":
+        await _handle_unfollow(app, room_id, sender, argument)
+    elif keyword == "following":
+        await _handle_following(app, room_id, sender)
+    elif keyword in ("block", "unblock"):
+        await _handle_block(app, room_id, sender, argument, blocked=keyword == "block")
+    elif keyword == "backfill":
+        await _handle_backfill(app, room_id, sender, argument)
+    elif keyword == "dm":
+        await _handle_dm(app, room_id, sender, argument)
+    elif keyword in ("ban", "unban"):
+        await _handle_ban(app, room_id, sender, argument, ban=keyword == "ban")
+    elif keyword == "bans":
+        await _handle_bans(app, room_id, sender)
     return True

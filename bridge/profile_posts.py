@@ -28,14 +28,27 @@ from bridge import ids
 from bridge.commands import message_addresses_bot
 from bridge.media import MediaProblem, publish_matrix_media
 from bridge.messages import notice
-from bridge.notes import DELETION_KIND, MEDIA_MSGTYPES, NOTE_KIND, POSTABLE_MSGTYPES, deletion_v1, note_v1, pills
+from bridge.inbound import index_tags
+from bridge.interactions import acting_id, extra_relays_for, find_quote, notify_local_author, reply_context
+from bridge.notes import (
+    CONVERTERS,
+    DELETION_KIND,
+    MEDIA_MSGTYPES,
+    POSTABLE_MSGTYPES,
+    deletion_v1,
+    event_kind_of,
+    message_body,
+    pills,
+)
+from bridge.remote import pubkey_of_ghost
 from bridge.publishing import NotifyTarget, publish_in_background
 from bridge.repository import EventRow, NostrId
 from bridge.users import is_bridge_user, is_local_user
 
 logger = logging.getLogger(__name__)
 
-_INDEXED_TAG_LETTERS = frozenset("epaqkd")
+# What a reply in Matrix can answer on Nostr.
+REPLYABLE_KINDS = frozenset({1, 20, 21, 22, 1111, 30023})
 
 
 def _relates_to(content: dict[str, Any]) -> dict[str, Any]:
@@ -61,33 +74,28 @@ def _reply_targets(content: dict[str, Any]) -> list[str]:
 
 
 async def _replied_post(app: FastAPI, content: dict[str, Any]) -> EventRow | None:
-    """The note (in the index) this message answers, if any."""
+    """The Nostr post (in the index) this message answers, if any."""
     repository = app.state.repository
     for target in _reply_targets(content):
         row = await repository.get_event_by_matrix_event(target)
-        if row is not None and row.kind == NOTE_KIND:
+        if row is not None and row.kind in REPLYABLE_KINDS:
             return row
     return None
 
 
-def _reply_recipe(parent: EventRow) -> dict[str, str]:
-    source = json.loads(parent.source)
-    parent_reply = source.get("reply") if source.get("kind") == "note" else None
-    if parent_reply:
-        root, root_pubkey = parent_reply["root"], parent_reply["root_pubkey"]
-    else:
-        root, root_pubkey = parent.id, parent.pubkey
-    return {"root": root, "root_pubkey": root_pubkey, "parent": parent.id, "parent_pubkey": parent.pubkey}
-
-
 async def _mentions(app: FastAPI, content: dict[str, Any]) -> list[dict[str, str]]:
-    """The message's pills of local users who have a Nostr ID, with the
-    key each pointed at now: the user's active ID. (Ghosts of remote
-    accounts join this list once following exists.)"""
+    """The message's pills of Nostr accounts: local users with an ID (the
+    key their active ID has now) and ghosts of remote accounts."""
     config = app.state.config
     found: dict[str, str] = {}
     for user_id, _label in pills(content):
-        if user_id in found or not is_local_user(config, user_id):
+        if user_id in found:
+            continue
+        ghost_key = pubkey_of_ghost(app, user_id)
+        if ghost_key is not None:
+            found[user_id] = ghost_key
+            continue
+        if not is_local_user(config, user_id):
             continue
         active = await ids.active_id(app, user_id)
         if active is not None:
@@ -95,15 +103,10 @@ async def _mentions(app: FastAPI, content: dict[str, Any]) -> list[dict[str, str
     return [{"user_id": user, "pubkey": pubkey} for user, pubkey in found.items()]
 
 
-def _index_tags(tags: list[list[str]]) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        dict.fromkeys((tag[0], tag[1]) for tag in tags if len(tag) >= 2 and tag[0] in _INDEXED_TAG_LETTERS)
-    )
-
-
 async def _store_and_send(
     app: FastAPI, author: NostrId, *, kind: int, content: str, tags: list[list[str]], created_at: int,
     recipe: dict[str, Any], room_id: str, matrix_event_id: str, notify: NotifyTarget | None,
+    extra_relays: list[str] | None = None,
 ) -> EventRow | None:
     event = await app.state.signer.sign(author.pubkey, kind=kind, content=content, created_at=created_at, tags=tags)
     if event is None:
@@ -118,60 +121,67 @@ async def _store_and_send(
         source=json.dumps(recipe, ensure_ascii=False, separators=(",", ":")),
         room_id=room_id,
         matrix_event_id=matrix_event_id,
-        tags=_index_tags(tags),
+        tags=index_tags(tags),
     )
     await app.state.repository.put_event(row)
-    publish_in_background(app, event, notify=notify)
+    publish_in_background(app, event, notify=notify, extra_relays=extra_relays)
     return row
 
 
 async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool:
-    """Returns True if this was a message in a Profile Room (published or
-    deliberately not)."""
+    """Returns True if this message was a post or reply (published or
+    deliberately not): anything in a Profile Room, or a reply to a Nostr
+    post in any room."""
     if event.get("type") != "m.room.message":
         return False
     app = request.app
     config = app.state.config
     room_id = event.get("room_id", "")
-    profile_id = await app.state.repository.get_id_for_profile_room(room_id)
-    if profile_id is None:
-        return False
     sender = event.get("sender", "")
     content = event.get("content") or {}
+    repository = app.state.repository
+    profile_id = await repository.get_id_for_profile_room(room_id)
     if is_bridge_user(config, sender) or not is_local_user(config, sender):
-        return True
+        return profile_id is not None
     if _is_edit(content) or message_addresses_bot(content, config):
-        return True
+        return profile_id is not None
     if content.get("msgtype") not in POSTABLE_MSGTYPES:
-        return True
+        return profile_id is not None
 
     parent = await _replied_post(app, content)
-    if sender == profile_id.matrix_user_id:
+    if profile_id is not None and sender == profile_id.matrix_user_id:
         author: NostrId | None = profile_id
     elif parent is not None:
-        # Someone else answering a post here does so as themselves.
-        author = await ids.active_id(app, sender)
+        # Answering a post anywhere else is done as the replier's own ID.
+        author = await acting_id(app, sender, room_id)
     else:
-        author = None  # conversation, not a post
+        return profile_id is not None  # conversation, not a post
     if author is None:
         return True
 
     event_id = event.get("event_id", "")
+    mentions = await _mentions(app, content)
     recipe: dict[str, Any] = {
         "kind": "note",
         "v": 1,
         "room_id": room_id,
         "event_id": event_id,
-        "mentions": await _mentions(app, content),
+        "mentions": mentions,
         "p": [],
-        "reply": _reply_recipe(parent) if parent is not None else None,
+        "reply": None,
         "relay_hint": config.nostr.relay_url,
         "media": None,
     }
     p_tags: list[str] = []
-    if recipe["reply"]:
-        p_tags += [recipe["reply"]["parent_pubkey"], recipe["reply"]["root_pubkey"]]
-    p_tags += [m["pubkey"] for m in recipe["mentions"]]
+    if parent is not None:
+        context = await reply_context(app, parent, author.pubkey)
+        p_tags += context["p"]
+        if "comment" in context:
+            recipe["kind"] = "comment"
+            recipe["comment"] = context["comment"]
+        else:
+            recipe["reply"] = context["reply"]
+    p_tags += [m["pubkey"] for m in mentions]
     recipe["p"] = [pubkey for pubkey in dict.fromkeys(p_tags) if pubkey != author.pubkey]
 
     if content.get("msgtype") in MEDIA_MSGTYPES:
@@ -193,17 +203,29 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
             "dim": f"{media.width}x{media.height}" if media.width and media.height else None,
         }
 
-    text, tags = note_v1(event, recipe)
+    if recipe["kind"] == "note":
+        quote = await find_quote(app, message_body(content))
+        if quote is not None:
+            recipe["v"] = 2
+            recipe["quote"] = quote
+            if quote["pubkey"] != author.pubkey and quote["pubkey"] not in recipe["p"]:
+                recipe["p"].append(quote["pubkey"])
+
+    converter = CONVERTERS[(recipe["kind"], recipe["v"])]
+    text, tags = converter(event, recipe)
     if not text:
         return True
     created_at = int(event.get("origin_server_ts", 0)) // 1000
     row = await _store_and_send(
-        app, author, kind=NOTE_KIND, content=text, tags=tags, created_at=created_at, recipe=recipe,
+        app, author, kind=event_kind_of(recipe), content=text, tags=tags, created_at=created_at, recipe=recipe,
         room_id=room_id, matrix_event_id=event_id,
         notify=NotifyTarget(room_id, event_id, "this post" if parent is None else "this reply"),
+        extra_relays=await extra_relays_for(app, recipe["p"]),
     )
     if row is not None:
         logger.info("Published %s from %s as %s@%s", row.id, event_id, author.name, config.bridge.domain)
+        if parent is not None:
+            await notify_local_author(app, author, parent, "replied to", link_event=event_id if parent.room_id == room_id else None)
     return True
 
 
@@ -218,12 +240,21 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
         return False
     app = request.app
     repository = app.state.repository
-    row = await repository.get_event_by_matrix_event(target)
+    row = await repository.get_event_by_matrix_event(target, include_copies=False)
     if row is None or row.kind == DELETION_KIND:
         return False
     author = await repository.get_id_by_pubkey(row.pubkey)
     await repository.delete_event(row.id)
+    hub = getattr(app.state, "relay_hub", None)
+    if hub is not None:
+        hub.cache.drop(row.id)
     if author is None:
+        # Someone else's event, removed in Matrix (a moderator, or the
+        # Profile Room's owner): it leaves the relay, and counts against
+        # its author in the spam rules.
+        guard = getattr(app.state, "spam", None)
+        if guard is not None and row.room_id and await repository.get_id_for_profile_room(row.room_id) is not None:
+            await guard.record_report(row.pubkey, 1)
         return True
     room_id = event.get("room_id", "")
     recipe = {

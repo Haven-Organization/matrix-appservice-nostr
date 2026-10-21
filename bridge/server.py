@@ -28,7 +28,12 @@ from bridge.key_vault import KeyVault
 from bridge.identity_events import sync_all_identities
 from bridge.media_routes import BLOB_PATH_RE
 from bridge.media_routes import router as media_router
+from bridge.feeds import Feeds
+from bridge.inbound import Seen
 from bridge.nip05_routes import router as nip05_router
+from bridge.relay_server import RelayHub
+from bridge.relay_server import router as relay_router
+from bridge.spam import SpamGuard
 from bridge.publishing import retry_loop
 from bridge.nip05_routes import self_check_soon
 from bridge.nostr.relay_pool import RelayPool
@@ -107,6 +112,36 @@ async def _housekeeping_loop(app: FastAPI) -> None:
         except Exception:
             logger.exception("Housekeeping failed")
         await asyncio.sleep(_HOUSEKEEPING_INTERVAL)
+
+
+async def _spam_tick_loop(app: FastAPI) -> None:
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await app.state.spam.tick()
+        except Exception:
+            logger.exception("Spam housekeeping failed")
+
+
+async def _shields_changed(app: FastAPI, up: bool, count: int) -> None:
+    """Tell bridge admins when the relay tightens up against a wave of new
+    accounts, and when it relaxes again."""
+    from bridge.notifications import ensure_notifications_room
+    from bridge.messages import notice
+
+    config = app.state.config
+    policy = config.spam.wave_policy
+    message = (
+        f"🛡️ Shields up: {count} new accounts in a few minutes; strangers now need "
+        + ("proof of work." if policy == "pow" else "to be in the web of trust.")
+        if up
+        else "🛡️ Shields down: the wave has passed, and the relay is back to its usual rules."
+    )
+    logger.warning(message)
+    for admin in config.bridge.admins:
+        room_id = await ensure_notifications_room(app, admin)
+        if room_id:
+            await notice(app, room_id, message)
 
 
 async def _ping_soon(homeserver: HomeserverClient, appservice_id: str) -> None:
@@ -220,6 +255,16 @@ def create_app(
         app.state.nip05_self_check = None
         app.state.background_tasks = set()
         app.state.identity_locks = {}
+        app.state.remote_locks = {}
+        app.state.ingest_inflight = {}
+        app.state.seen = Seen()
+        app.state.web_of_trust = set()
+        app.state.emoji_cache = {}
+        app.state.relay_hub = RelayHub(app)
+        app.state.feeds = Feeds(app)
+        app.state.spam = SpamGuard(
+            config.spam, app.state.repository, on_shields_change=lambda up, count: _shields_changed(app, up, count)
+        )
         app.state.homeserver = homeserver or HomeserverClient(
             config.homeserver.base_url, as_token=config.appservice.as_token
         )
@@ -235,6 +280,8 @@ def create_app(
                 run_in_background(app, sync_all_identities(app), name="startup identity sync")
                 tasks.append(asyncio.create_task(retry_loop(app), name="publish retries"))
                 tasks.append(asyncio.create_task(_housekeeping_loop(app), name="housekeeping"))
+                tasks.append(asyncio.create_task(_spam_tick_loop(app), name="spam tick"))
+                app.state.feeds.start()
             logger.info(
                 "Bridge identity: _@%s (%s)", config.bridge.domain, app.state.bot_identity.pubkey
             )
@@ -246,6 +293,7 @@ def create_app(
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            await app.state.feeds.stop()
             await cancel_all(app)
             await app.state.relay_pool.close()
             await app.state.fetcher.aclose()
@@ -258,6 +306,7 @@ def create_app(
     app.add_exception_handler(HTTPException, _matrix_error_handler)
     app.include_router(nip05_router)
     app.include_router(appservice_router)
+    app.include_router(relay_router)
     # Last: its "/{blob}" path would otherwise shadow single-segment routes.
     app.include_router(media_router)
     return app

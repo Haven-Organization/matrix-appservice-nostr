@@ -63,6 +63,11 @@ class Signer:
             return None
         return self._vault.decrypt(nostr_id.secret_key, id_key_purpose(pubkey))
 
+    async def secret_key(self, pubkey: str) -> bytes | None:
+        """The decrypted secret key of a local ID (for opening DMs), or
+        ``None`` if the bridge doesn't hold it."""
+        return await self._secret_for(pubkey)
+
     async def can_sign(self, pubkey: str) -> bool:
         return await self._secret_for(pubkey) is not None
 

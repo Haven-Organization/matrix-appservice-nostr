@@ -31,7 +31,9 @@ from fastapi.responses import JSONResponse
 
 from bridge.commands import maybe_handle_command
 from bridge.confirm import maybe_handle_confirmation
-from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_profile_state
+from bridge.dms import maybe_send_dm
+from bridge.interactions import maybe_handle_reaction
+from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave, maybe_handle_profile_state
 from bridge.messages import notice
 from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
 from bridge.users import bot_mxid, is_local_user
@@ -109,13 +111,17 @@ _HANDLERS = (
     maybe_accept_invite,
     maybe_handle_knock,
     maybe_handle_join,
+    maybe_handle_leave,
     maybe_handle_redaction,
     maybe_handle_profile_state,
     # Before commands: a bare "confirm" is recognized by what it replies
     # to, not by a prefix or a tag.
     maybe_handle_confirmation,
     maybe_handle_command,
-    # Last: anything else in a Profile Room may be a post.
+    maybe_handle_reaction,
+    maybe_send_dm,
+    # Last: anything else in a Profile Room may be a post, and a reply to a
+    # Nostr post anywhere is a reply.
     maybe_publish_message,
 )
 

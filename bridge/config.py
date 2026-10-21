@@ -67,6 +67,29 @@ class BridgeSection:
     # (on every event the ghost sends), "both", or "off". Same setting as
     # the sibling bridges. Takes effect once ghosts exist (following).
     msc4503_external_handle: str = "off"
+    # Join rule of a Remote User Room: "knock" (default: anyone may ask, and
+    # is let straight in), "invite" or "public".
+    ghost_room_join_rule: str = "knock"
+    # Remote User Rooms readable without joining (history_visibility:
+    # world_readable). Off by default.
+    world_readable_remote_rooms: bool = False
+    # Let in knocks from users on other homeservers too. Off by default.
+    accept_federated_knocks: bool = False
+    # MSC4501 (same settings and defaults as the sibling bridges).
+    set_msc4501_relates_to: bool = True
+    use_msc4501_content_inline: bool = True
+    use_msc4501_post_event_type: bool = False
+    set_msc4501_profile_room: bool = False
+    msc4144_per_message_profiles: bool = True
+    # Whether a quoted post that isn't in Matrix is imported: "known" (only
+    # if its author already has a room here), "always" or "never".
+    quote_import_policy: str = "known"
+    # Create DM rooms as Matrix direct messages (is_direct). Off by
+    # default; only turn on where DMs aren't end-to-end encrypted by default.
+    dm_rooms_as_direct: bool = False
+    # Addresses of reverse proxies whose X-Forwarded-For is trusted for the
+    # relay's per-IP limits and bans.
+    trusted_proxies: list[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
     # Join rule of a Profile Room: "knock" (only its owner's knock is let
     # in), "invite" or "public".
     local_profile_room_join_rule: str = "knock"
@@ -163,6 +186,15 @@ class NostrSection:
     discovery_relays: list[str] = field(default_factory=lambda: list(DEFAULT_DISCOVERY_RELAYS))
     # Relays read for accounts that publish no relay list.
     fallback_relays: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_RELAYS))
+    # How many of an account's latest posts are mirrored when it's followed.
+    backfill_on_follow: int = 20
+    # Let local IDs' own Nostr apps read their followed accounts' posts
+    # through the bridge's relay (after NIP-42 auth). Off by default: it
+    # costs homeserver load.
+    serve_followed_to_local_clients: bool = False
+    # Largest REQ result and most open subscriptions per relay connection.
+    relay_max_limit: int = 500
+    relay_max_subscriptions: int = 20
     # Web page a Nostr profile or event can be opened on, followed by its
     # NIP-19 identifier (npub1..., nevent1...).
     web_viewer_url: str = "https://njump.me/"
@@ -198,6 +230,8 @@ class BridgeConfig:
     storage: StorageSection
     nostr: NostrSection
     logging: LoggingSection
+    # The relay's spam rules (bridge.spam.SpamConfig); see CONFIG.md.
+    spam: Any = None
 
 
 def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
@@ -214,6 +248,13 @@ def _section(raw: dict[str, Any], name: str, *, required: bool = False) -> dict[
     value = raw[name] or {}
     if not isinstance(value, dict):
         raise ConfigError(f"{name} must be a mapping")
+    return value
+
+
+def _choice(section: dict[str, Any], key: str, choices: tuple[str, ...], default: str) -> str:
+    value = str(section.get(key, default))
+    if value not in choices:
+        raise ConfigError(f"bridge.{key} must be one of {', '.join(choices)}; got {value!r}")
     return value
 
 
@@ -303,6 +344,17 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         notifications_room_avatar_mxc=bridge_raw.get("notifications_room_avatar_mxc") or None,
         local_profile_room_join_rule=local_profile_room_join_rule,
         msc4503_external_handle=msc4503_external_handle,
+        ghost_room_join_rule=_choice(bridge_raw, "ghost_room_join_rule", ("public", "invite", "knock"), "knock"),
+        world_readable_remote_rooms=bool(bridge_raw.get("world_readable_remote_rooms", False)),
+        accept_federated_knocks=bool(bridge_raw.get("accept_federated_knocks", False)),
+        set_msc4501_relates_to=bool(bridge_raw.get("set_msc4501_relates_to", True)),
+        use_msc4501_content_inline=bool(bridge_raw.get("use_msc4501_content_inline", True)),
+        use_msc4501_post_event_type=bool(bridge_raw.get("use_msc4501_post_event_type", False)),
+        set_msc4501_profile_room=bool(bridge_raw.get("set_msc4501_profile_room", False)),
+        msc4144_per_message_profiles=bool(bridge_raw.get("msc4144_per_message_profiles", True)),
+        quote_import_policy=_choice(bridge_raw, "quote_import_policy", ("always", "known", "never"), "known"),
+        dm_rooms_as_direct=bool(bridge_raw.get("dm_rooms_as_direct", False)),
+        trusted_proxies=_string_list(bridge_raw, "trusted_proxies", "bridge") or ["127.0.0.1", "::1"],
         max_ids_per_user=int(bridge_raw.get("max_ids_per_user", 5)),
         id_min_length=id_min_length,
         id_max_length=id_max_length,
@@ -372,13 +424,24 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         discovery_relays=_relay_list(nostr_raw, "discovery_relays", DEFAULT_DISCOVERY_RELAYS),
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
         web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://njump.me/").rstrip("/") + "/",
+        backfill_on_follow=int(nostr_raw.get("backfill_on_follow", 20)),
+        serve_followed_to_local_clients=bool(nostr_raw.get("serve_followed_to_local_clients", False)),
+        relay_max_limit=int(nostr_raw.get("relay_max_limit", 500)),
+        relay_max_subscriptions=int(nostr_raw.get("relay_max_subscriptions", 20)),
         max_media_mb=int(nostr_raw.get("max_media_mb", 50)),
         refused_relay_retry_hours=int(nostr_raw.get("refused_relay_retry_hours", 24)),
         allow_private_addresses=bool(nostr_raw.get("allow_private_addresses", False)),
     )
 
     logging_raw = _section(raw, "logging")
+    from bridge.spam import SpamConfig
+
+    try:
+        spam_section = SpamConfig.from_dict(_section(raw, "spam"))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     return BridgeConfig(
+        spam=spam_section,
         bridge=bridge_section,
         homeserver=homeserver_section,
         appservice=appservice_section,

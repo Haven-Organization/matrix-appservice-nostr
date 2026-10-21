@@ -145,20 +145,42 @@ async def _attempt(app: FastAPI, event: Event, relays: list[str], attempts: int,
         )
 
 
-async def publish(app: FastAPI, event: Event, *, notify: NotifyTarget | None = None, relays: list[str] | None = None) -> None:
-    """Send ``event`` (already in the index) to the publish relays now.
-    Never raises."""
+async def publish(
+    app: FastAPI,
+    event: Event,
+    *,
+    notify: NotifyTarget | None = None,
+    relays: list[str] | None = None,
+    extra_relays: list[str] | None = None,
+) -> None:
+    """Send ``event`` (already in the index) to the publish relays (or
+    ``relays``), plus ``extra_relays`` (the inboxes of whoever it's aimed
+    at), now. Never raises."""
     try:
-        targets = await _relays_to_try(app, event.pubkey, relays or list(app.state.config.nostr.publish_relays))
+        wanted = [*(relays or app.state.config.nostr.publish_relays), *(extra_relays or [])]
+        targets = await _relays_to_try(app, event.pubkey, wanted)
         await _attempt(app, event, targets, 1, notify)
     except Exception:
         logger.exception("Publishing %s failed", event.id)
 
 
 def publish_in_background(
-    app: FastAPI, event: Event, *, notify: NotifyTarget | None = None, relays: list[str] | None = None
+    app: FastAPI,
+    event: Event,
+    *,
+    notify: NotifyTarget | None = None,
+    relays: list[str] | None = None,
+    extra_relays: list[str] | None = None,
+    scope: str = "public",
 ) -> None:
-    run_in_background(app, publish(app, event, notify=notify, relays=relays), name=f"publish {event.id[:8]}")
+    """Hand the event to live subscribers of the bridge's own relay, and
+    send it out to other relays in the background."""
+    hub = getattr(app.state, "relay_hub", None)
+    if hub is not None:
+        hub.broadcast(event.to_dict(), scope)
+    run_in_background(
+        app, publish(app, event, notify=notify, relays=relays, extra_relays=extra_relays), name=f"publish {event.id[:8]}"
+    )
 
 
 async def retry_due(app: FastAPI) -> int:

@@ -151,6 +151,16 @@ class HomeserverClient:
         """``{"displayname": ..., "avatar_url": "mxc://..."}`` (keys may be absent)."""
         return await self._request("GET", f"/_matrix/client/v3/profile/{quote(user_id, safe='@:')}")
 
+    async def set_profile_field(self, user_id: str, key: str, value: Any) -> None:
+        """Set a custom profile field (MSC4133, extensible profiles). Raises
+        ``HomeserverError`` on a homeserver without it."""
+        await self._request(
+            "PUT",
+            f"/_matrix/client/v3/profile/{quote(user_id, safe='@:')}/{quote(key, safe='')}",
+            json_body={key: value},
+            as_user_id=user_id,
+        )
+
     # -- rooms ---------------------------------------------------------------
 
     async def create_room(

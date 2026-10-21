@@ -42,7 +42,18 @@ async def maybe_handle_knock(request: Request, event: dict) -> bool:
         return False
     room_id = event.get("room_id", "")
     knocker = event.get("state_key", "")
-    nostr_id = await request.app.state.repository.get_id_for_profile_room(room_id)
+    app = request.app
+    remote = await app.state.repository.get_remote_account_for_room(room_id)
+    if remote is not None:
+        # Anyone from this server knocking on an account's room is let in.
+        config = app.state.config
+        if is_local_user(config, knocker) or config.bridge.accept_federated_knocks:
+            try:
+                await app.state.homeserver.invite_user(room_id, knocker, as_user_id=remote.ghost_user_id)
+            except HomeserverError:
+                logger.warning("Could not let %s into %s", knocker, room_id, exc_info=True)
+        return True
+    nostr_id = await app.state.repository.get_id_for_profile_room(room_id)
     if nostr_id is None:
         return False
     if knocker == nostr_id.matrix_user_id:
@@ -89,7 +100,33 @@ async def maybe_handle_join(request: Request, event: dict) -> bool:
     if (await repository.get_user_rooms(user)).notifications_room_id == room_id:
         await add_room_to_space(app, user, room_id, order=NOTIFICATIONS_ROOM_SPACE_ORDER)
         return True
+    if await repository.get_remote_account_for_room(room_id) is not None:
+        await add_room_to_space(app, user, room_id)
+        return True
     return False
+
+
+async def maybe_handle_leave(request: Request, event: dict) -> bool:
+    """Returns True if a local user left (or was removed from) a Remote User
+    Room: that unfollows the account from each of their IDs following it,
+    since the room is where its posts reach them."""
+    if _membership(event) not in ("leave", "ban"):
+        return False
+    app = request.app
+    user = event.get("state_key", "")
+    room_id = event.get("room_id", "")
+    if not is_local_user(app.state.config, user):
+        return False
+    if await app.state.repository.get_remote_account_for_room(room_id) is None:
+        return False
+    from bridge.follows import unfollow_from_room
+    from bridge.spaces import remove_room_from_space
+
+    done = await unfollow_from_room(app, user, room_id)
+    await remove_room_from_space(app, user, room_id)
+    if done:
+        logger.info("%s left %s: unfollowed as %s", user, room_id, ", ".join(done))
+    return True
 
 
 async def maybe_handle_profile_state(request: Request, event: dict) -> bool:

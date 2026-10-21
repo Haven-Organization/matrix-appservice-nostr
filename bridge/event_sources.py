@@ -52,7 +52,7 @@ from fastapi import FastAPI
 
 from bridge.homeserver_client import HomeserverError
 from bridge.nostr.event import compute_id
-from bridge.notes import CONVERTERS, EVENT_KINDS, is_redacted, matrix_event_id_of
+from bridge.notes import CONVERTERS, event_kind_of, is_redacted, matrix_event_id_of
 from bridge.repository import EventRow
 from bridge.users import bot_mxid
 
@@ -120,6 +120,32 @@ async def profile_content_from_source(app: FastAPI, source: dict[str, Any]) -> s
     )
 
 
+# -- embedded: someone else's event, carried in its Matrix event ----------------
+
+EMBED_FIELD = "software.haven.nostr.event"
+
+
+def embedded_source() -> dict[str, Any]:
+    return {"kind": "embedded"}
+
+
+async def _rebuild_embedded(app: FastAPI, row: EventRow) -> "Rebuilt":
+    if not row.room_id or not row.matrix_event_id:
+        return Rebuilt("mismatch")
+    try:
+        matrix_event = await _fetch(app, row.room_id, row.matrix_event_id)
+    except HomeserverError:
+        return Rebuilt("unavailable")
+    if matrix_event is None:
+        return Rebuilt("gone")
+    raw = (matrix_event.get("content") or {}).get(EMBED_FIELD)
+    if not isinstance(raw, dict):
+        return Rebuilt("gone")  # redacted, or the field was stripped
+    if raw.get("id") != row.id:
+        return Rebuilt("mismatch")
+    return Rebuilt("ok", raw)
+
+
 # -- rebuilding ----------------------------------------------------------------
 
 
@@ -135,6 +161,8 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
             tags = []
             content = await profile_content_from_source(app, source)
             event_kind = PROFILE_KIND
+        elif kind == "embedded":
+            return await _rebuild_embedded(app, row)
         elif (kind, source.get("v")) in CONVERTERS:
             matrix_event = await _fetch(app, source["room_id"], matrix_event_id_of(source))
             # A redaction with no reason has empty content in older room
@@ -143,7 +171,7 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
                 return Rebuilt("gone")
             assert matrix_event is not None
             content, tags = CONVERTERS[(kind, source["v"])](matrix_event, source)
-            event_kind = EVENT_KINDS[kind]
+            event_kind = event_kind_of(source)
         else:
             logger.error("Event %s has unknown source kind %r", row.id, kind)
             return Rebuilt("mismatch")

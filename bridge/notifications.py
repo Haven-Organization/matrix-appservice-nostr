@@ -62,3 +62,36 @@ async def ensure_notifications_room(app: FastAPI, matrix_user_id: str) -> str | 
     )
     logger.info("Created notifications room %s for %s", room_id, matrix_user_id)
     return room_id
+
+
+async def notify(
+    app: FastAPI,
+    nostr_id,
+    plain: str,
+    rich: str,
+    *,
+    extra: dict | None = None,
+    media: dict | None = None,
+) -> str | None:
+    """Tell the owner of ``nostr_id`` something in their notifications room.
+    Once they have more than one ID, the message names the ID it is for.
+    ``media`` (a Matrix media message's url/info/msgtype) makes the
+    notification that image or video, with the text as its caption.
+    Returns the Matrix event ID."""
+    room_id = await ensure_notifications_room(app, nostr_id.matrix_user_id)
+    if room_id is None:
+        return None
+    owned = await app.state.repository.list_ids_for_user(nostr_id.matrix_user_id)
+    if len(owned) > 1:
+        plain = f"{nostr_id.name}: {plain}"
+        rich = f"<strong>{html.escape(nostr_id.name)}</strong>: {rich}"
+    content: dict = {"msgtype": "m.text", "body": plain, "format": "org.matrix.custom.html", "formatted_body": rich}
+    if media:
+        content = {**media, "body": plain, "format": "org.matrix.custom.html", "formatted_body": rich}
+    if extra:
+        content.update(extra)
+    try:
+        return await app.state.homeserver.send_message_event(room_id, content, as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        logger.warning("Could not notify %s", nostr_id.matrix_user_id, exc_info=True)
+        return None

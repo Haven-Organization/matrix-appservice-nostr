@@ -161,6 +161,105 @@ def note_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[li
     return text, tags
 
 
+# -- kind 1, version 2: v1 plus a quoted post ------------------------------------
+# Recipe: v1's, plus "quote": {"id", "pubkey", "link"}. The link to the quoted
+# post (as the user pasted it) becomes a nostr:nevent reference, and a q tag
+# (NIP-18) names the post.
+
+
+def nevent_reference(event_id: str, pubkey: str, hint: str) -> str:
+    return "nostr:" + nip19.nevent_encode(nip19.EventPointer(event_id, (hint,) if hint else (), pubkey))
+
+
+def note_v2(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    text, tags = note_v1(event, recipe)
+    quote = recipe.get("quote")
+    if not quote:
+        return text, tags
+    hint = recipe.get("relay_hint") or ""
+    reference = nevent_reference(quote["id"], quote["pubkey"], hint)
+    link = quote.get("link") or ""
+    if link and link in text:
+        text = text.replace(link, reference, 1)
+    else:
+        text = f"{text}\n{reference}" if text else reference
+    tags = [*tags, ["q", quote["id"], hint, quote["pubkey"]]]
+    return text, tags
+
+
+# -- kind 1111 (NIP-22 comment), version 1 -----------------------------------------
+# For replies to anything that isn't a kind 1 note, and to comments (which
+# NIP-22 says are always answered with comments). Recipe: v1's note recipe,
+# with "comment": {"root", "root_kind", "root_pubkey", "parent", "parent_kind",
+# "parent_pubkey"} in place of "reply".
+
+
+def comment_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    text, base_tags = note_v1(event, {**recipe, "reply": None, "p": []})
+    c = recipe["comment"]
+    hint = recipe.get("relay_hint") or ""
+    tags: list[list[str]] = [
+        ["E", c["root"], hint, c["root_pubkey"]],
+        ["K", str(c["root_kind"])],
+        ["P", c["root_pubkey"]],
+        ["e", c["parent"], hint, c["parent_pubkey"]],
+        ["k", str(c["parent_kind"])],
+        ["p", c["parent_pubkey"]],
+    ]
+    for pubkey in recipe.get("p") or []:
+        if pubkey != c["parent_pubkey"]:
+            tags.append(["p", pubkey])
+    tags += base_tags  # content-warning, imeta
+    return text, tags
+
+
+# -- kind 7 (NIP-25 reaction), version 1 ---------------------------------------------
+# Recipe: {"kind": "reaction", "v": 1, "room_id", "event_id" (the m.reaction),
+# "target", "target_pubkey", "target_kind", "relay_hint", "emoji": {"shortcode",
+# "url"} | None}. The reaction's key comes from the Matrix event.
+
+LIKE_KEYS = ("👍",)
+
+
+def reaction_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    key = ((event.get("content") or {}).get("m.relates_to") or {}).get("key") or ""
+    emoji = recipe.get("emoji")
+    if emoji:
+        content = f":{emoji['shortcode']}:"
+    elif key.startswith(LIKE_KEYS):
+        content = "+"
+    else:
+        content = key
+    hint = recipe.get("relay_hint") or ""
+    tags = [
+        ["e", recipe["target"], hint, recipe["target_pubkey"]],
+        ["p", recipe["target_pubkey"]],
+        ["k", str(recipe["target_kind"])],
+    ]
+    if emoji:
+        tags.append(["emoji", emoji["shortcode"], emoji["url"]])
+    return content, tags
+
+
+# -- kinds 6/16 (NIP-18 repost), version 1 -------------------------------------------
+# Recipe: {"kind": "repost", "v": 1, "room_id", "event_id", "target",
+# "target_pubkey", "target_kind", "relay_hint"}. Content is left empty (NIP-18
+# allows it): a copy of the reposted event couldn't be rebuilt once that
+# event was deleted.
+
+
+def repost_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    hint = recipe.get("relay_hint") or ""
+    tags = [["e", recipe["target"], hint], ["p", recipe["target_pubkey"]]]
+    if recipe["target_kind"] != 1:
+        tags.append(["k", str(recipe["target_kind"])])
+    return "", tags
+
+
+def repost_kind(recipe: dict[str, Any]) -> int:
+    return 6 if recipe["target_kind"] == 1 else 16
+
+
 # -- kind 5, version 1 -------------------------------------------------------
 
 
@@ -175,8 +274,21 @@ def deletion_v1(redaction: dict[str, Any], recipe: dict[str, Any]) -> tuple[str,
     return content, tags
 
 
-CONVERTERS = {("note", 1): note_v1, ("deletion", 1): deletion_v1}
-EVENT_KINDS = {"note": NOTE_KIND, "deletion": DELETION_KIND}
+CONVERTERS = {
+    ("note", 1): note_v1,
+    ("note", 2): note_v2,
+    ("comment", 1): comment_v1,
+    ("reaction", 1): reaction_v1,
+    ("repost", 1): repost_v1,
+    ("deletion", 1): deletion_v1,
+}
+EVENT_KINDS = {"note": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND}
+
+
+def event_kind_of(recipe: dict[str, Any]) -> int:
+    if recipe.get("kind") == "repost":
+        return repost_kind(recipe)
+    return EVENT_KINDS[recipe["kind"]]
 
 
 def matrix_event_id_of(recipe: dict[str, Any]) -> str:

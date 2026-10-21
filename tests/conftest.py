@@ -60,6 +60,7 @@ class FakeHomeserver(HomeserverClient):
         self.joined: list[tuple[str, str]] = []
         self.invites: list[tuple[str, str]] = []
         self.created: list[dict[str, Any]] = []
+        self.redactions: list[tuple[str, str, str]] = []
         # Overrides for get_room_state: (room, type) -> content.
         self.room_state: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -152,6 +153,33 @@ class FakeHomeserver(HomeserverClient):
         data, content_type = self.media[mxc]
         return MediaDownload(content=data, content_type=content_type)
 
+    async def register_appservice_user(self, localpart):
+        user = f"@{localpart}:example.org"
+        self.profiles.setdefault(user, {})
+        return user
+
+    async def set_display_name(self, user_id, display_name):
+        self.profiles.setdefault(user_id, {})["displayname"] = display_name
+
+    async def set_avatar_url(self, user_id, mxc_uri):
+        self.profiles.setdefault(user_id, {})["avatar_url"] = mxc_uri
+
+    async def set_profile_field(self, user_id, key, value):
+        self.profiles.setdefault(user_id, {})[key] = value
+
+    async def redact_event(self, room_id, event_id, *, as_user_id, reason=None):
+        self.redactions.append((room_id, event_id, as_user_id))
+        event = self._room(room_id)["events"].get(event_id)
+        if event is not None:
+            event["content"] = {}
+            event.setdefault("unsigned", {})["redacted_because"] = {"sender": as_user_id}
+
+    async def leave_room(self, room_id, *, as_user_id):
+        self._room(room_id)["members"].discard(as_user_id)
+
+    def messages(self, room_id: str, event_type: str = "m.room.message") -> list[dict]:
+        return [e for e in self._room(room_id)["events"].values() if e["type"] == event_type]
+
     def state_of(self, room_id: str, event_type: str) -> dict | None:
         event = self._room(room_id)["state"].get((event_type, ""))
         return event["content"] if event else None
@@ -167,6 +195,9 @@ class FakeRelayPool:
         self.published: list[tuple[Event, list[str]]] = []
         # relay URL -> (accepted, message); relays not listed accept.
         self.answers: dict[str, tuple[bool, str]] = {}
+        # Events "on the network", found by query().
+        self.network: list[dict] = []
+        self.subscriptions: list[tuple[str, list[dict]]] = []
 
     async def publish(self, event: Event, relays: list[str], timeout: float | None = None) -> list[PublishResult]:
         self.published.append((event, list(relays)))
@@ -177,6 +208,22 @@ class FakeRelayPool:
 
     def connections(self) -> list:
         return []
+
+    async def query(self, urls, filters, *, timeout=8.0):
+        from bridge.relay_server import matches
+
+        found = {}
+        for event in self.network:
+            if any(matches(f, event) for f in filters):
+                found[event["id"]] = event
+        return list(found.values())
+
+    def subscribe(self, url, filters, on_event, **kwargs):
+        self.subscriptions.append((url, filters))
+        return f"sub{len(self.subscriptions)}"
+
+    async def unsubscribe(self, url, sub_id):
+        pass
 
     async def relay_info(self, url: str) -> dict:
         return {}

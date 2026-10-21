@@ -459,6 +459,44 @@ class RelayPool:
         self.connection(url).subscribe(subscription)
         return subscription.id
 
+    async def query(self, urls: list[str], filters: list[dict[str, Any]], *, timeout: float = 8.0) -> list[dict[str, Any]]:
+        """One-off fetch: ask every relay in ``urls`` and collect what they
+        send until each says EOSE (or closes, or ``timeout``). Events are
+        deduplicated by id; nothing is verified here."""
+        urls = list(dict.fromkeys(normalize_relay_url(url) for url in urls))
+        if not urls:
+            return []
+        found: dict[str, dict[str, Any]] = {}
+        finished: set[str] = set()
+        all_done = asyncio.Event()
+
+        def on_event(relay: str, sub_id: str, event: dict[str, Any]) -> None:
+            event_id = event.get("id")
+            if isinstance(event_id, str):
+                found.setdefault(event_id, event)
+
+        def on_done(relay: str, sub_id: str, *_: Any) -> None:
+            finished.add(relay)
+            if len(finished) >= len(urls):
+                all_done.set()
+
+        subs: list[tuple[str, str]] = []
+        for url in urls:
+            connection = self.connection(url)
+            if connection._unsafe:
+                on_done(url, "")
+                continue
+            sub_id = self.subscribe(url, filters, on_event, on_eose=on_done, on_closed=on_done)
+            subs.append((url, sub_id))
+        try:
+            await asyncio.wait_for(all_done.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            for url, sub_id in subs:
+                await self.unsubscribe(url, sub_id)
+        return list(found.values())
+
     async def unsubscribe(self, url: str, sub_id: str) -> None:
         connection = self._connections.get(normalize_relay_url(url))
         if connection is not None:

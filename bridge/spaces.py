@@ -82,3 +82,17 @@ async def add_room_to_space(app: FastAPI, matrix_user_id: str, child_room_id: st
         )
     except HomeserverError:
         logger.info("Could not set m.space.parent on %s", child_room_id, exc_info=True)
+
+
+async def remove_room_from_space(app: FastAPI, matrix_user_id: str, child_room_id: str) -> None:
+    """Take a room out of the user's space (an ``m.space.child`` with no
+    ``via`` means "not a child"). A no-op if they have no space."""
+    space_room_id = (await app.state.repository.get_user_rooms(matrix_user_id)).space_room_id
+    if space_room_id is None:
+        return
+    try:
+        await app.state.homeserver.send_state_event(
+            space_room_id, "m.space.child", {}, as_user_id=bot_mxid(app.state.config), state_key=child_room_id
+        )
+    except HomeserverError:
+        logger.info("Could not remove %s from space %s", child_room_id, space_room_id, exc_info=True)

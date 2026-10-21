@@ -78,7 +78,28 @@ class EventRow:
     room_id: str | None = None
     matrix_event_id: str | None = None
     expires_at: int | None = None
+    # Who may read it from the relay: "public", "followed" or "dm".
+    scope: str = "public"
     tags: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class RemoteAccount:
+    """A Nostr account someone here deals with: its ghost user and (once
+    needed) its Remote User Room, plus where it publishes and reads."""
+
+    pubkey: str
+    ghost_user_id: str
+    room_id: str | None = None
+    nip05: str | None = None
+    write_relays: tuple[str, ...] = ()
+    read_relays: tuple[str, ...] = ()
+    dm_relays: tuple[str, ...] = ()
+    relays_at: int = 0
+    profile_at: int = 0
+    avatar_url: str | None = None
+    avatar_mxc: str | None = None
+    checked_at: str | None = None
 
 
 @dataclass(frozen=True)
