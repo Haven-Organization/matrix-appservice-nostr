@@ -236,6 +236,21 @@ async def copy_attachment(app: FastAPI, attachment: Attachment, *, as_user_id: s
     return {"url": mxc, "info": info, "filename": name}
 
 
+def _long_form(app: FastAPI, raw: dict[str, Any]) -> dict[str, Any]:
+    """A long-form article (NIP-23) as a short post: its title and summary,
+    its cover image, and a link to read it, rather than pages of markdown."""
+    tags = {t[0]: t[1] for t in raw.get("tags") or [] if isinstance(t, list) and len(t) >= 2}
+    d = tags.get("d", "")
+    link = app.state.config.nostr.web_viewer_url + nip19.naddr_encode(nip19.Address(d, raw["pubkey"], int(raw["kind"])))
+    title = tags.get("title") or "Untitled article"
+    summary = tags.get("summary") or (raw.get("content") or "")[:280].strip()
+    text = f"📰 {title}\n{summary}\nRead: {link}" if summary else f"📰 {title}\nRead: {link}"
+    shadow_tags = [t for t in raw.get("tags") or [] if isinstance(t, list) and t and t[0] in ("content-warning", "emoji")]
+    if tags.get("image", "").startswith("https://"):
+        shadow_tags.append(["imeta", f"url {tags['image']}"])
+    return {**raw, "kind": 1, "content": text, "tags": shadow_tags}
+
+
 async def message_content(
     app: FastAPI,
     raw: dict[str, Any],
@@ -243,11 +258,15 @@ async def message_content(
     as_user_id: str,
     header_plain: str = "",
     header_html: str = "",
+    footer_plain: str = "",
+    footer_html: str = "",
 ) -> dict[str, Any]:
     """A complete Matrix message for a Nostr post: its first image or video
     as the message (when it can be copied), the text as body/caption, and
     any further attachments listed as links. ``header_*`` go above the text
-    ("🔁 reposted X's post:")."""
+    ("🔁 reposted X's post:"); ``footer_*`` below it (a quoted post)."""
+    if raw.get("kind") == 30023:
+        raw = _long_form(app, raw)
     attachments = attachments_of(raw)
     main = next((a for a in attachments if a.family in _MATRIX_MSGTYPE), None)
     copied = await copy_attachment(app, main, as_user_id=as_user_id) if main is not None else None
@@ -264,6 +283,9 @@ async def message_content(
     if header_plain:
         body = f"{header_plain}\n{body}" if body else header_plain
         formatted = f"{header_html}<br>{formatted}" if formatted else header_html
+    if footer_plain:
+        body = f"{body}\n\n{footer_plain}" if body.strip() else footer_plain
+        formatted = f"{formatted}<br><br>{footer_html}" if formatted else footer_html
     content: dict[str, Any] = {"msgtype": "m.text", "body": body or " ", "format": "org.matrix.custom.html", "formatted_body": formatted}
     if copied is not None and main is not None:
         content = {

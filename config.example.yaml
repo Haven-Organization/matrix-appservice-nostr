@@ -1,7 +1,7 @@
 # matrix-appservice-nostr configuration.
 #
-# Only the settings you need to start are here. Every setting is described
-# in CONFIG.md.
+# The settings you need to start are set here; the rest are commented out
+# with their defaults. Every setting is described in CONFIG.md.
 
 bridge:
   # The domain Nostr handles live under: an ID named "alice" is
@@ -20,12 +20,49 @@ bridge:
   admins: []
   #  - "@you:example.org"
 
+  # Also count Synapse server admins as bridge admins (Synapse only; needs
+  # homeserver.synapse_admin_token). Any other homeserver: leave it off.
+  # use_synapse_admin_api: false
+  # internal_base_url: http://127.0.0.1:8092
+  # Reverse proxies whose X-Forwarded-For is believed (relay rate limits, bans).
+  # trusted_proxies: ["127.0.0.1", "::1"]
+
+  # space_name: Nostr
+  # space_avatar_mxc:
+  # notifications_room_name: Nostr Notifications
+  # notifications_room_avatar_mxc:
+  # local_profile_room_join_rule: knock   # knock | invite | public
+  # ghost_room_join_rule: knock           # knock | invite | public
+  # world_readable_remote_rooms: false
+  # accept_federated_knocks: false
+  # dm_rooms_as_direct: false
+
+  # MSC4501 and related proposals (same settings as the sibling bridges).
+  # set_msc4501_relates_to: true
+  # use_msc4501_content_inline: true
+  # use_msc4501_post_event_type: false
+  # set_msc4501_profile_room: false
+  # msc4144_per_message_profiles: true
+  # msc4503_external_handle: "off"        # off | profile | events | both
+  # quote_import_policy: known            # known | always | never
+
+  # Nostr IDs.
+  # max_ids_per_user: 5
+  # id_min_length: 1
+  # id_max_length: 32
+  # reserved_ids: []
+  # id_allowed_users: []                  # MXID globs; empty: every local user
+  # renamed_id_grace_days: 30
+  # rename_cooldown_days: 7
+
 homeserver:
   # Client-Server API base URL, as reachable from the bridge process. Any
   # spec-compliant homeserver works.
   base_url: http://localhost:8008
   # The homeserver's server_name (the part after the colon in @user:server.name).
   server_name: example.org
+  # Only with bridge.use_synapse_admin_api on.
+  # synapse_admin_token:
 
 appservice:
   # Where `python -m bridge.appservice` writes the registration file, which
@@ -39,11 +76,23 @@ appservice:
   # Commands start with this: "[help". Must differ from any other bot in the
   # same rooms (matrix-appservice-activitypub uses ";", matrix-appservice-atproto "]").
   command_prefix: "["
+  # Decide these before going live: changing them later orphans users.
+  # user_prefix: nostr_
+  # bot_localpart: nostrbot
+  # bot_display_name:
+  # bot_avatar_mxc:
 
 storage:
   # "sqlite" (a single file under data_dir) or "postgresql" (see CONFIG.md).
   backend: sqlite
   data_dir: ./data
+  # postgres:
+  #   dsn:                  # a full connection string; wins over the fields below
+  #   host: localhost
+  #   port: 5432
+  #   database: matrix_appservice_nostr
+  #   user: matrix_appservice_nostr
+  #   password:
 
 nostr:
   # The bridge's own relay, as Nostr clients reach it. Its NIP-11 document
@@ -53,6 +102,52 @@ nostr:
   # scripts/setup.sh. Back it up with the database: without it, the keys
   # in the database are useless, and those identities are lost.
   key_encryption_secret: "key_secret_replace_me"
+
+  # publish_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net,
+  #                  wss://poster.place/relay, wss://relay.poster.place/]
+  # discovery_relays: [wss://purplepag.es, wss://relay.damus.io]
+  # fallback_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net]
+  # web_viewer_url: https://ditto.pub/
+  # backfill_on_follow: 20
+  # Let local IDs' own Nostr apps read followed accounts' posts through the
+  # relay. Costs homeserver load.
+  # serve_followed_to_local_clients: false
+  # relay_max_limit: 500
+  # relay_max_subscriptions: 20
+  # Accounts (npub or hex) whose mute lists and reports the relay honours.
+  # shared_block_lists: []
+  # Keep the reverse proxy's client_max_body_size at least this big.
+  # max_media_mb: 50
+  # refused_relay_retry_hours: 24
+  # Local development only.
+  # allow_private_addresses: false
+
+# The relay's spam rules. All optional; see CONFIG.md for each.
+# spam:
+#   inbound_policy: open          # open | pow | web_of_trust
+#   stranger_pow_bits: 20
+#   wave_policy: pow
+#   wave_threshold: 30
+#   wave_window_seconds: 300
+#   wave_cooldown_seconds: 3600
+#   strikes_to_ban: 10
+#   strike_window_seconds: 600
+#   ban_durations_seconds: [3600, 86400, 604800]
+#   escalation_memory_days: 30
+#   connections: {burst: 100, tokens: 1, per_seconds: 300}
+#   reqs: {burst: 100, tokens: 20, per_seconds: 60}
+#   events_per_ip: {burst: 10, tokens: 2, per_seconds: 180}
+#   events_per_pubkey: {burst: 10, tokens: 5, per_seconds: 3600}
+#   events_per_pubkey_target: {burst: 5, tokens: 2, per_seconds: 3600}
+#   trusted_multiplier: 5.0
+#   max_event_bytes: 65536
+#   future_skew_seconds: 900
+#   max_interaction_age_seconds: 259200
+#   max_p_tags: 20
+#   duplicate_window_seconds: 600
+#   duplicate_min_pubkeys: 3
+#   duplicate_min_length: 12
+#   spam_patterns: []
 
 logging:
   level: INFO

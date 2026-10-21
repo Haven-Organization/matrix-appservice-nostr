@@ -1,7 +1,8 @@
 # matrix-appservice-nostr: design plan
 
-Status: draft, before any code. Written to be read next to
-matrix-appservice-activitypub and matrix-appservice-atproto, whose room
+Status: built through step 9 of the [build order](#build-order) (parity);
+webxdc games (step 10) are still tabled as an optional last phase. Written
+to be read next to matrix-appservice-activitypub and matrix-appservice-atproto, whose room
 model, command structure, storage rules and MSC4501 behaviour this bridge
 copies. The command prefix is `[` (the siblings use `;` and `]`).
 
@@ -755,7 +756,7 @@ markdown, but it isn't standard, so it isn't rendered. The bridge:
   local ID for that key, and otherwise into a link,
 - turns `nostr:note`/`nevent`/`naddr` into a `matrix.to` link if that event
   is in Matrix, and otherwise into a link to `nostr.web_viewer_url`
-  (default `https://njump.me/`),
+  (default `https://ditto.pub/`),
 - shows hashtags as text,
 - shows NIP-30 `:shortcode:` custom emoji as inline images, copied into
   Matrix, reusing the AP bridge's custom emoji handling,
@@ -1070,7 +1071,7 @@ nostr:
     - wss://relay.primal.net
     - wss://poster.place/relay
     - wss://relay.poster.place/
-  web_viewer_url: https://njump.me/
+  web_viewer_url: https://ditto.pub/
   max_media_mb: 50
   backfill_on_follow: 20
   inbound_policy: open
@@ -1082,6 +1083,10 @@ webxdc:
 ```
 
 ## Build order
+
+**Progress:** steps 1 to 9 are done. Step 10, webxdc games, is tabled: an
+optional last phase, built only if it's still wanted and NIP-DC still looks
+stable. FEATURES.md describes what the bridge does now.
 
 ### Milestone 1: posting and media both ways
 
@@ -1102,11 +1107,11 @@ account, and sees its posts and media arrive in Matrix.
    media is served Blossom-style from Matrix, redaction becomes kind 5, the
    `rebuilt` source with versioned converters and golden tests, the relay
    index, `pending_publishes`, and failure notices.
-4. **Minimal relay**: NIP-01/11 server that serves local IDs' events from
+4. **Minimal relay** (done): NIP-01/11 server that serves local IDs' events from
    the index to anyone and accepts writes signed by local IDs. Spam layers 1
    and 2, and the `#t`/search handling. That's enough for NIP-05's `relays`
    hint to lead somewhere.
-5. **Following and inbound posting**: `[follow`/`[unfollow`/`[following` in
+5. **Following and inbound posting** (done): `[follow`/`[unfollow`/`[following` in
    all their input forms, ghosts with verified NIP-05, Remote User Rooms,
    relay-list discovery, subscriptions with cursors, mirroring kinds
    1/6/16/20/21/22 with media and embedded raw events, kind 5 →
@@ -1114,17 +1119,17 @@ account, and sees its posts and media arrive in Matrix.
 
 ### After milestone 1
 
-6. **Interactions**: inbound replies, reactions, reposts and quotes (relay
+6. **Interactions** (done): inbound replies, reactions, reposts and quotes (relay
    writes and `#p` subscriptions), spam layers 3–5 and the ban commands,
    notifications, outbound replies, reactions, reposts and quotes, zap
    receipts, relay NIP-42 and reading gift wraps, kind 1111 comments.
-7. **DMs**: NIP-17 both ways, NIP-04 receive-only.
-8. **Bring your own key**: widget import (`nsec`/`ncryptsec`), export, follow
+7. **DMs** (done): NIP-17 both ways, NIP-04 receive-only.
+8. **Bring your own key** (done): widget import (`nsec`/`ncryptsec`), export, follow
    and post import, then NIP-46 signers with `pending_publishes`.
-9. **Parity and extras**: MSC4501 settings, backfill, pins, blocks and mutes,
-   BUD-02 uploads, shared block lists, NIP-86, then long-form and polls if
-   wanted.
-10. **Webxdc (optional)**: the widget runtime and `webxdc.js` shim, sandbox
+9. **Parity and extras** (done): MSC4501 settings, backfill, pins, blocks
+   and mutes, BUD-02 uploads, shared block lists, NIP-86, long-form
+   articles (shown as title, summary and link) and polls (NIP-88, both ways).
+10. **Webxdc (optional; tabled)**: the widget runtime and `webxdc.js` shim, sandbox
     origin and CSP, Webxdc rooms, kind 4932/20932 in and out, `#i` indexing.
     Built last, and only if NIP-DC still looks stable by then.
 

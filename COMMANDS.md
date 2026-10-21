@@ -1,10 +1,12 @@
 # Commands
 
-A message is a command when it starts with the command prefix (`[` by default, `appservice.command_prefix`) followed straight away by a command, or when it tags the bot (`@nostrbot:example.org status`). Only the first line counts, and case doesn't matter. A `[` followed by anything else (`[citation needed]`) is an ordinary message.
+A message is a command when it starts with the command prefix (`[` by default, `appservice.command_prefix`) followed straight away by a command, or when it tags the bot (`@nostrbot:example.org status`). Only the first line counts, and case doesn't matter. A `[` followed by anything else (`[citation needed]`) is an ordinary message. A command sent in a Profile Room is never published.
 
 Only users of the bridge's own homeserver can use commands.
 
 The same sections are shown by `[help`. Keep this file and `_HELP_SECTIONS` in `bridge/commands.py` in sync.
+
+Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1…`, a 64-character hex key, a handle (`name@domain`, or a bare `domain` for `_@domain`), or a link to a profile on a Nostr website.
 
 ## Contents
 
@@ -14,6 +16,22 @@ The same sections are shown by `[help`. Keep this file and `_HELP_SECTIONS` in `
   - [`[profiles`](#profiles)
   - [`[switch <number or id>`](#switch-number-or-id)
   - [`[rename <number or id> <new id>`](#rename-number-or-id-new-id)
+- [Following](#following)
+  - [`[follow <account>`](#follow-account)
+  - [`[unfollow <account>`](#unfollow-account)
+  - [`[following`](#following-1)
+  - [`[backfill [N]`](#backfill-n)
+  - [`[block <account>`](#block-account)
+  - [`[unblock <account>`](#unblock-account)
+  - [`[dm <account>`](#dm-account)
+- [Keys](#keys)
+  - [`[widget`](#widget)
+  - [`[import key`](#import-key)
+  - [`[export key`](#export-key)
+- [Admin](#admin)
+  - [`[ban <npub, handle or IP> [duration] [purge] [reason]`](#ban-npub-handle-or-ip-duration-purge-reason)
+  - [`[unban <npub, handle or IP>`](#unban-npub-handle-or-ip)
+  - [`[bans`](#bans)
 - [General](#general)
   - [`[help [section]`](#help-section)
   - [`[status`](#status)
@@ -34,6 +52,8 @@ You're invited to the Profile Room, your space and your notifications room. Your
 If your Matrix username can't be a Nostr ID (Nostr IDs can only contain lowercase letters, digits, dashes, underscores and dots), or someone else already has that name, the bot says why and offers a close alternative (`q+test` → `q-test`, or `bob` → `bob-2`). Reply **confirm** to that message to take it, or choose any name with `[create profile <id>`.
 
 Run it again for an ID you already have, and you're re-invited to its Profile Room and your other bridge rooms. That's the way back in if you left one.
+
+To make an ID from a key you already have, use the [widget](#widget) instead.
 
 ### `[create profile <id>`
 
@@ -71,11 +91,83 @@ Gives an ID a new name and keeps its key, so its followers, posts and Profile Ro
 - The old handle keeps working for `bridge.renamed_id_grace_days` (30 by default). After that, it stays reserved for you: nobody else can take it, and you can take it back.
 - An ID can be renamed once every `bridge.rename_cooldown_days` (7 by default).
 
+## Following
+
+These act as your active ID, or as the room's ID inside one of your Profile Rooms or DM rooms.
+
+### `[follow <account>`
+
+Follows a Nostr account: `[follow npub1…`, `[follow alice@example.com`. The bot answers with a link to the account's room, where its posts arrive, and invites you to it. Its latest posts (`nostr.backfill_on_follow`, 20 by default) are brought in. The ID's follow list is published with the account in it.
+
+An ID on this server can't be followed this way: join its Profile Room instead.
+
+### `[unfollow <account>`
+
+Stops following the account, and publishes the ID's follow list without it. Leaving the account's room does the same, for each of your IDs that followed it.
+
+### `[following`
+
+Lists the accounts the ID follows, with links to their rooms.
+
+### `[backfill [N]`
+
+In a Nostr account's room: brings in its latest `N` posts (20 by default; at most 100, except for bridge admins). It runs in the background, and the bot says how many posts it found.
+
+### `[block <account>`
+
+Blocks an account for the ID: its replies, mentions, reactions, reposts and DMs stop reaching you. The account is added to the ID's public mute list (kind 10000).
+
+### `[unblock <account>`
+
+Unblocks it.
+
+### `[dm <account>`
+
+Opens a DM room with the account, as the ID, and invites you to it. Run it again to be re-invited. Messages there are sent as NIP-17 private DMs. An ID on this server can't be DMed this way: message its owner in Matrix.
+
+## Keys
+
+Keys never go through chat messages: a homeserver stores those unencrypted. Importing and exporting is done in the widget. A message containing an `nsec` is redacted by the bot as soon as it sees it.
+
+### `[widget`
+
+Adds the bridge's widget to the room. The bot needs permission to change the room's settings. The widget lists your IDs and does what the commands do, plus importing and exporting keys and connecting a remote signer.
+
+### `[import key`
+
+Explains how to bring a key you already have (`nsec`, `ncryptsec`, or a `bunker://` remote signer): in the widget, never in chat.
+
+### `[export key`
+
+Explains how to get an ID's key out: also only in the widget.
+
+## Admin
+
+Only bridge admins (`bridge.admins`, or Synapse server admins with `bridge.use_synapse_admin_api` on) can use these. Anyone else is told so.
+
+### `[ban <npub, handle or IP> [duration] [purge] [reason]`
+
+Bans an account (any `<account>` form) or an IP address from the relay: whatever it sends is refused.
+
+- `duration` is `1h`, `6h`, `1d`, `7d`, `30d` or `forever`. Without one, the ban lasts `7d`.
+- `purge` also redacts everything the account has in the bridge's rooms, which takes it off the relay too.
+- The rest of the line is the reason. Without one, it's "banned by" and your Matrix ID.
+
+`[ban npub1… 1d spam`, `[ban 203.0.113.7 forever`, `[ban bot@example.com 30d purge`.
+
+### `[unban <npub, handle or IP>`
+
+Lifts a ban, including an automatic one.
+
+### `[bans`
+
+Lists the current bans, manual and automatic, with when each ends and why.
+
 ## General
 
 ### `[help [section]`
 
-Lists every command, or only the commands in one section (`[help profile`).
+Lists every command, or only the commands in one section (`[help following`).
 
 ### `[status`
 
@@ -92,7 +184,7 @@ Bridge admins also see each outgoing relay connection and whether it is connecte
 When you do something on Nostr, the bridge uses:
 
 1. **Inside one of your Profile Rooms:** that room's ID, always.
-2. **Inside a DM room** (coming later): the ID that conversation belongs to.
+2. **Inside a DM room:** the ID that conversation belongs to.
 3. **Anywhere else:** your active ID.
 
 Undoing something (removing a reaction, say) always uses the ID that did it in the first place.

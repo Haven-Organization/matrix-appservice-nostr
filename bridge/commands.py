@@ -140,7 +140,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "Admin",
         (
-            ("ban <npub, handle or IP> [1h|1d|7d|forever] [purge] [reason]", "Ban from the relay; purge also removes their events here."),
+            ("ban <npub, handle or IP> [1h|6h|1d|7d|30d|forever] [purge] [reason]", "Ban from the relay; purge also removes their events here."),
             ("unban <npub, handle or IP>", "Lift a ban."),
             ("bans", "List current bans."),
         ),

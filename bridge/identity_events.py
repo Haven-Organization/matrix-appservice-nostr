@@ -62,6 +62,30 @@ def dm_relay_tags(app: FastAPI) -> list[list[str]]:
     return [["relay", app.state.config.nostr.relay_url]]
 
 
+PIN_LIST_KIND = 10001
+
+
+async def pin_list_tags(app: FastAPI, nostr_id: NostrId) -> list[list[str]]:
+    """NIP-51 pinned notes: the ID's own posts pinned in its Profile Room
+    (``m.room.pinned_events``), in pin order. Pins of anything else (a
+    notice, someone's reply) are passed over."""
+    assert nostr_id.profile_room_id is not None
+    try:
+        state = await app.state.homeserver.get_room_state(
+            nostr_id.profile_room_id, "m.room.pinned_events", as_user_id=bot_mxid(app.state.config)
+        )
+    except HomeserverError:
+        return []
+    tags = []
+    for event_id in (state or {}).get("pinned") or []:
+        if not isinstance(event_id, str):
+            continue
+        row = await app.state.repository.get_event_by_matrix_event(event_id, include_copies=False)
+        if row is not None and row.pubkey == nostr_id.pubkey and row.kind in (1, 20, 21, 22, 30023):
+            tags.append(["e", row.id])
+    return tags
+
+
 def media_server_tags(app: FastAPI) -> list[list[str]]:
     return [["server", app.state.config.nostr.relay_http_base]]
 
@@ -196,14 +220,19 @@ async def _sync_identity(app: FastAPI, nostr_id: NostrId) -> list[Event]:
                 published.append(event)
         await _update_bridge_info(app, nostr_id, source)
 
-    for kind, tags, label in (
+    lists = [
         (RELAY_LIST_KIND, relay_list_tags(app), "relay list"),
         (DM_RELAY_LIST_KIND, dm_relay_tags(app), "DM relay list"),
         (BLOSSOM_SERVER_LIST_KIND, media_server_tags(app), "media server list"),
-    ):
+    ]
+    if nostr_id.profile_room_id:
+        lists.append((PIN_LIST_KIND, await pin_list_tags(app, nostr_id), "pinned posts"))
+    for kind, tags, label in lists:
         previous = await repository.get_latest_event(nostr_id.pubkey, kind)
         if _unchanged(previous, nostr_id.pubkey, kind, tags, ""):
             continue
+        if kind == PIN_LIST_KIND and previous is None and not tags:
+            continue  # nothing pinned yet, and never was: nothing to say
         event = await _store_and_publish(
             app, nostr_id, kind=kind, tags=tags, content="", source=inline_source(kind, tags),
             previous=previous, label=f"{label} of {handle(app, nostr_id)}",

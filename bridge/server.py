@@ -124,6 +124,13 @@ async def _spam_tick_loop(app: FastAPI) -> None:
             logger.exception("Spam housekeeping failed")
 
 
+_SHIELD_POLICY = {
+    "pow": "strangers now need proof of work.",
+    "web_of_trust": "strangers now need to be in the web of trust.",
+    "open": "the relay's rules are unchanged (wave_policy is open).",
+}
+
+
 async def _shields_changed(app: FastAPI, up: bool, count: int) -> None:
     """Tell bridge admins when the relay tightens up against a wave of new
     accounts, and when it relaxes again."""
@@ -133,8 +140,7 @@ async def _shields_changed(app: FastAPI, up: bool, count: int) -> None:
     config = app.state.config
     policy = config.spam.wave_policy
     message = (
-        f"🛡️ Shields up: {count} new accounts in a few minutes; strangers now need "
-        + ("proof of work." if policy == "pow" else "to be in the web of trust.")
+        f"🛡️ Shields up: {count} new accounts in a few minutes; " + _SHIELD_POLICY.get(policy, "the relay is stricter with strangers.")
         if up
         else "🛡️ Shields down: the wave has passed, and the relay is back to its usual rules."
     )
@@ -184,8 +190,13 @@ class PublicCors:
 
     @classmethod
     def is_public(cls, path: str) -> bool:
-        # Published media (/<sha256>.<ext>) too: Blossom requires CORS.
-        return path.startswith(cls._PUBLIC_PREFIXES) or BLOB_PATH_RE.match(path) is not None
+        # Published media (/<sha256>.<ext>) and uploads too: Blossom
+        # requires CORS. And the relay's own address (NIP-11, NIP-86).
+        return (
+            path.startswith(cls._PUBLIC_PREFIXES)
+            or BLOB_PATH_RE.match(path) is not None
+            or path in ("/upload", "/")
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not self.is_public(str(scope.get("path", ""))):
@@ -198,8 +209,8 @@ class PublicCors:
                     "status": 204,
                     "headers": [
                         (b"access-control-allow-origin", b"*"),
-                        (b"access-control-allow-methods", b"GET, HEAD, OPTIONS"),
-                        (b"access-control-allow-headers", b"*"),
+                        (b"access-control-allow-methods", b"GET, HEAD, PUT, POST, OPTIONS"),
+                        (b"access-control-allow-headers", b"Authorization, Content-Type, *"),
                         (b"access-control-max-age", b"86400"),
                     ],
                 }
@@ -261,6 +272,7 @@ def create_app(
         app.state.ingest_inflight = {}
         app.state.seen = Seen()
         app.state.web_of_trust = set()
+        app.state.shared_blocks = set()
         app.state.emoji_cache = {}
         app.state.relay_hub = RelayHub(app)
         app.state.feeds = Feeds(app)

@@ -36,6 +36,7 @@ from bridge.interactions import maybe_handle_reaction
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave, maybe_handle_profile_state
 from bridge.messages import notice
 from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
+from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.users import bot_mxid, is_local_user
 from bridge.homeserver_client import HomeserverError
@@ -122,6 +123,8 @@ _HANDLERS = (
     maybe_handle_confirmation,
     maybe_handle_command,
     maybe_handle_reaction,
+    maybe_publish_poll,
+    maybe_handle_vote,
     maybe_send_dm,
     # Last: anything else in a Profile Room may be a post, and a reply to a
     # Nostr post anywhere is a reply.

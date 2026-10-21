@@ -195,6 +195,10 @@ class NostrSection:
     # Largest REQ result and most open subscriptions per relay connection.
     relay_max_limit: int = 500
     relay_max_subscriptions: int = 20
+    # Accounts whose public mute lists (kind 10000) and reports (kind 1984)
+    # the relay honours: anyone on them is refused (unless someone here
+    # follows them). npub or hex.
+    shared_block_lists: list[str] = field(default_factory=list)
     # Web page a Nostr profile or event can be opened on, followed by its
     # NIP-19 identifier (npub1..., nevent1...).
     web_viewer_url: str = "https://ditto.pub/"
@@ -249,6 +253,19 @@ def _section(raw: dict[str, Any], name: str, *, required: bool = False) -> dict[
     if not isinstance(value, dict):
         raise ConfigError(f"{name} must be a mapping")
     return value
+
+
+def _pubkeys(section: dict[str, Any], key: str) -> list[str]:
+    from bridge.nostr import nip19
+
+    out = []
+    for value in _string_list(section, key, "nostr"):
+        value = value.strip()
+        try:
+            out.append(nip19.npub_decode(value) if value.startswith("npub1") else bytes.fromhex(value).hex())
+        except (nip19.Nip19Error, ValueError) as exc:
+            raise ConfigError(f"nostr.{key}: {value!r} isn't an npub or hex key") from exc
+    return out
 
 
 def _choice(section: dict[str, Any], key: str, choices: tuple[str, ...], default: str) -> str:
@@ -425,6 +442,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
         web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://ditto.pub/").rstrip("/") + "/",
         backfill_on_follow=int(nostr_raw.get("backfill_on_follow", 20)),
+        shared_block_lists=_pubkeys(nostr_raw, "shared_block_lists"),
         serve_followed_to_local_clients=bool(nostr_raw.get("serve_followed_to_local_clients", False)),
         relay_max_limit=int(nostr_raw.get("relay_max_limit", 500)),
         relay_max_subscriptions=int(nostr_raw.get("relay_max_subscriptions", 20)),

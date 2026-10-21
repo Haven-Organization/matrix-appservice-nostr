@@ -298,7 +298,7 @@ _CONVERSATION_KINDS = frozenset({1, 6, 7, 16, 20, 21, 22, 1111, 1068, 30023})
 
 class Tier(Enum):
     LOCAL = "local"  # signed by one of the bridge's own IDs
-    TRUSTED = "trusted"  # followed by a local ID, or one a local ID talked to
+    TRUSTED = "trusted"  # followed by a local ID
     WEB_OF_TRUST = "web_of_trust"  # followed by someone a local ID follows
     STRANGER = "stranger"
 
@@ -406,10 +406,10 @@ class SpamGuard:
         return ban if self._ban_active(ban) else None
 
     async def ban(self, kind: str, key: str, duration: timedelta | None, reason: str) -> Ban:
-        """Ban ``key`` (``kind`` is "pubkey" or "ip") for ``duration``, or
-        for good with ``None``."""
-        if kind not in ("pubkey", "ip"):
-            raise ValueError("kind must be 'pubkey' or 'ip'")
+        """Ban ``key`` (``kind`` is "pubkey", "ip" or "event") for
+        ``duration``, or for good with ``None``."""
+        if kind not in ("pubkey", "ip", "event"):
+            raise ValueError("kind must be 'pubkey', 'ip' or 'event'")
         wall = self._wall_now()
         previous = await self.store.get_ban(kind, key)
         level = self._next_level(previous, wall)
@@ -466,7 +466,7 @@ class SpamGuard:
         return Verdict(False, prefix, message)
 
     async def record_report(self, pubkey: str, strikes: int = 1) -> None:
-        """Strikes from Matrix: a redacted reply counts 1, a report 3."""
+        """Strikes from Matrix (a stranger's reply redacted in a Profile Room)."""
         await self._strike("pubkey", pubkey, "reported in Matrix", strikes)
 
     # -- connections and subscriptions ----------------------------------------

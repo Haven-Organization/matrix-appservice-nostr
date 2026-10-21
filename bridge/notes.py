@@ -260,6 +260,62 @@ def repost_kind(recipe: dict[str, Any]) -> int:
     return 6 if recipe["target_kind"] == 1 else 16
 
 
+# -- kind 1068 (NIP-88 poll), version 1 ---------------------------------------------
+# Recipe: {"kind": "poll", "v": 1, "room_id", "event_id", "relay_hint"}. Built
+# from a Matrix poll (MSC3381, stable or unstable names): the question is the
+# content, each answer an option tag, single or multiple choice from
+# max_selections.
+
+POLL_START_TYPES = ("m.poll.start", "org.matrix.msc3381.poll.start")
+POLL_RESPONSE_TYPES = ("m.poll.response", "org.matrix.msc3381.poll.response")
+
+
+def _poll_body(content: dict[str, Any]) -> dict[str, Any]:
+    return content.get("m.poll") or content.get("org.matrix.msc3381.poll.start") or {}
+
+
+def _text_of(value: Any) -> str:
+    """MSC1767 text in any of its shapes: a string, {"org.matrix.msc1767.text": s},
+    or {"m.text": [{"body": s}]}."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("org.matrix.msc1767.text", "m.text", "body"):
+            inner = value.get(key)
+            if isinstance(inner, str):
+                return inner
+            if isinstance(inner, list) and inner and isinstance(inner[0], dict):
+                return str(inner[0].get("body") or "")
+    return ""
+
+
+def poll_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    poll = _poll_body(event.get("content") or {})
+    question = _text_of(poll.get("question")).strip()
+    tags: list[list[str]] = []
+    for answer in poll.get("answers") or []:
+        if isinstance(answer, dict) and isinstance(answer.get("id"), str):
+            tags.append(["option", answer["id"], _text_of(answer).strip()])
+    multiple = int(poll.get("max_selections") or 1) > 1
+    tags.append(["polltype", "multiplechoice" if multiple else "singlechoice"])
+    if recipe.get("relay_hint"):
+        tags.append(["relay", recipe["relay_hint"]])
+    return question, tags
+
+
+# -- kind 1018 (NIP-88 vote), version 1 ---------------------------------------------
+# Recipe: {"kind": "vote", "v": 1, "room_id", "event_id", "poll", "poll_pubkey"}.
+# The chosen answers come from the Matrix poll response.
+
+
+def vote_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    content = event.get("content") or {}
+    response = content.get("m.selections") or (content.get("org.matrix.msc3381.poll.response") or {}).get("answers") or []
+    tags = [["e", recipe["poll"]], ["p", recipe["poll_pubkey"]]]
+    tags += [["response", answer] for answer in response if isinstance(answer, str)]
+    return "", tags
+
+
 # -- kind 5, version 1 -------------------------------------------------------
 
 
@@ -281,8 +337,10 @@ CONVERTERS = {
     ("reaction", 1): reaction_v1,
     ("repost", 1): repost_v1,
     ("deletion", 1): deletion_v1,
+    ("poll", 1): poll_v1,
+    ("vote", 1): vote_v1,
 }
-EVENT_KINDS = {"note": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND}
+EVENT_KINDS = {"note": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND, "poll": 1068, "vote": 1018}
 
 
 def event_kind_of(recipe: dict[str, Any]) -> int:

@@ -34,7 +34,7 @@ from bridge.nostr.relay_pool import normalize_relay_url
 
 logger = logging.getLogger(__name__)
 
-FOLLOW_KINDS = [0, 1, 5, 6, 7, 16, 20, 21, 22, 1111, 10002, 30023]
+FOLLOW_KINDS = [0, 1, 5, 6, 7, 16, 20, 21, 22, 1068, 1111, 10002, 30023]
 INBOX_KINDS = [1, 3, 6, 7, 16, 1111, 9735]
 DM_KINDS = [4, 1059]
 _SAFETY_SECONDS = 300
@@ -196,11 +196,43 @@ class Feeds:
 
     async def _web_of_trust_loop(self) -> None:
         while True:
-            try:
-                await self.refresh_web_of_trust()
-            except Exception:
-                logger.exception("Refreshing the web of trust failed")
+            for refresh in (self.refresh_web_of_trust, self.refresh_shared_blocks):
+                try:
+                    await refresh()
+                except Exception:
+                    logger.exception("%s failed", refresh.__name__)
             await asyncio.sleep(_WOT_REFRESH_SECONDS)
+
+    async def refresh_shared_blocks(self) -> None:
+        """Who the accounts in ``nostr.shared_block_lists`` mute (kind 10000,
+        public entries) or report (kind 1984)."""
+        app = self.app
+        owners = app.state.config.nostr.shared_block_lists
+        if not owners:
+            app.state.shared_blocks = set()
+            return
+        relays = [*app.state.config.nostr.discovery_relays, *app.state.config.nostr.fallback_relays]
+        found = await app.state.relay_pool.query(relays, [{"authors": owners, "kinds": [10000, 1984]}], timeout=15.0)
+        from bridge.nostr import event as nostr_event
+
+        blocked: set[str] = set()
+        newest_mute: dict[str, dict] = {}
+        for raw in found:
+            if raw.get("pubkey") not in owners:
+                continue
+            try:
+                nostr_event.verify(raw)
+            except nostr_event.InvalidEvent:
+                continue
+            if raw["kind"] == 10000:
+                if raw["pubkey"] not in newest_mute or raw["created_at"] > newest_mute[raw["pubkey"]]["created_at"]:
+                    newest_mute[raw["pubkey"]] = raw
+            else:
+                blocked.update(t[1] for t in raw.get("tags") or [] if len(t) >= 2 and t[0] == "p" and len(t[1]) == 64)
+        for raw in newest_mute.values():
+            blocked.update(t[1] for t in raw.get("tags") or [] if len(t) >= 2 and t[0] == "p" and len(t[1]) == 64)
+        app.state.shared_blocks = blocked
+        logger.info("Shared block lists: %d accounts", len(blocked))
 
     async def refresh_web_of_trust(self) -> None:
         app = self.app

@@ -304,8 +304,16 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
     raw = event.to_dict()
     local_author = await repository.get_id_by_pubkey(event.pubkey)
     targets = [t[1] for t in raw["tags"] if len(t) >= 2 and t[0] in ("p", "P")]
+    if await app.state.spam.active_ban("event", event.id):
+        return IngestResult(False, "blocked: removed by a relay admin")
     if not app.state.seen.add(event.id):
         return IngestResult(True, "duplicate: already seen")
+    if (
+        local_author is None
+        and event.pubkey in getattr(app.state, "shared_blocks", ())
+        and not await repository.list_followers_of_remote(event.pubkey)
+    ):
+        return IngestResult(False, "blocked: on a block list this relay follows")
 
     guard = getattr(app.state, "spam", None)
     if guard is not None and origin in ("relay", "subscription"):
@@ -351,6 +359,14 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
         return await _repost(app, raw)
     if kind in POST_KINDS:
         return await _post(app, raw)
+    if kind == 1068:
+        from bridge.polls import receive_poll
+
+        return await receive_poll(app, raw)
+    if kind == 1018:
+        from bridge.polls import receive_vote
+
+        return await receive_vote(app, raw)
     return REJECTED
 
 
@@ -417,6 +433,47 @@ async def _contact_list(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     return IngestResult(False, "restricted: not stored") if not touched else IngestResult(False, "restricted: noted, not stored")
 
 
+_ZAP_PROVIDER_TTL = 3600.0
+
+
+async def zap_provider_pubkey(app: FastAPI, local: Any) -> str | None:
+    """The key the ID's Lightning address (``lud16``) signs zap receipts
+    with: its LNURL-pay ``nostrPubkey``. None without a usable address."""
+    import time as _time
+
+    from bridge.safe_fetch import FetchError, UnsafeAddress
+
+    if not local.profile_room_id:
+        return None
+    try:
+        extra = await app.state.homeserver.get_room_state(
+            local.profile_room_id, "software.haven.nostr.profile_extra", as_user_id=bot_mxid(app.state.config)
+        )
+    except HomeserverError:
+        return None
+    address = str((extra or {}).get("lud16") or "").strip().lower()
+    name, _, domain = address.partition("@")
+    if not name or not domain or "/" in address:
+        return None
+    cache = app.state.__dict__.setdefault("zap_providers", {})
+    hit = cache.get(address)
+    if hit and hit[1] > _time.monotonic():
+        return hit[0]
+    pubkey = None
+    try:
+        fetched = await app.state.fetcher.get(f"https://{domain}/.well-known/lnurlp/{name}", max_bytes=64 * 1024,
+                                              accept="application/json")
+        info = json.loads(fetched.content) if fetched.status == 200 else {}
+        candidate = info.get("nostrPubkey") if isinstance(info, dict) and info.get("allowsNostr") else None
+        if isinstance(candidate, str) and len(candidate) == 64:
+            bytes.fromhex(candidate)
+            pubkey = candidate.lower()
+    except (FetchError, UnsafeAddress, ValueError):
+        pubkey = None
+    cache[address] = (pubkey, _time.monotonic() + _ZAP_PROVIDER_TTL)
+    return pubkey
+
+
 async def _zap_receipt(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     """A zap receipt (NIP-57) for a local ID: a notification, which is also
     the receipt's home."""
@@ -424,18 +481,23 @@ async def _zap_receipt(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     locals_ = await _local_ids_for(app, [t[1] for t in _tags(raw, "p")])
     if not locals_:
         return REJECTED
+    local = locals_[0]
+    # Only the ID's own Lightning provider can say it was paid (NIP-57).
+    if raw["pubkey"] != await zap_provider_pubkey(app, local):
+        return IngestResult(False, "restricted: not from this account's Lightning provider")
     description = next((t[1] for t in _tags(raw, "description")), "")
     try:
         request = json.loads(description) if description else {}
-    except ValueError:
-        request = {}
-    if not isinstance(request, dict):
-        request = {}
+        if request:
+            nostr_event.verify(request)
+    except (ValueError, nostr_event.InvalidEvent):
+        return IngestResult(False, "invalid: the zap request isn't a valid signed event")
+    if not isinstance(request, dict) or request.get("kind") != 9734:
+        return IngestResult(False, "invalid: the zap request isn't a valid signed event")
     sender = request.get("pubkey")
     amount_msats = next((t[1] for t in (request.get("tags") or []) if isinstance(t, list) and len(t) >= 2 and t[0] == "amount"), None)
     sats = int(amount_msats) // 1000 if amount_msats and str(amount_msats).isdigit() else None
     note = str(request.get("content") or "").strip()
-    local = locals_[0]
     zapped = next((t[1] for t in _tags(raw, "e")), None)
     row = await repository.get_event(zapped) if zapped else None
     own = (row.room_id, row.matrix_event_id) if row and row.room_id and row.matrix_event_id else None
@@ -715,6 +777,50 @@ async def _reply_in_matrix(
     return IngestResult(True, "", stored=True)
 
 
+async def _quote_footer(app: FastAPI, raw: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    """For a quote-post: "🔁 reposted X's post" and a preview of the quoted
+    post, as matrix-appservice-atproto shows them, plus the MSC4501
+    relation. Whether a quoted post that isn't in Matrix is brought in
+    follows ``bridge.quote_import_policy``: "known" (only if its author
+    already has a room here), "always", or "never"."""
+    quoted_id = next((t[1] for t in _tags(raw, "q")), None)
+    if not quoted_id:
+        return "", "", None
+    repository = app.state.repository
+    row = await repository.get_event(quoted_id)
+    quoted_raw = None
+    if row is None:
+        hints = [t[2] for t in _tags(raw, "q") if len(t) >= 3 and t[2]]
+        quoted_raw = await fetch_event(app, quoted_id, hints=hints)
+        if quoted_raw is not None:
+            policy = app.state.config.bridge.quote_import_policy
+            known = await repository.get_remote_account(quoted_raw["pubkey"]) is not None
+            if policy == "always" or (policy == "known" and known):
+                row = await _ensure_post_in_matrix(app, quoted_raw)
+    author_pubkey = row.pubkey if row is not None else (quoted_raw or {}).get("pubkey")
+    if not author_pubkey:
+        return "", "", None
+    author = await _author_label(app, author_pubkey)
+    from bridge.notify_format import event_link, post_preview, quote_block
+
+    relation = None
+    if row is not None and row.room_id and row.matrix_event_id:
+        link = event_link(app, row.room_id, row.matrix_event_id)
+        preview, _media = await post_preview(app, row.room_id, row.matrix_event_id)
+        if app.state.config.bridge.set_msc4501_relates_to:
+            relation = {
+                "rel_type": "org.matrix.msc4501.social.repost", "event_id": row.matrix_event_id, "room_id": row.room_id,
+                "sender": await _author_mxid(app, author_pubkey), "via": [app.state.config.homeserver.server_name],
+            }
+    else:
+        link = event_url(app, quoted_raw) if quoted_raw else _viewer_link(app, quoted_id)
+        preview = ((quoted_raw or {}).get("content") or "")[:200]
+    quoted_plain, quoted_html = quote_block(preview)
+    plain = f"🔁 reposted {author}'s post\n{quoted_plain}".strip()
+    rich = f'🔁 reposted {html.escape(author)}\'s <a href="{html.escape(link, quote=True)}">post</a>{quoted_html}'
+    return plain, rich, relation
+
+
 async def _followed_post(app: FastAPI, raw: dict[str, Any], *, parent_id: str | None) -> IngestResult:
     remote = await remotes.get_or_create_remote(app, raw["pubkey"])
     remote = await remotes.ensure_room(app, remote)
@@ -724,7 +830,13 @@ async def _followed_post(app: FastAPI, raw: dict[str, Any], *, parent_id: str | 
         link = _viewer_link(app, parent_id)
         header_plain = "⤵️ Reply to a post:"
         header_html = f'⤵️ Reply to a <a href="{html.escape(link)}">post</a>:'
-    content = await message_content(app, raw, as_user_id=remote.ghost_user_id, header_plain=header_plain, header_html=header_html)
+    footer_plain, footer_html, relation = await _quote_footer(app, raw)
+    content = await message_content(
+        app, raw, as_user_id=remote.ghost_user_id, header_plain=header_plain, header_html=header_html,
+        footer_plain=footer_plain, footer_html=footer_html,
+    )
+    if relation is not None:
+        content[SOCIAL_RELATES_TO_FIELD] = relation
     event_id = await _send(
         app, remote.room_id, _with_extras(app, content, raw, remote, link=event_url(app, raw)), sender=remote.ghost_user_id,
         ts=int(raw["created_at"]) * 1000, event_type=_post_event_type(app),

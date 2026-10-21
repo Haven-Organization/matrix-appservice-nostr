@@ -51,7 +51,7 @@ MAX_FILTERS = 10
 _NARROWING = ("ids", "authors", "#e", "#p", "#a", "#q", "#E", "#P", "#A", "#d")
 _CACHE_SIZE = 5000
 _AUTH_WINDOW = 600
-SUPPORTED_NIPS = [1, 2, 9, 10, 11, 13, 17, 18, 22, 25, 27, 40, 42, 44, 45, 59, 65, 70]
+SUPPORTED_NIPS = [1, 2, 9, 10, 11, 13, 17, 18, 22, 25, 27, 40, 42, 44, 45, 59, 65, 70, 86, 88]
 
 
 def matches(flt: dict[str, Any], event: dict[str, Any]) -> bool:
@@ -387,3 +387,118 @@ async def _materialize(app, rows) -> list[dict[str, Any]]:
 
     events = await asyncio.gather(*(one(row) for row in rows))
     return [event for event in events if event is not None]
+
+
+# -- NIP-86: relay management -------------------------------------------------------
+#
+# JSON-RPC over HTTP at the relay's own address, so admins can moderate from
+# Nostr tools too. Each request carries a NIP-98 authorization (kind 27235)
+# naming this URL, the POST method and the body's hash, signed by an ID
+# whose owner is a bridge admin.
+
+NIP98_KIND = 27235
+NIP86_METHODS = [
+    "supportedmethods", "banpubkey", "unbanpubkey", "listbannedpubkeys",
+    "blockip", "unblockip", "listblockedips", "banevent", "listbannedevents",
+]
+
+
+def _rpc(result: Any = None, error: str | None = None) -> JSONResponse:
+    body: dict[str, Any] = {"result": result}
+    if error:
+        body["error"] = error
+    return JSONResponse(body, media_type="application/nostr+json+rpc")
+
+
+@router.post("/")
+async def management(request: Request):
+    import hashlib
+
+    from bridge.admins import is_admin
+    from bridge.nostr.http_auth import AuthError, parse
+
+    app = request.app
+    if "application/nostr+json+rpc" not in request.headers.get("content-type", ""):
+        return JSONResponse({"error": "use Content-Type: application/nostr+json+rpc"}, status_code=415)
+    body = await request.body()
+    try:
+        auth = parse(request.headers.get("authorization"), kind=NIP98_KIND, max_age=120)
+    except AuthError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+    ours = {app.state.config.nostr.relay_http_base, app.state.config.nostr.relay_http_base + "/",
+            app.state.config.nostr.relay_url, app.state.config.nostr.relay_url.rstrip("/")}
+    if (
+        auth.first_tag_value("u") not in ours
+        or (auth.first_tag_value("method") or "").upper() != "POST"
+        or auth.first_tag_value("payload") != hashlib.sha256(body).hexdigest()
+    ):
+        return JSONResponse({"error": "the authorization doesn't match this request"}, status_code=401)
+    signer = await app.state.repository.get_id_by_pubkey(auth.pubkey)
+    if signer is None or not await is_admin(app.state.config, app.state.homeserver, signer.matrix_user_id):
+        return JSONResponse({"error": "only this relay's admins can do that"}, status_code=403)
+    try:
+        request_body = json.loads(body)
+        method = str(request_body.get("method"))
+        params = request_body.get("params") or []
+    except (ValueError, AttributeError):
+        return _rpc(error="malformed request")
+    guard = app.state.spam
+    reason = str(params[1]) if len(params) > 1 else f"via NIP-86 by {signer.name}"
+    if method == "supportedmethods":
+        return _rpc(NIP86_METHODS)
+    if method in ("banpubkey", "unbanpubkey", "blockip", "unblockip", "banevent"):
+        kind = "pubkey" if "pubkey" in method else "event" if method == "banevent" else "ip"
+        key = _nip86_key(kind, params[0] if params else None)
+        if key is None:
+            return _rpc(error=f"the first parameter must be {'an IP address' if kind == 'ip' else 'a hex ' + kind + ' id' if kind == 'event' else 'a hex pubkey'}")
+        if method.startswith("un"):
+            await guard.unban(kind, key)
+            return _rpc(True)
+        # NIP-86 has no duration: these last until lifted.
+        await guard.ban(kind, key, None, reason)
+        if kind == "event":
+            await _remove_event(app, key)
+        return _rpc(True)
+    if method in ("listbannedpubkeys", "listblockedips", "listbannedevents"):
+        kind, field = {"listbannedpubkeys": ("pubkey", "pubkey"), "listblockedips": ("ip", "ip"),
+                       "listbannedevents": ("event", "id")}[method]
+        return _rpc([{field: b.key, "reason": b.reason} for b in await guard.list_bans() if b.kind == kind])
+    return _rpc(error=f"unsupported method {method!r}")
+
+
+def _nip86_key(kind: str, value: Any) -> str | None:
+    """A NIP-86 parameter as a ban key: a 64-hex pubkey or event id, or an IP."""
+    import ipaddress
+
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if kind == "ip":
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return None
+    try:
+        return value.lower() if len(value) == 64 and bytes.fromhex(value) else None
+    except ValueError:
+        return None
+
+
+async def _remove_event(app, event_id: str) -> None:
+    """Take an event off the relay by redacting its Matrix home (and copies)."""
+    from bridge.homeserver_client import HomeserverError
+    from bridge.users import bot_mxid
+
+    repository = app.state.repository
+    row = await repository.get_event(event_id)
+    if row is None:
+        return
+    places = [(row.room_id, row.matrix_event_id)] if row.room_id and row.matrix_event_id else []
+    places += await repository.list_mirrored_copies(row.id)
+    for room_id, matrix_event in places:
+        try:
+            await app.state.homeserver.redact_event(room_id, matrix_event, as_user_id=bot_mxid(app.state.config), reason="Removed by a relay admin")
+        except HomeserverError:
+            logger.info("Could not redact %s", matrix_event, exc_info=True)
+    await repository.delete_event(row.id)
+    app.state.relay_hub.cache.drop(row.id)

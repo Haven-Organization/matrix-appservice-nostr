@@ -9,13 +9,21 @@
 #      /.well-known files). It must PROXY, not redirect: NIP-05 forbids
 #      redirects and clients ignore them.
 #
-#   2. The relay hostname (nostr.relay_url, here wss://nostr.example.org):
-#      the relay itself (WebSocket), its NIP-11 document, and media. A server
-#      block of its own, below.
+#   2. The relay hostname (nostr.relay_url, here wss://nostr.example.org).
+#      A server block of its own, below. Everything on it goes to the bridge:
+#        GET  /  with a WebSocket upgrade   the relay (NIP-01, NIP-42)
+#        GET  /  Accept: application/nostr+json   its NIP-11 document
+#        POST /                             NIP-86 relay management
+#        GET/HEAD /<sha256>.<ext>           published media (Blossom BUD-01)
+#        PUT  /upload                       uploads from users' Nostr apps (BUD-02)
+#        /widget, /widget/api/...           the bridge's room widget
+#      So don't restrict methods, and let request bodies through up to
+#      nostr.max_media_mb.
 #
-# CORS: the bridge sets Access-Control-Allow-Origin on /.well-known/ itself.
-# Don't add_header one of your own there (browsers reject a doubled header),
-# and don't answer OPTIONS in nginx.
+# CORS: the bridge sets Access-Control-Allow-Origin itself, on /.well-known/
+# and on the relay host's public paths, and answers OPTIONS preflights. Don't
+# add_header one of your own (browsers reject a doubled header), and don't
+# answer OPTIONS in nginx.
 
 upstream matrix_appservice_nostr {
     server 127.0.0.1:8092;
@@ -46,6 +54,12 @@ server {
     ssl_certificate     /etc/letsencrypt/live/nostr.example.org/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/nostr.example.org/privkey.pem;
 
+    # The AppService API is for the homeserver only, which reaches the bridge
+    # directly (bridge.internal_base_url). Nothing public needs it.
+    location /_matrix/ {
+        return 404;
+    }
+
     location / {
         proxy_pass http://matrix_appservice_nostr;
         proxy_http_version 1.1;
@@ -58,7 +72,8 @@ server {
         # Relay connections stay open; don't cut idle ones after 60s.
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
-        # Media can be large (nostr.max_media_mb).
-        client_max_body_size 100m;
+        # Blossom uploads (PUT /upload) can be as large as nostr.max_media_mb
+        # (50 by default). Keep this at least that big.
+        client_max_body_size 50m;
     }
 }
