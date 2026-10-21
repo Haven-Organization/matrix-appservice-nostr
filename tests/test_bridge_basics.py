@@ -282,3 +282,34 @@ def test_cors_preflight(client) -> None:
     assert response.headers["access-control-allow-origin"] == "*"
     # The AppService API gets no CORS headers.
     assert "access-control-allow-origin" not in client.post("/_matrix/app/v1/ping", json={}, headers=AUTH).headers
+
+
+def test_msc4503_value() -> None:
+    from bridge.msc4501 import external_handle_value
+
+    config = parse_config(raw_config(appservice={"bot_avatar_mxc": "mxc://example.org/logo"}))
+    pubkey = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+    npub = "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg"
+    assert external_handle_value(config, pubkey=pubkey, nip05="alice@example.com") == {
+        "handle": "alice@example.com",
+        "protocol": {"id": "nostr", "displayname": "Nostr", "avatar_url": "mxc://example.org/logo"},
+        "url": f"https://njump.me/{npub}",
+    }
+    assert external_handle_value(config, pubkey=pubkey)["handle"] == npub
+    with pytest.raises(ConfigError):
+        parse_config(raw_config(bridge={"msc4503_external_handle": "sometimes"}))
+
+
+def test_bridge_info_uses_bot_avatar(repository, homeserver, relay_pool) -> None:
+    from tests.conftest import make_client
+
+    config = parse_config(raw_config(appservice={"bot_avatar_mxc": "mxc://example.org/logo"}))
+    with make_client(config, repository, homeserver, relay_pool) as client:
+        client.put("/_matrix/app/v1/transactions/x1", headers=AUTH, json={"events": [_message("[create profile")]})
+        from tests.conftest import settle
+
+        settle(client)
+        [q] = client.portal.call(repository.list_ids_for_user, "@q:example.org")
+        info = homeserver.rooms[q.profile_room_id]["state"][("m.bridge", f"nostr://{q.pubkey}")]["content"]
+        assert info["protocol"] == {"id": "nostr", "displayname": "Nostr", "avatar_url": "mxc://example.org/logo"}
+        assert info["bridgebot"] == "@nostrbot:example.org"

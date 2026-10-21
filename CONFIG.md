@@ -17,6 +17,7 @@ Every setting in `config.yaml`. `config.example.yaml` has only the ones needed t
 | `notifications_room_name` | `Nostr Notifications` | Name of each user's notifications room. |
 | `notifications_room_avatar_mxc` | the bot's avatar | Its avatar. |
 | `local_profile_room_join_rule` | `knock` | Join rule of new Profile Rooms: `knock` (the owner's knock is let straight in; anyone else's is left to the people inside), `invite` or `public`. |
+| `msc4503_external_handle` | `off` | Where a ghost's real Nostr handle (its verified NIP-05, else its `npub`) is recorded (MSC4503): `profile` (an MSC4133 profile field; needs MSC4133 on the homeserver), `events` (on every event it sends), `both`, or `off`. Same setting as the sibling bridges. The protocol icon is `appservice.bot_avatar_mxc`. Takes effect once following exists. |
 | `max_ids_per_user` | `5` | How many Nostr IDs one Matrix user may hold. Bridge admins are exempt. |
 | `id_min_length` / `id_max_length` | `1` / `32` | Allowed length of an ID's name. |
 | `reserved_ids` | `[]` | Names nobody may take, on top of the built-in list (`admin`, `support`, `nostr`, ...). Exact names or shell-style globs (`staff*`). |
@@ -66,6 +67,7 @@ To move an existing SQLite database to Postgres: stop the bridge, run `python -m
 | `publish_relays` | Damus, nos.lol, Primal, poster.place (both addresses) | Public relays local identities' events are also sent to, for reach. |
 | `discovery_relays` | purplepag.es, Damus | Relays asked for other accounts' relay lists and profiles. |
 | `fallback_relays` | Damus, nos.lol, Primal | Relays read for accounts that publish no relay list. |
+| `web_viewer_url` | `https://njump.me/` | Web page a Nostr profile or event can be opened on, followed by its `npub`/`nevent`. Used in MSC4503 handles and links. |
 | `max_media_mb` | `50` | Largest file published from a Profile Room (images are also capped at 5 MB after cleaning). |
 | `refused_relay_retry_hours` | `24` | A relay that refuses an ID by policy (`blocked:`/`restricted:`) isn't tried again for that ID for this long. |
 | `allow_private_addresses` | `false` | Let the bridge connect to private, loopback and link-local addresses: relays, media, NIP-05 lookups. **Local development only.** Off, every such address is refused, because these URLs are chosen by strangers. |

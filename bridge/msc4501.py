@@ -24,3 +24,21 @@ PER_MESSAGE_PROFILE_FIELD = "com.beeper.per_message_profile"
 # MSC4221 (Room Banners), under that proposal's own unstable name. Content
 # mirrors m.room.avatar's: {"url": "mxc://..."}.
 PROFILE_BANNER_STATE_TYPE = "page.codeberg.everypizza.room.banner"
+
+# MSC4503 (External Protocol Handles): a ghost's real handle on Nostr, which
+# neither its display name nor its MXID carries. Set on ghosts (and their
+# events) per bridge.msc4503_external_handle, as the sibling bridges do, once
+# ghosts exist (step 5 of the build order).
+EXTERNAL_HANDLE_FIELD = "org.matrix.msc4503.external_handle"
+
+
+def external_handle_value(config, *, pubkey: str, nip05: str | None = None) -> dict:
+    """The MSC4503 value for a Nostr account: its verified NIP-05 handle if
+    it has one, else its npub, with the bot's avatar as the protocol icon."""
+    from bridge.nostr import nip19
+
+    npub = nip19.npub_encode(pubkey)
+    protocol: dict = {"id": "nostr", "displayname": "Nostr"}
+    if config.appservice.bot_avatar_mxc:
+        protocol["avatar_url"] = config.appservice.bot_avatar_mxc
+    return {"handle": nip05 or npub, "protocol": protocol, "url": f"{config.nostr.web_viewer_url}{npub}"}

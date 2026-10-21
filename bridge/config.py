@@ -62,6 +62,11 @@ class BridgeSection:
     space_avatar_mxc: str | None = None
     notifications_room_name: str = "Nostr Notifications"
     notifications_room_avatar_mxc: str | None = None
+    # Where a ghost's real Nostr handle is recorded (MSC4503): "profile"
+    # (an MSC4133 profile field; needs MSC4133 on the homeserver), "events"
+    # (on every event the ghost sends), "both", or "off". Same setting as
+    # the sibling bridges. Takes effect once ghosts exist (following).
+    msc4503_external_handle: str = "off"
     # Join rule of a Profile Room: "knock" (only its owner's knock is let
     # in), "invite" or "public".
     local_profile_room_join_rule: str = "knock"
@@ -158,6 +163,9 @@ class NostrSection:
     discovery_relays: list[str] = field(default_factory=lambda: list(DEFAULT_DISCOVERY_RELAYS))
     # Relays read for accounts that publish no relay list.
     fallback_relays: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_RELAYS))
+    # Web page a Nostr profile or event can be opened on, followed by its
+    # NIP-19 identifier (npub1..., nevent1...).
+    web_viewer_url: str = "https://njump.me/"
     # Largest file (image, video, audio, document) published from Matrix,
     # and later the largest copied into Matrix, in MB.
     max_media_mb: int = 50
@@ -272,6 +280,12 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
             "bridge.local_profile_room_join_rule must be 'public', 'invite' or 'knock', "
             f"got {local_profile_room_join_rule!r}"
         )
+    msc4503_external_handle = str(bridge_raw.get("msc4503_external_handle", "off"))
+    if msc4503_external_handle not in ("off", "profile", "events", "both"):
+        raise ConfigError(
+            "bridge.msc4503_external_handle must be one of 'off', 'profile', 'events', 'both', "
+            f"got {msc4503_external_handle!r}"
+        )
     id_min_length = int(bridge_raw.get("id_min_length", 1))
     id_max_length = int(bridge_raw.get("id_max_length", 32))
     if not 1 <= id_min_length <= id_max_length <= 64:
@@ -288,6 +302,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         notifications_room_name=str(bridge_raw.get("notifications_room_name") or "Nostr Notifications"),
         notifications_room_avatar_mxc=bridge_raw.get("notifications_room_avatar_mxc") or None,
         local_profile_room_join_rule=local_profile_room_join_rule,
+        msc4503_external_handle=msc4503_external_handle,
         max_ids_per_user=int(bridge_raw.get("max_ids_per_user", 5)),
         id_min_length=id_min_length,
         id_max_length=id_max_length,
@@ -356,6 +371,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         publish_relays=_relay_list(nostr_raw, "publish_relays", DEFAULT_PUBLISH_RELAYS),
         discovery_relays=_relay_list(nostr_raw, "discovery_relays", DEFAULT_DISCOVERY_RELAYS),
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
+        web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://njump.me/").rstrip("/") + "/",
         max_media_mb=int(nostr_raw.get("max_media_mb", 50)),
         refused_relay_retry_hours=int(nostr_raw.get("refused_relay_retry_hours", 24)),
         allow_private_addresses=bool(nostr_raw.get("allow_private_addresses", False)),
