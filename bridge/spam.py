@@ -291,6 +291,11 @@ def meets_pow(event: Event, required: int) -> bool:
 # -- verdicts and tiers -------------------------------------------------------------------
 
 
+# Kinds whose p tags are mentions of people (where tagging dozens at once is
+# the "hellthread" spam pattern), as opposed to lists of them.
+_CONVERSATION_KINDS = frozenset({1, 6, 7, 16, 20, 21, 22, 1111, 1068, 30023})
+
+
 class Tier(Enum):
     LOCAL = "local"  # signed by one of the bridge's own IDs
     TRUSTED = "trusted"  # followed by a local ID, or one a local ID talked to
@@ -574,7 +579,9 @@ class SpamGuard:
 
     def _content_problem(self, event: Event) -> Verdict | None:
         p_tags = sum(1 for tag in event.tags if tag and tag[0] == "p")
-        if p_tags > self.config.max_p_tags:
+        # Mass mentions are a spam pattern in what people post; lists (a
+        # follow list tags everyone followed) are supposed to be long.
+        if event.kind in _CONVERSATION_KINDS and p_tags > self.config.max_p_tags:
             return Verdict(False, "blocked", f"mentions {p_tags} accounts, more than {self.config.max_p_tags}")
         if _BASE64_MEDIA_RE.search(event.content):
             return Verdict(False, "invalid", "base64-embedded media isn't accepted; link to the file instead")

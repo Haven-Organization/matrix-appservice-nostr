@@ -176,6 +176,16 @@ def test_reaction_and_repost(client, homeserver, relay_pool) -> None:
     assert relay_send(client, stranger.event(7, "-", tags))[2] is False  # dislikes aren't shown
 
 
+def test_long_follow_list_is_not_a_hellthread(client, homeserver, relay_pool) -> None:
+    """A follow list tags everyone followed: dozens of p tags is normal
+    there, and must not count against its author."""
+    q = create_id(client)
+    stranger = Stranger()
+    tags = [["p", f"{n:064x}"] for n in range(150)] + [["p", q.pubkey]]
+    relay_send(client, stranger.event(3, "", tags))
+    assert any("followed you" in b for b in notifications(client, homeserver))
+
+
 def test_follow_notification_once(client, homeserver, relay_pool) -> None:
     q = create_id(client)
     stranger = Stranger()
