@@ -365,8 +365,8 @@ Every ID has a NIP-05 handle. This is required by design, not optional.
 
 ### Endpoint
 
-The relay's address is set by the host in `nostr.relay_url`. For example.org
-it is `wss://nostr.example.org`. `deploy/nginx.conf.example` will include a
+The relay's address is set by the host in `nostr.relay_url`, for example
+`wss://nostr.example.org`. `deploy/nginx.conf.example` has a
 server block for that hostname: TLS, WebSocket upgrade headers, and
 `X-Forwarded-For`, which the rate limits need. The same hostname also
 serves:
@@ -390,7 +390,7 @@ to open subscriptions held in memory, and NIP-42 `AUTH`.
 | kind 9735 zap receipt for a local ID | The ID's Lightning provider (checked against the `nostrPubkey` of the ID's `lud16`; only possible if one is set) | Notification | Yes |
 | kind 5 deletion of an event stored here | Its author | Redaction | Rebuilt from the redaction |
 | kind 3 follow list containing a local pubkey | Anyone | "X followed you" notification | **No.** Processed, then `OK false, "restricted: not stored"` |
-| Anything else | | | **No.** `restricted: this relay only serves example.org users` |
+| Anything else | | | **No.** `restricted: this relay only takes events for its own users` |
 
 NIP-70 protected events (`["-"]` tag) are accepted only from a connection
 authenticated (NIP-42) as their author.
@@ -466,7 +466,7 @@ web-of-trust.
 This relay is in a better position than most. It only accepts strangers'
 events that are *addressed to a local ID* (see the write table above), so a
 flood can only arrive as replies, mentions, reactions or DMs aimed at
-example.org users. The defences are layered, cheapest first. All of them
+the server's own users. The defences are layered, cheapest first. All of them
 also apply to events the bridge pulls in through its `#p` subscriptions on
 public relays, not just to writes made directly to the relay.
 
@@ -1046,7 +1046,7 @@ survive a restart.
   HKDF, HMAC) and NIP-49 (scrypt; XChaCha20 via HChaCha20). Bech32 (NIP-19)
   is vendored.
 
-## Config, as it applies to example.org
+## Example config
 
 ```yaml
 bridge:
@@ -1065,17 +1065,15 @@ nostr:
     - wss://poster.place/relay
     - wss://relay.poster.place/
   discovery_relays: [wss://purplepag.es, wss://relay.damus.io]
-  fallback_relays:
+  fallback_relays:                 # not poster.place: it needs auth to read
     - wss://relay.damus.io
     - wss://nos.lol
     - wss://relay.primal.net
-    - wss://poster.place/relay
-    - wss://relay.poster.place/
   web_viewer_url: https://ditto.pub/
   max_media_mb: 50
   backfill_on_follow: 20
   inbound_policy: open
-  serve_followed_to_local_clients: false   # left off for example.org for now
+  serve_followed_to_local_clients: false   # off by default
 webxdc:
   enabled: false                   # optional phase
   # sandbox_domain: xdc.example.org
@@ -1090,7 +1088,7 @@ stable. FEATURES.md describes what the bridge does now.
 
 ### Milestone 1: posting and media both ways
 
-The goal: a example.org user creates an ID, posts text and media from
+The goal: a local user creates an ID, posts text and media from
 Matrix that any Nostr app can see under `q@example.org`, follows a Nostr
 account, and sees its posts and media arrive in Matrix.
 
@@ -1141,11 +1139,11 @@ account, and sees its posts and media arrive in Matrix.
   warning with a confirmable suggestion and the `[create profile <id>` form.
 - No hashtag or full-text search for now. A filter only `#t` could narrow
   gets `CLOSED` with `error:`.
-- Relay URL is host-configurable: `wss://nostr.example.org` for example.org.
+- Relay URL is host-configurable (`nostr.relay_url`).
 - Spam: layered rate limits, content checks, trust tiers, automatic
   escalating bans, and automatic "shields up" during bot waves.
 - Serving followed accounts' posts to users' own Nostr apps: supported,
-  host toggle, off by default, and off for example.org.
+  host toggle, off by default.
 - Handle domain: `bridge.domain`, configurable and independent of the
   homeserver's `server_name`, as in the siblings.
 - IDs can be renamed with `[rename`, keeping their key. The old name keeps
@@ -1153,14 +1151,15 @@ account, and sees its posts and media arrive in Matrix.
 - Webxdc games (NIP-DC) are an optional last phase, off by default.
 
 - Default relays: Damus, nos.lol, Primal and poster.place (both addresses)
-  for publishing and fallback reads, and purplepag.es and Damus for
+  for publishing; Damus, nos.lol and Primal for fallback reads (poster.place
+  needs auth even to read), and purplepag.es and Damus for
   discovery. All answered NIP-11 on 2026-10-21. Damus, nos.lol and Primal run
   strfry with open writes. purplepag.es is an indexer for profiles and lists.
   poster.place is a **web-of-trust relay**. Its NIP-11 `curation` says
   publishing is limited to authors inside its web of trust, and that it
   rejects bridged (NIP-48 proxy) content and accounts on bridge relays it
   lists. So new IDs should expect `restricted:`/`blocked:` there until
-  they're inside its trust graph, and whether it treats example.org as a
+  they're inside its trust graph, and whether it treats a given bridge's relay as a
   bridge is up to its operator.
 
 ## Open questions
