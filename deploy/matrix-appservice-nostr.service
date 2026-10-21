@@ -1,0 +1,49 @@
+[Unit]
+Description=Matrix <-> Nostr Bridge
+# If the homeserver runs on this machine, add its unit (matrix-synapse.service,
+# conduwuit.service, ...) to After= so the bridge starts after it.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Create this user/group first, e.g.:
+#   useradd --system --home-dir /opt/matrix-appservice-nostr --shell /usr/sbin/nologin matrix-appservice-nostr
+User=matrix-appservice-nostr
+Group=matrix-appservice-nostr
+
+WorkingDirectory=/opt/matrix-appservice-nostr
+Environment=BRIDGE_CONFIG=/opt/matrix-appservice-nostr/config.yaml
+# Uses the system Python and its packages (requirements.txt, from the distro
+# repos). If you ran scripts/setup.sh, point this at the virtualenv instead:
+#   ExecStart=/opt/matrix-appservice-nostr/.venv/bin/python /opt/matrix-appservice-nostr/main.py
+ExecStart=/usr/bin/python3 /opt/matrix-appservice-nostr/main.py
+
+Restart=on-failure
+RestartSec=5s
+
+# -- Sandboxing -----------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Only the bridge's own bookkeeping (storage.data_dir in config.yaml) needs
+# to be writable -- everything else in WorkingDirectory stays read-only.
+ReadWritePaths=/opt/matrix-appservice-nostr/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

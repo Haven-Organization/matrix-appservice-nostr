@@ -1,0 +1,60 @@
+[
+ {
+  "content": "{\"name\":\"fiatjaf\",\"about\":\"boa idéia, já que eu também tinha pensado\",\"picture\":\"https://fiatjaf.com/static/favicon.jpg\",\"banner\":\"https://nostr.download/b5b71c2b5df94535bc3f9db77d56aed77fed72ab3a6e811b09ca09555b87bf84.png\",\"website\":\"https://stuff.fiatjaf.com/\",\"nip05\":\"_@fiatjaf.com\"}",
+  "created_at": 1789138347,
+  "id": "67a59200716c385cd43c84dbbc5ebed783844ca56625787fdbf586bfc471ee67",
+  "kind": 0,
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "sig": "8c6937e6d23e60ef3e0743c849c2cb9bc711a81ee227d06c72b39f07598155236340be99ba5165d030fb8b86fd8d458163b24164d1879d1eda02dfca289aa38b",
+  "tags": []
+ },
+ {
+  "content": "I have the impression that these people are deeply unserious, they are just trying to make something cool that works on their playground.\n\nMaybe it is my fault, but my impression is that they sell IPFS, FIPS or Yggdrasil as world-changing technologies that could replace the centralized mainstream things we currently have, even if it's a long shot.\n\nFor a while, I believed, and I think most people believe otherwise they wouldn't be investing their time in these things. But the creators probably don't care about the long term.\n\nIt's the same with Nostr, by the way. Nostr can work just fine with a billion people, that was the most important thing about it. Meanwhile it's clear, obvious if you think for more than 5 minutes that stuff like Mastodon and Bluesky can't, yet people are investing in these things as if they can.\n\nIt was naïve of me to think that most people interested in these things want to actually improve the world communication and were just misguided or dumb, it's more likely that they just don't care.",
+  "created_at": 1791813675,
+  "id": "f62fbb2d2a024eae519f9b49052525876e3c47c8cb0de1e836c67c4de473aa00",
+  "kind": 1,
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "sig": "6dcf59aa234c8b9357b4a9d31d3154bd9d0cacf55272c8e205a620e676973296c6b94c83c77fb635e3b5d5ab0c6d9f4faf6f06a17fdac3290a10c6b42a59717f",
+  "tags": [
+   [
+    "e",
+    "c02198a30a30e25203f7b1d8dd57f40b8f562abff42795998fc97a379654dfef",
+    "wss://spatia-arcana.com/inbox",
+    "root"
+   ],
+   [
+    "e",
+    "c6e728aa81f42dbddef27cac00f3073c32763e506ef7ab3e1f8cb04a45c794ac",
+    "wss://pyramid.fiatjaf.com/inbox",
+    "reply",
+    "abaa09dab1fc3fffc1409fdb28b13832cd4031704c4df6198525fa7ea466bed2"
+   ],
+   [
+    "p",
+    "abaa09dab1fc3fffc1409fdb28b13832cd4031704c4df6198525fa7ea466bed2"
+   ]
+  ]
+ },
+ {
+  "content": "I should have phrased 5 more like an argument (because liking Amber is not an argument against supporting an alternative, I like Amber myself too!), because perhaps people who say that in fact want to say something like:\n\n\"I think every person should have a phone with Amber installed and only use Nostr apps from that phone and the absolute requirement for ever thinking about using Nostr is that you have to first install Zapstore then Amber and promise you'll never uninstall that, never lose your phone to someone that will steal your key, and that you'll keep a paper or steel backup of your nsec at home at all times.\"",
+  "created_at": 1791903100,
+  "id": "7c58fce8efdf878a80b2372c0f199c6aa12b64e8351fd62325097b866b3c78ff",
+  "kind": 1,
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "sig": "76ddd07a5ef0a4321f07a8ac7ad8366932714f397fc4cf2f28b2e0e823277bd31ec937803a92e2ff37d7a51b0458b8b96652f4994f4675dadad4b44d27f0392c",
+  "tags": [
+   [
+    "e",
+    "2a108bd1709d81f12d5fb36d673b710be490c02edeae31f9377e17218b702c75",
+    "wss://theforest.nostr1.com/"
+   ],
+   [
+    "e",
+    "2a108bd1709d81f12d5fb36d673b710be490c02edeae31f9377e17218b702c75",
+    "wss://theforest.nostr1.com/",
+    "reply",
+    "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+   ]
+  ]
+ }
+]

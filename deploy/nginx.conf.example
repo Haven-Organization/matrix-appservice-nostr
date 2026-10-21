@@ -1,0 +1,64 @@
+# Sample nginx config for matrix-appservice-nostr.
+#
+# Two things need to reach the bridge (127.0.0.1:8092 here; bridge.listen_host
+# and bridge.listen_port in config.yaml):
+#
+#   1. /.well-known/nostr.json on bridge.domain (example.org), for NIP-05
+#      handles. Add the location block below to the server block that already
+#      serves that domain (often the same one serving Matrix's own
+#      /.well-known files). It must PROXY, not redirect: NIP-05 forbids
+#      redirects and clients ignore them.
+#
+#   2. The relay hostname (nostr.relay_url, here wss://nostr.example.org):
+#      the relay itself (WebSocket), its NIP-11 document, and media. A server
+#      block of its own, below.
+#
+# CORS: the bridge sets Access-Control-Allow-Origin on /.well-known/ itself.
+# Don't add_header one of your own there (browsers reject a doubled header),
+# and don't answer OPTIONS in nginx.
+
+upstream matrix_appservice_nostr {
+    server 127.0.0.1:8092;
+}
+
+# -- 1. In the existing server block for example.org ---------------------
+#
+#    location = /.well-known/nostr.json {
+#        proxy_pass http://matrix_appservice_nostr;
+#        proxy_set_header Host $host;
+#        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#        proxy_set_header X-Forwarded-Proto $scheme;
+#    }
+
+# -- 2. The relay hostname ------------------------------------------------
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name nostr.example.org;  # <-- the host in nostr.relay_url
+
+    ssl_certificate     /etc/letsencrypt/live/nostr.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nostr.example.org/privkey.pem;
+
+    location / {
+        proxy_pass http://matrix_appservice_nostr;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        # The relay's rate limits and bans are per client IP, read from here.
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Relay connections stay open; don't cut idle ones after 60s.
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        # Media can be large (nostr.max_media_mb).
+        client_max_body_size 100m;
+    }
+}
