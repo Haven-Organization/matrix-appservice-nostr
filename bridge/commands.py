@@ -28,7 +28,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 
-from bridge import confirm, ids
+from bridge import confirm, ids, room_links
 from bridge.admins import is_admin
 from bridge.homeserver_client import HomeserverError
 from bridge.identity_events import sync_identity
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "profiles|create|switch|rename|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
+    "profiles|create|switch|rename|unlink|link|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
     "widget|import|export|status|help"
 )
 
@@ -115,6 +115,10 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("profiles", "List your Nostr IDs, numbered, and which one is active."),
             ("switch <number or id>", "Make one of your IDs the active one."),
             ("rename <number or id> <new id>", "Give an ID a new name. Followers and posts stay."),
+            ("unlink <number or id>", "Stop a room being the ID's Profile Room (the room and its history stay)."),
+            ("link <number or id> [keep]", "In a room you admin (invite me first): make it the ID's Profile Room. "
+             "keep: use the room's name, topic and avatar as the profile."),
+            ("create room <number or id>", "A new Profile Room for an ID that has none."),
         ),
     ),
     (
@@ -297,6 +301,9 @@ async def _handle_create(app: FastAPI, room_id: str, sender: str, argument: str)
     config = app.state.config
     prefix = config.appservice.command_prefix
     words = argument.split()
+    if words and words[0].lower() == "room":
+        await room_links.handle_create_room(app, room_id, sender, words[1] if len(words) > 1 else "")
+        return
     if not words or words[0].lower() not in ("profile", "id"):
         await notice(app, room_id, f'Did you mean "{prefix}create profile"?')
         return
@@ -361,7 +368,7 @@ async def _handle_profiles(app: FastAPI, room_id: str, sender: str) -> None:
         handle = _handle(app, nostr_id)
         marker = "  ← active" if active is not None and nostr_id.id == active.id else ""
         plain.append(f"{number}. {handle}{marker}")
-        room = f" ({room_link_html(nostr_id.profile_room_id, 'Profile Room')})" if nostr_id.profile_room_id else ""
+        room = f" ({room_link_html(nostr_id.profile_room_id, 'Profile Room')})" if nostr_id.profile_room_id else " (no Profile Room)"
         rich.append(f"<li><strong>{html.escape(handle)}</strong>{room}{html.escape(marker)}</li>")
     hint = f"Switch with {prefix}switch <number or ID>"
     plain.append(hint)
@@ -770,6 +777,9 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_switch(app, room_id, sender, argument)
     elif keyword == "rename":
         await _handle_rename(app, room_id, sender, argument)
+    elif keyword in ("link", "unlink"):
+        handler = room_links.handle_link if keyword == "link" else room_links.handle_unlink
+        await handler(app, room_id, sender, argument)
     elif keyword == "follow":
         await _handle_follow(app, room_id, sender, argument)
     elif keyword == "unfollow":

@@ -16,6 +16,9 @@ Where a command takes an `<account>`, any of these work: `npub1â€¦`, `nprofile1â
   - [`[profiles`](#profiles)
   - [`[switch <number or id>`](#switch-number-or-id)
   - [`[rename <number or id> <new id>`](#rename-number-or-id-new-id)
+  - [`[unlink <number or id>`](#unlink-number-or-id)
+  - [`[link <number or id> [keep]`](#link-number-or-id-keep)
+  - [`[create room <number or id>`](#create-room-number-or-id)
 - [Following](#following)
   - [`[follow <account>`](#follow-account)
   - [`[unfollow <account>`](#unfollow-account)
@@ -90,6 +93,28 @@ Gives an ID a new name and keeps its key, so its followers, posts and Profile Ro
 - The new name follows the same rules as `[create profile <id>`.
 - The old handle keeps working for `bridge.renamed_id_grace_days` (30 by default). After that, it stays reserved for you: nobody else can take it, and you can take it back.
 - An ID can be renamed once every `bridge.rename_cooldown_days` (7 by default).
+
+### `[unlink <number or id>`
+
+Stops a room being the ID's Profile Room. Sent in the Profile Room itself, the ID can be left out. The bot says what will happen. Reply **confirm** to that message to go ahead.
+
+- The room and its history stay. Nothing said there is published any more, and posts already published stay on Nostr.
+- The ID keeps its key, handle, followers and Nostr profile.
+- The ID has no Profile Room until you give it one with `[link` or `[create room`. None is made for it automatically.
+
+### `[link <number or id> [keep]`
+
+Makes an existing room the ID's Profile Room. Invite the bot to the room first, then send the command there. Reply **confirm** to the bot's message to go ahead.
+
+- You must be an admin of the room (power level 100). The bot needs a power level high enough to change the room's name, topic, avatar and the bridge's own state (50 in most rooms). It says which level it needs if it doesn't have it.
+- The room can't be encrypted, a space, your notifications room, or another ID's Profile Room.
+- From then on, everything you post in the room is published on Nostr as that ID. So are replies to your posts there from other local users who have Nostr IDs. Nothing already in the room is published.
+- By default the room takes on the ID's current profile (name, topic, avatar, banner, website and Lightning address), so the ID's Nostr profile doesn't change. With `keep`, the room keeps its own name, topic and avatar, and they become the ID's Nostr profile.
+- If the ID already has a Profile Room, it moves here. The old room stays, with its history, and is no longer published from.
+
+### `[create room <number or id>`
+
+Makes a new Profile Room for an ID that has none (after `[unlink`), starting from the ID's current profile, and invites you to it.
 
 ## Following
 

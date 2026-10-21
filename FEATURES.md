@@ -25,7 +25,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 
 ## Nostr IDs
 
-Each Matrix user can hold several Nostr IDs (`[create profile`, `[profiles`, `[switch`, `[rename`). Each ID has its own key, its own NIP-05 handle (`name@<bridge.domain>`), and its own **Profile Room**. One of them is your **active** ID: it's the one that follows, reacts and replies when you're not inside a room that belongs to a particular ID (see [COMMANDS.md](COMMANDS.md#ids-and-which-one-is-used)).
+Each Matrix user can hold several Nostr IDs (`[create profile`, `[profiles`, `[switch`, `[rename`). An ID's Profile Room can be moved to an existing room with `[link`, unlinked with `[unlink`, or replaced with a fresh one with `[create room`. Each ID has its own key, its own NIP-05 handle (`name@<bridge.domain>`), and its own **Profile Room**. One of them is your **active** ID: it's the one that follows, reacts and replies when you're not inside a room that belongs to a particular ID (see [COMMANDS.md](COMMANDS.md#ids-and-which-one-is-used)).
 
 Each ID also publishes, and keeps up to date:
 

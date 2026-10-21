@@ -39,6 +39,8 @@ class NostrId:
     renamed_at: str | None = None
     # A remote signer's (NIP-46) client key, vault-encrypted.
     client_key: str | None = None
+    # No Profile Room on purpose ([unlink): don't create one for it.
+    room_unlinked: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,6 +174,8 @@ class BridgeRepository(Protocol):
     async def list_ids_for_user(self, matrix_user_id: str) -> list[NostrId]: ...
     async def list_all_ids(self) -> list[NostrId]: ...
     async def set_profile_room(self, id: int, room_id: str) -> None: ...
+
+    async def unlink_profile_room(self, id: int) -> None: ...
 
     async def rename_id(self, id: int, *, old_name: str, new_name: str, retired: RetiredName, now: str) -> bool:
         """Rename atomically: retire ``old_name`` and take ``new_name``.

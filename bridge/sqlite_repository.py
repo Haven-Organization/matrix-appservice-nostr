@@ -234,6 +234,9 @@ CREATE TABLE IF NOT EXISTS bridge_state (
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("nostr_events", "scope", "TEXT NOT NULL DEFAULT 'public'"),
     ("ids", "client_key", "TEXT"),
+    # Set by [unlink: the ID has no Profile Room on purpose, so none is
+    # created for it until [link or [create room.
+    ("ids", "room_unlinked", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 _INDEXES = """
@@ -253,7 +256,7 @@ _STARTUP_FIXUPS: tuple[str, ...] = ()
 
 _ID_COLUMNS = (
     "id, name, matrix_user_id, pubkey, secret_key, key_origin, bunker_uri, profile_room_id, created_at, renamed_at, "
-    "client_key"
+    "client_key, room_unlinked"
 )
 _RETIRED_COLUMNS = "name, matrix_user_id, id_ref, reason, retired_at, resolves_until"
 _EVENT_COLUMNS = "id, pubkey, kind, created_at, sig, source, d_tag, room_id, matrix_event_id, expires_at, scope"
@@ -265,7 +268,7 @@ _BLOB_COLUMNS = "sha256, mxc, mime_type, size, created_at"
 
 
 def _nostr_id(row: tuple) -> NostrId:
-    return NostrId(*row)
+    return NostrId(*row[:-1], room_unlinked=bool(row[-1]))
 
 
 def _remote(row: tuple) -> RemoteAccount:
@@ -413,7 +416,14 @@ class SqliteBridgeRepository:
         return await self._run(update)
 
     async def set_profile_room(self, id: int, room_id: str) -> None:
-        await self._run(lambda conn: conn.execute("UPDATE ids SET profile_room_id = ? WHERE id = ?", (room_id, id)))
+        await self._run(
+            lambda conn: conn.execute("UPDATE ids SET profile_room_id = ?, room_unlinked = 0 WHERE id = ?", (room_id, id))
+        )
+
+    async def unlink_profile_room(self, id: int) -> None:
+        await self._run(
+            lambda conn: conn.execute("UPDATE ids SET profile_room_id = NULL, room_unlinked = 1 WHERE id = ?", (id,))
+        )
 
     async def rename_id(self, id: int, *, old_name: str, new_name: str, retired: RetiredName, now: str) -> bool:
         def rename(conn: Any) -> bool:

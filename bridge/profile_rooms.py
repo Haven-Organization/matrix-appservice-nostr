@@ -48,13 +48,16 @@ async def default_profile_name(app: FastAPI, nostr_id: NostrId, *, first: bool) 
     return nostr_id.name
 
 
-async def create_profile_room(app: FastAPI, nostr_id: NostrId, *, first: bool) -> NostrId:
-    """Create the ID's Profile Room and record it. Raises
-    ``HomeserverError`` if the room can't be made."""
+async def create_profile_room(
+    app: FastAPI, nostr_id: NostrId, *, first: bool, profile: dict[str, dict] | None = None
+) -> NostrId:
+    """Create the ID's Profile Room and record it. ``profile`` (room state
+    contents by type) starts it with an existing profile instead of the
+    defaults. Raises ``HomeserverError`` if the room can't be made."""
     config = app.state.config
     owner = nostr_id.matrix_user_id
     avatar_mxc = None
-    if first:
+    if first and not profile:
         try:
             avatar = (await app.state.homeserver.get_profile(owner)).get("avatar_url")
             avatar_mxc = avatar if isinstance(avatar, str) and avatar.startswith("mxc://") else None
@@ -62,7 +65,7 @@ async def create_profile_room(app: FastAPI, nostr_id: NostrId, *, first: bool) -
             pass
     room_id = await app.state.homeserver.create_room(
         as_user_id=bot_mxid(config),
-        name=await default_profile_name(app, nostr_id, first=first),
+        name=None if profile and "m.room.name" in profile else await default_profile_name(app, nostr_id, first=first),
         invite=[owner],
         avatar_mxc=avatar_mxc,
         room_type=SOCIAL_PROFILE_ROOM_TYPE,
@@ -74,6 +77,7 @@ async def create_profile_room(app: FastAPI, nostr_id: NostrId, *, first: bool) -
         join_rule=config.bridge.local_profile_room_join_rule,
         initial_state=[
             {"type": SOCIAL_PROFILE_USER_ID_STATE_TYPE, "state_key": "", "content": {"user_id": owner}},
+            *({"type": t, "state_key": "", "content": c} for t, c in (profile or {}).items()),
         ],
     )
     await app.state.repository.set_profile_room(nostr_id.id, room_id)
@@ -96,6 +100,8 @@ async def ensure_user_rooms(app: FastAPI, matrix_user_id: str) -> None:
     ids = await repository.list_ids_for_user(matrix_user_id)
     for number, nostr_id in enumerate(ids, start=1):
         if nostr_id.profile_room_id is None:
+            if nostr_id.room_unlinked:
+                continue  # unlinked on purpose: [link or [create room gives it one
             try:
                 nostr_id = await create_profile_room(app, nostr_id, first=number == 1)
             except HomeserverError:
