@@ -4,8 +4,11 @@ The homeserver PUTs batches of events here whenever something happens in a
 room one of the bridge's users is in, authenticating with the shared
 ``hs_token``. Implemented per the spec, so any homeserver works:
 
-- ``PUT /_matrix/app/v1/transactions/{txnId}``: events. Deduplicated by
-  transaction ID (homeservers retry; persisted, so safe across a restart).
+- ``PUT /_matrix/app/v1/transactions/{txnId}``: events. Homeservers retry
+  a transaction until it's acknowledged, so events are deduplicated, by
+  event ID rather than transaction ID: Synapse on SQLite starts numbering
+  transactions from 1 again after a restart, and dropping a reused ID would
+  silently lose new events.
 - ``POST /_matrix/app/v1/ping``: the homeserver checking it can reach us.
 - ``GET /_matrix/app/v1/users/{userId}`` and ``.../rooms/{alias}``: the
   homeserver asking whether we want to create a user or room it was asked
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
@@ -29,6 +33,7 @@ from bridge.commands import maybe_handle_command
 from bridge.confirm import maybe_handle_confirmation
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_profile_state
 from bridge.messages import notice
+from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
 from bridge.users import bot_mxid, is_local_user
 from bridge.homeserver_client import HomeserverError
 
@@ -37,6 +42,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _EMPTY = {"status_code": 200, "content": "{}", "media_type": "application/json"}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _check_hs_token(request: Request, authorization: str | None, access_token: str | None) -> None:
@@ -100,11 +109,14 @@ _HANDLERS = (
     maybe_accept_invite,
     maybe_handle_knock,
     maybe_handle_join,
+    maybe_handle_redaction,
     maybe_handle_profile_state,
     # Before commands: a bare "confirm" is recognized by what it replies
     # to, not by a prefix or a tag.
     maybe_handle_confirmation,
     maybe_handle_command,
+    # Last: anything else in a Profile Room may be a post.
+    maybe_publish_message,
 )
 
 
@@ -123,8 +135,6 @@ async def put_transaction(
 ) -> Response:
     _check_hs_token(request, authorization, access_token)
     repository = request.app.state.repository
-    if await repository.has_processed_transaction(txn_id):
-        return Response(**_EMPTY)
     try:
         body: dict[str, Any] = await request.json()
     except ValueError as exc:
@@ -133,13 +143,17 @@ async def put_transaction(
     for event in events if isinstance(events, list) else []:
         if not isinstance(event, dict):
             continue
+        # A retried transaction carries events already handled. Claimed
+        # before handling, so an event that fails isn't retried forever.
+        event_id = event.get("event_id")
+        if isinstance(event_id, str) and not await repository.claim_event(event_id, _now()):
+            continue
         try:
             await handle_event(request, event)
         except Exception:
             logger.exception(
                 "Error handling event %s (%s) in %s", event.get("event_id"), event.get("type"), event.get("room_id")
             )
-    await repository.mark_transaction_processed(txn_id)
     return Response(**_EMPTY)
 
 

@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
 import httpx
@@ -28,6 +29,7 @@ from bridge.identity_events import sync_all_identities
 from bridge.media_routes import BLOB_PATH_RE
 from bridge.media_routes import router as media_router
 from bridge.nip05_routes import router as nip05_router
+from bridge.publishing import retry_loop
 from bridge.nip05_routes import self_check_soon
 from bridge.nostr.relay_pool import RelayPool
 from bridge.repository import BridgeRepository
@@ -89,6 +91,22 @@ async def _ensure_bot_user(homeserver: HomeserverClient, config: BridgeConfig) -
             await homeserver.set_avatar_url(mxid, avatar)
     except HomeserverError:
         logger.warning("Could not update the bot's profile", exc_info=True)
+
+
+# Handled event IDs are kept this long: far longer than any homeserver
+# keeps retrying a transaction.
+_PROCESSED_EVENTS_KEPT = timedelta(days=7)
+_HOUSEKEEPING_INTERVAL = 6 * 3600.0
+
+
+async def _housekeeping_loop(app: FastAPI) -> None:
+    while True:
+        try:
+            before = (datetime.now(timezone.utc) - _PROCESSED_EVENTS_KEPT).isoformat()
+            await app.state.repository.prune_processed_events(before)
+        except Exception:
+            logger.exception("Housekeeping failed")
+        await asyncio.sleep(_HOUSEKEEPING_INTERVAL)
 
 
 async def _ping_soon(homeserver: HomeserverClient, appservice_id: str) -> None:
@@ -215,6 +233,8 @@ def create_app(
                 # Catches a changed bridge.domain, relay or media URL, and
                 # anything a previous run couldn't publish.
                 run_in_background(app, sync_all_identities(app), name="startup identity sync")
+                tasks.append(asyncio.create_task(retry_loop(app), name="publish retries"))
+                tasks.append(asyncio.create_task(_housekeeping_loop(app), name="housekeeping"))
             logger.info(
                 "Bridge identity: _@%s (%s)", config.bridge.domain, app.state.bot_identity.pubkey
             )

@@ -158,6 +158,12 @@ class NostrSection:
     discovery_relays: list[str] = field(default_factory=lambda: list(DEFAULT_DISCOVERY_RELAYS))
     # Relays read for accounts that publish no relay list.
     fallback_relays: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_RELAYS))
+    # Largest file (image, video, audio, document) published from Matrix,
+    # and later the largest copied into Matrix, in MB.
+    max_media_mb: int = 50
+    # A relay that refuses an ID by policy isn't tried again for that ID
+    # for this long.
+    refused_relay_retry_hours: int = 24
     # Let the bridge connect to private, loopback and link-local addresses
     # (relays, media, NIP-05 lookups). Only for local development.
     allow_private_addresses: bool = False
@@ -350,6 +356,8 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         publish_relays=_relay_list(nostr_raw, "publish_relays", DEFAULT_PUBLISH_RELAYS),
         discovery_relays=_relay_list(nostr_raw, "discovery_relays", DEFAULT_DISCOVERY_RELAYS),
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
+        max_media_mb=int(nostr_raw.get("max_media_mb", 50)),
+        refused_relay_retry_hours=int(nostr_raw.get("refused_relay_retry_hours", 24)),
         allow_private_addresses=bool(nostr_raw.get("allow_private_addresses", False)),
     )
 

@@ -48,7 +48,10 @@ EXTENSIONS = {
     "video/webm": "webm",
     "audio/mpeg": "mp3",
     "audio/ogg": "ogg",
+    "audio/mp4": "m4a",
+    "video/quicktime": "mov",
     "application/pdf": "pdf",
+    "image/svg+xml": "svg",
 }
 
 # (longest side in pixels, JPEG quality), tried in order until the result
@@ -172,4 +175,70 @@ async def publish_matrix_image(app: FastAPI, mxc: str, *, max_bytes: int) -> Pub
         width=image.width,
         height=image.height,
         mxc=stored_mxc,
+    )
+
+
+# -- media in posts --------------------------------------------------------------
+
+# Images in posts may be bigger than profile pictures: they're shown large.
+POST_IMAGE_MAX_BYTES = 5_000_000
+
+
+class MediaProblem(Exception):
+    """A file that can't be published; the message is safe to show."""
+
+
+def format_size(size: int) -> str:
+    for unit, scale in (("GB", 1 << 30), ("MB", 1 << 20), ("kB", 1 << 10)):
+        if size >= scale:
+            return f"{size / scale:.1f} {unit}"
+    return f"{size} bytes"
+
+
+async def publish_matrix_media(app: FastAPI, content: dict) -> PublishedImage:
+    """Make the file a media message carries publicly fetchable. Images are
+    cleaned (``publish_matrix_image``); video, audio and other files are
+    served as they are. Raises ``MediaProblem``."""
+    if "file" in content:
+        raise MediaProblem("it's end-to-end encrypted, and the bridge can't read encrypted files")
+    mxc = content.get("url")
+    if not isinstance(mxc, str) or not mxc.startswith("mxc://"):
+        raise MediaProblem("it has no file attached")
+    limit = app.state.config.nostr.max_media_mb * 1024 * 1024
+    info = content.get("info") if isinstance(content.get("info"), dict) else {}
+    declared = info.get("size")
+    if isinstance(declared, int) and declared > limit:
+        raise MediaProblem(f"it's {format_size(declared)}, more than the {format_size(limit)} this server allows")
+
+    if content.get("msgtype") == "m.image":
+        image = await publish_matrix_image(app, mxc, max_bytes=min(POST_IMAGE_MAX_BYTES, limit))
+        if image is not None:
+            return image
+        # Not an image Pillow can read (an SVG, say): publish it as a file.
+
+    try:
+        download = await app.state.homeserver.download_media(mxc)
+    except HomeserverError as exc:
+        raise MediaProblem("the file couldn't be fetched from the homeserver") from exc
+    if download is None:
+        raise MediaProblem("the file couldn't be found on the homeserver")
+    if len(download.content) > limit:
+        raise MediaProblem(
+            f"it's {format_size(len(download.content))}, more than the {format_size(limit)} this server allows"
+        )
+    mime_type = info.get("mimetype") if isinstance(info.get("mimetype"), str) else None
+    mime_type = (mime_type or download.content_type or "application/octet-stream").split(";")[0].strip().lower()
+    sha256 = hashlib.sha256(download.content).hexdigest()
+    await app.state.repository.put_blob(
+        Blob(sha256, mxc, mime_type, len(download.content), datetime.now(timezone.utc).isoformat())
+    )
+    width, height = info.get("w"), info.get("h")
+    return PublishedImage(
+        url=blob_url(app.state.config.nostr.relay_http_base, sha256, mime_type),
+        sha256=sha256,
+        mime_type=mime_type,
+        size=len(download.content),
+        width=width if isinstance(width, int) else 0,
+        height=height if isinstance(height, int) else 0,
+        mxc=mxc,
     )

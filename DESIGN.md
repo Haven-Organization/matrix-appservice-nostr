@@ -1008,7 +1008,8 @@ migration command.
 | `bans` | pubkey or IP, until, reason, strike count, escalation level |
 | `pending_publishes` | events waiting for a NIP-46 signer or a relay to come back (ids and recipes only) |
 | `webxdc_instances` | instance id → Webxdc room, the app's sha256 (whose bytes are in `blobs`), the posting event, last opened (webxdc phase only) |
-| `processed_transactions`, `bridge_state` | as in the siblings |
+| `processed_events` | Matrix event IDs already handled, kept 7 days. Deduplicated by event ID, not transaction ID as the siblings do: Synapse on SQLite restarts transaction numbering after a restart, and a reused ID would otherwise drop new events |
+| `bridge_state` | as in the siblings |
 
 Strike counters, rate-limit buckets, the duplicate-content window, the
 web-of-trust set and the event cache are all **in memory**. Only bans
@@ -1097,7 +1098,7 @@ account, and sees its posts and media arrive in Matrix.
    `[create profile <id>`, `[profiles`, `[switch`, `[rename`, key generation and
    encryption, Profile Room, space, notifications room, and kind
    0/10002/10050/10063 published to `publish_relays`.
-3. **Outbound posting**: Profile Room messages and media become kind 1,
+3. **Outbound posting** (done): Profile Room messages and media become kind 1,
    media is served Blossom-style from Matrix, redaction becomes kind 5, the
    `rebuilt` source with versioned converters and golden tests, the relay
    index, `pending_publishes`, and failure notices.

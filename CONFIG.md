@@ -66,6 +66,8 @@ To move an existing SQLite database to Postgres: stop the bridge, run `python -m
 | `publish_relays` | Damus, nos.lol, Primal, poster.place (both addresses) | Public relays local identities' events are also sent to, for reach. |
 | `discovery_relays` | purplepag.es, Damus | Relays asked for other accounts' relay lists and profiles. |
 | `fallback_relays` | Damus, nos.lol, Primal | Relays read for accounts that publish no relay list. |
+| `max_media_mb` | `50` | Largest file published from a Profile Room (images are also capped at 5 MB after cleaning). |
+| `refused_relay_retry_hours` | `24` | A relay that refuses an ID by policy (`blocked:`/`restricted:`) isn't tried again for that ID for this long. |
 | `allow_private_addresses` | `false` | Let the bridge connect to private, loopback and link-local addresses: relays, media, NIP-05 lookups. **Local development only.** Off, every such address is refused, because these URLs are chosen by strangers. |
 
 About the default relays: poster.place is a web-of-trust relay. It only accepts posts from accounts inside its web of trust, so expect it to refuse new identities at first. It also requires authentication even to read, which is why it isn't a fallback relay.

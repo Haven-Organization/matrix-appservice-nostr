@@ -165,10 +165,15 @@ class FakeRelayPool:
 
     def __init__(self) -> None:
         self.published: list[tuple[Event, list[str]]] = []
+        # relay URL -> (accepted, message); relays not listed accept.
+        self.answers: dict[str, tuple[bool, str]] = {}
 
     async def publish(self, event: Event, relays: list[str], timeout: float | None = None) -> list[PublishResult]:
         self.published.append((event, list(relays)))
-        return [PublishResult(relay, True, "") for relay in relays]
+        return [PublishResult(relay, *self.answers.get(relay, (True, ""))) for relay in relays]
+
+    def of_kind(self, kind: int) -> list[Event]:
+        return [event for event, _ in self.published if event.kind == kind]
 
     def connections(self) -> list:
         return []

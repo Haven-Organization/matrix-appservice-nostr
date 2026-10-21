@@ -16,11 +16,12 @@ the event loop never blocks on the database, and access stays serialized.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
-from bridge.repository import Blob, EventRow, NostrId, RetiredName, UserRooms
+from bridge.repository import Blob, EventRow, NostrId, PendingPublish, RelayRefusal, RetiredName, UserRooms
 
 _SCHEMA = """
 -- Keys belonging to the bridge itself rather than to one ID, e.g. 'bot'
@@ -103,8 +104,32 @@ CREATE TABLE IF NOT EXISTS blobs (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS processed_transactions (
-    txn_id TEXT PRIMARY KEY
+-- Events not yet accepted by some relays they should reach: ids and
+-- relay URLs only. The event itself is rebuilt from the index to retry.
+CREATE TABLE IF NOT EXISTS pending_publishes (
+    event_id TEXT PRIMARY KEY,
+    relays TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    next_attempt_at TEXT NOT NULL
+);
+
+-- Relays that refused an ID by policy (a web-of-trust relay, say): not
+-- tried again for that ID until `until`.
+CREATE TABLE IF NOT EXISTS relay_refusals (
+    relay TEXT NOT NULL,
+    pubkey TEXT NOT NULL,
+    until TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (relay, pubkey)
+);
+
+-- Matrix events already handled, so a retried AppService transaction
+-- isn't acted on twice. Keyed by event ID, not transaction ID: some
+-- homeservers (Synapse on SQLite) restart transaction numbering after a
+-- restart, so a transaction ID can come back carrying new events.
+CREATE TABLE IF NOT EXISTS processed_events (
+    event_id TEXT PRIMARY KEY,
+    processed_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS bridge_state (
@@ -123,6 +148,7 @@ CREATE INDEX IF NOT EXISTS nostr_events_kind_time ON nostr_events (kind, created
 CREATE INDEX IF NOT EXISTS nostr_events_matrix_event ON nostr_events (matrix_event_id);
 CREATE INDEX IF NOT EXISTS nostr_event_tags_lookup ON nostr_event_tags (letter, value);
 CREATE INDEX IF NOT EXISTS nostr_event_tags_event ON nostr_event_tags (event_id);
+CREATE INDEX IF NOT EXISTS processed_events_time ON processed_events (processed_at);
 """
 
 # Run on every startup, after the schema is in place.
@@ -413,6 +439,68 @@ class SqliteBridgeRepository:
 
         return await self._run(query)
 
+    async def get_event_by_matrix_event(self, matrix_event_id: str) -> EventRow | None:
+        def query(conn: Any) -> EventRow | None:
+            row = conn.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM nostr_events WHERE matrix_event_id = ? ORDER BY created_at, id LIMIT 1",
+                (matrix_event_id,),
+            ).fetchone()
+            return _event_row(conn, row) if row else None
+
+        return await self._run(query)
+
+    async def delete_event(self, event_id: str) -> None:
+        def delete(conn: Any) -> None:
+            conn.execute("DELETE FROM nostr_event_tags WHERE event_id = ?", (event_id,))
+            conn.execute("DELETE FROM nostr_events WHERE id = ?", (event_id,))
+            conn.execute("DELETE FROM pending_publishes WHERE event_id = ?", (event_id,))
+
+        await self._run(delete)
+
+    # -- publishing ------------------------------------------------------
+
+    async def put_pending_publish(self, pending: PendingPublish) -> None:
+        await self._run(
+            lambda conn: conn.execute(
+                "INSERT INTO pending_publishes (event_id, relays, attempts, next_attempt_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (event_id) DO UPDATE SET relays = excluded.relays, attempts = excluded.attempts, "
+                "next_attempt_at = excluded.next_attempt_at",
+                (pending.event_id, json.dumps(list(pending.relays)), pending.attempts, pending.next_attempt_at),
+            )
+        )
+
+    async def list_due_publishes(self, now: str, limit: int = 100) -> list[PendingPublish]:
+        def query(conn: Any) -> list[PendingPublish]:
+            rows = conn.execute(
+                "SELECT event_id, relays, attempts, next_attempt_at FROM pending_publishes "
+                "WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?",
+                (now, limit),
+            ).fetchall()
+            return [PendingPublish(r[0], tuple(json.loads(r[1])), r[2], r[3]) for r in rows]
+
+        return await self._run(query)
+
+    async def delete_pending_publish(self, event_id: str) -> None:
+        await self._run(lambda conn: conn.execute("DELETE FROM pending_publishes WHERE event_id = ?", (event_id,)))
+
+    async def get_relay_refusal(self, relay: str, pubkey: str) -> RelayRefusal | None:
+        def query(conn: Any) -> RelayRefusal | None:
+            row = conn.execute(
+                "SELECT relay, pubkey, until, reason FROM relay_refusals WHERE relay = ? AND pubkey = ?", (relay, pubkey)
+            ).fetchone()
+            return RelayRefusal(*row) if row else None
+
+        return await self._run(query)
+
+    async def put_relay_refusal(self, refusal: RelayRefusal) -> None:
+        await self._run(
+            lambda conn: conn.execute(
+                "INSERT INTO relay_refusals (relay, pubkey, until, reason) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (relay, pubkey) DO UPDATE SET until = excluded.until, reason = excluded.reason",
+                (refusal.relay, refusal.pubkey, refusal.until, refusal.reason),
+            )
+        )
+
     # -- blobs -----------------------------------------------------------
 
     async def put_blob(self, blob: Blob) -> None:
@@ -432,18 +520,18 @@ class SqliteBridgeRepository:
 
     # -- AppService transactions -----------------------------------------
 
-    async def has_processed_transaction(self, txn_id: str) -> bool:
-        def query(conn: Any) -> bool:
-            return conn.execute("SELECT 1 FROM processed_transactions WHERE txn_id = ?", (txn_id,)).fetchone() is not None
-
-        return await self._run(query)
-
-    async def mark_transaction_processed(self, txn_id: str) -> None:
-        await self._run(
-            lambda conn: conn.execute(
-                "INSERT INTO processed_transactions (txn_id) VALUES (?) ON CONFLICT DO NOTHING", (txn_id,)
+    async def claim_event(self, event_id: str, now: str) -> bool:
+        def claim(conn: Any) -> bool:
+            cursor = conn.execute(
+                "INSERT INTO processed_events (event_id, processed_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                (event_id, now),
             )
-        )
+            return cursor.rowcount == 1
+
+        return await self._run(claim)
+
+    async def prune_processed_events(self, before: str) -> None:
+        await self._run(lambda conn: conn.execute("DELETE FROM processed_events WHERE processed_at < ?", (before,)))
 
     # -- small persistent values -----------------------------------------
 

@@ -32,9 +32,20 @@ def run_in_background(app: FastAPI, coroutine: Coroutine[Any, Any, Any], *, name
 
 
 async def drain(app: FastAPI) -> None:
-    """Wait for every background task to finish (used by tests)."""
-    while app.state.background_tasks:
-        await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+    """Wait for every background task to finish, including ones started by
+    those (used by tests).
+
+    Finished tasks are dropped here rather than waiting for their done
+    callbacks: those only run once the loop gets a turn, and awaiting
+    ``gather`` over tasks that are all done already returns without giving
+    it one, so a loop on that alone can spin forever."""
+    tasks: set[asyncio.Task[Any]] = app.state.background_tasks
+    while True:
+        tasks.difference_update([task for task in tasks if task.done()])
+        if not tasks:
+            return
+        await asyncio.wait(list(tasks))
+        await asyncio.sleep(0)
 
 
 async def cancel_all(app: FastAPI) -> None:

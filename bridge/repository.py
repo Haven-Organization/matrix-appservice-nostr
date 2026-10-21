@@ -93,6 +93,28 @@ class Blob:
     created_at: str
 
 
+@dataclass(frozen=True)
+class PendingPublish:
+    """An event some relays haven't accepted yet, to try again at
+    ``next_attempt_at`` (ISO time)."""
+
+    event_id: str
+    relays: tuple[str, ...]
+    attempts: int
+    next_attempt_at: str
+
+
+@dataclass(frozen=True)
+class RelayRefusal:
+    """A relay that refused an ID by policy, not to be tried again for that
+    ID until ``until`` (ISO time)."""
+
+    relay: str
+    pubkey: str
+    until: str
+    reason: str
+
+
 class BridgeRepository(Protocol):
     async def close(self) -> None: ...
 
@@ -161,13 +183,29 @@ class BridgeRepository(Protocol):
     async def get_event(self, event_id: str) -> EventRow | None: ...
     async def get_latest_event(self, pubkey: str, kind: int, d_tag: str = "") -> EventRow | None: ...
 
+    async def get_event_by_matrix_event(self, matrix_event_id: str) -> EventRow | None: ...
+
+    async def delete_event(self, event_id: str) -> None:
+        """Remove an event from the index (and any pending publish of it)."""
+        ...
+
+    # -- publishing ------------------------------------------------------
+    async def put_pending_publish(self, pending: PendingPublish) -> None: ...
+    async def list_due_publishes(self, now: str, limit: int = 100) -> list[PendingPublish]: ...
+    async def delete_pending_publish(self, event_id: str) -> None: ...
+    async def get_relay_refusal(self, relay: str, pubkey: str) -> RelayRefusal | None: ...
+    async def put_relay_refusal(self, refusal: RelayRefusal) -> None: ...
+
     # -- blobs -----------------------------------------------------------
     async def put_blob(self, blob: Blob) -> None: ...
     async def get_blob(self, sha256: str) -> Blob | None: ...
 
     # -- AppService transactions -----------------------------------------
-    async def has_processed_transaction(self, txn_id: str) -> bool: ...
-    async def mark_transaction_processed(self, txn_id: str) -> None: ...
+    async def claim_event(self, event_id: str, now: str) -> bool:
+        """Record a Matrix event as handled. False if it already was."""
+        ...
+
+    async def prune_processed_events(self, before: str) -> None: ...
 
     # -- small persistent values -----------------------------------------
     async def get_state(self, key: str) -> str | None: ...

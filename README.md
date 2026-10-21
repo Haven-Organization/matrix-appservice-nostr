@@ -4,7 +4,7 @@ Turns your Matrix server into a Nostr server. Every Matrix user can have one or 
 
 It is a sibling of [matrix-appservice-activitypub](https://github.com/Haven-Organization/matrix-appservice-activitypub) and [matrix-appservice-atproto](https://github.com/Haven-Organization/matrix-appservice-atproto). It uses the same room model, command structure and storage rules, and all three can run side by side on one homeserver.
 
-> **Status: early development.** Working so far: Nostr IDs (several per user, with chosen names, switching and renaming), each with a Profile Room whose name, topic, avatar and banner are published as the ID's Nostr profile; NIP-05 handles; profile pictures served from Matrix media; and the outgoing relay connections. Posting, following and the relay itself come next. [DESIGN.md](DESIGN.md) has the full plan and build order.
+> **Status: early development.** Working so far: Nostr IDs (several per user, with chosen names, switching and renaming), each with a Profile Room whose name, topic, avatar and banner are its Nostr profile; posting from Profile Rooms (text, images, files, mentions, threads, deletions); NIP-05 handles; media served from Matrix; and publishing to public relays with retries. The bridge's own relay and following Nostr accounts come next. See [FEATURES.md](FEATURES.md) for how things work, and [DESIGN.md](DESIGN.md) for the plan and build order.
 
 ## How it works
 

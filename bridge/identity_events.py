@@ -31,9 +31,8 @@ from bridge.homeserver_client import HomeserverError
 from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.nostr.event import Event, compute_id
-from bridge.nostr.relay_pool import PublishResult
 from bridge.repository import EventRow, NostrId
-from bridge.tasks import run_in_background
+from bridge.publishing import publish_in_background
 from bridge.users import bot_mxid
 
 logger = logging.getLogger(__name__)
@@ -41,9 +40,6 @@ logger = logging.getLogger(__name__)
 RELAY_LIST_KIND = 10002
 DM_RELAY_LIST_KIND = 10050
 BLOSSOM_SERVER_LIST_KIND = 10063
-
-# Delays before trying relays that refused for a reason worth retrying.
-_RETRY_DELAYS = (30.0, 120.0, 600.0)
 
 
 def handle(app: FastAPI, nostr_id: NostrId) -> str:
@@ -117,26 +113,6 @@ async def profile_source(app: FastAPI, nostr_id: NostrId, previous: dict[str, An
 # -- signing, storing and publishing --------------------------------------------
 
 
-async def _publish(app: FastAPI, event: Event, label: str) -> None:
-    """Send ``event`` to the publish relays, retrying the ones that refused
-    for a reason worth retrying. Logs what happened; never raises."""
-    relays = list(app.state.config.nostr.publish_relays)
-    pool = app.state.relay_pool
-    pending = relays
-    for attempt in range(len(_RETRY_DELAYS) + 1):
-        results: list[PublishResult] = await pool.publish(event, pending)
-        accepted = [r.relay for r in results if r.accepted]
-        refused = [r for r in results if not r.accepted]
-        if accepted:
-            logger.info("Published %s (%s) to %s", label, event.id, ", ".join(accepted))
-        for result in refused:
-            logger.info("%s refused %s: %s", result.relay, label, result.message)
-        pending = [r.relay for r in refused if r.retryable]
-        if not pending or attempt == len(_RETRY_DELAYS):
-            break
-        await asyncio.sleep(_RETRY_DELAYS[attempt])
-
-
 async def _store_and_publish(
     app: FastAPI,
     nostr_id: NostrId,
@@ -169,7 +145,8 @@ async def _store_and_publish(
         ),
         replace=True,
     )
-    run_in_background(app, _publish(app, event, label), name=f"publish {label} {event.id[:8]}")
+    logger.info("Signed %s (%s)", label, event.id)
+    publish_in_background(app, event)
     return event
 
 

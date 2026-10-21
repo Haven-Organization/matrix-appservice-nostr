@@ -1,0 +1,484 @@
+{
+ "pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
+ "notes": [
+  {
+   "name": "plain text, unicode, quotes, newlines",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.text",
+     "body": "  Héllo \"world\" 🎉\nsecond line\\ end  "
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "Héllo \"world\" 🎉\nsecond line\\ end",
+    "tags": [],
+    "created_at": 1761000000,
+    "id": "ce2371384957948d479c2f5d5d21bbe0718ac0872049f018e340292764059b01"
+   }
+  },
+  {
+   "name": "reply fallback stripped; pill inside mx-reply ignored",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.text",
+     "body": "> <@alice:example.org> earlier post\n\nI agree",
+     "format": "org.matrix.custom.html",
+     "formatted_body": "<mx-reply><blockquote><a href=\"https://matrix.to/#/@alice:example.org\">Alice</a> earlier post</blockquote></mx-reply>I agree",
+     "m.relates_to": {
+      "m.in_reply_to": {
+       "event_id": "$parent"
+      }
+     }
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": {
+     "root": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "root_pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
+     "parent": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "parent_pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+    },
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "I agree",
+    "tags": [
+     [
+      "e",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "wss://nostr.example.org",
+      "root",
+      "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "3583731277a3131262567b55ed8426be6cd1b97310676e903a4c04262855473d"
+   }
+  },
+  {
+   "name": "thread reply: root and parent differ",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.text",
+     "body": "third in the thread",
+     "m.relates_to": {
+      "rel_type": "m.thread",
+      "event_id": "$root",
+      "m.in_reply_to": {
+       "event_id": "$parent"
+      },
+      "is_falling_back": true
+     }
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [
+     "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+    ],
+    "reply": {
+     "root": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "root_pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
+     "parent": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "parent_pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+    },
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "third in the thread",
+    "tags": [
+     [
+      "e",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "wss://nostr.example.org",
+      "root",
+      "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+     ],
+     [
+      "e",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "wss://nostr.example.org",
+      "reply",
+      "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+     ],
+     [
+      "p",
+      "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "cb224ee8514b88f7bd3eca9e9592379d9e21860d8e86c9fbaed9301f7e1e5467"
+   }
+  },
+  {
+   "name": "pill mention, percent-encoded link, first occurrence replaced",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.text",
+     "body": "Alice: hi Alice",
+     "format": "org.matrix.custom.html",
+     "formatted_body": "<a href=\"https://matrix.to/#/%40alice%3Aexample.org\">Alice</a>: hi Alice"
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [
+     {
+      "user_id": "@alice:example.org",
+      "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+     }
+    ],
+    "p": [
+     "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+    ],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "nostr:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6: hi Alice",
+    "tags": [
+     [
+      "p",
+      "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "5a8fb42677b783f57ec2870e246f0ecf2a8520ffe900c71698d134850b5f2151"
+   }
+  },
+  {
+   "name": "spoiler with reason",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.text",
+     "body": "the ending is a twist",
+     "format": "org.matrix.custom.html",
+     "formatted_body": "the ending is <span data-mx-spoiler=\"movie\">a twist</span>"
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "the ending is a twist",
+    "tags": [
+     [
+      "content-warning",
+      "movie"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "42f0082e78efa30c79a04befe7b30db4c48811d2f55d174caaa02935ceafa248"
+   }
+  },
+  {
+   "name": "spoiler without reason",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.text",
+     "body": "secret",
+     "format": "org.matrix.custom.html",
+     "formatted_body": "<span data-mx-spoiler>secret</span>"
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "secret",
+    "tags": [
+     [
+      "content-warning"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "ab313543d26ef2ba91f64182938934257fb31d37b78ae9676c4a06ca880f31c7"
+   }
+  },
+  {
+   "name": "image with caption",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.image",
+     "body": "look at this",
+     "filename": "IMG_0001.jpg",
+     "url": "mxc://example.org/abc"
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": {
+     "url": "https://nostr.example.org/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.jpg",
+     "m": "image/jpeg",
+     "x": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "size": 12345,
+     "dim": "800x600"
+    }
+   },
+   "expected": {
+    "content": "look at this\nhttps://nostr.example.org/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.jpg",
+    "tags": [
+     [
+      "imeta",
+      "url https://nostr.example.org/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.jpg",
+      "m image/jpeg",
+      "x cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "size 12345",
+      "dim 800x600"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "f6538d07e336528fb6769aa1d7f14c10a2dadd473b0b2584c706e7da9e556601"
+   }
+  },
+  {
+   "name": "file without caption, no dimensions",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.file",
+     "body": "report.pdf",
+     "url": "mxc://example.org/def"
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": {
+     "url": "https://nostr.example.org/efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef.pdf",
+     "m": "application/pdf",
+     "x": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "size": 999,
+     "dim": null
+    }
+   },
+   "expected": {
+    "content": "https://nostr.example.org/efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef.pdf",
+    "tags": [
+     [
+      "imeta",
+      "url https://nostr.example.org/efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef.pdf",
+      "m application/pdf",
+      "x efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "size 999"
+     ]
+    ],
+    "created_at": 1761000000,
+    "id": "f8028f946eaec8a23a789467df1c2d16238528e9a80bc09cc18480c6724be863"
+   }
+  },
+  {
+   "name": "emote",
+   "matrix_event": {
+    "event_id": "$m1",
+    "room_id": "!p:example.org",
+    "sender": "@q:example.org",
+    "type": "m.room.message",
+    "origin_server_ts": 1761000000123,
+    "content": {
+     "msgtype": "m.emote",
+     "body": "waves"
+    }
+   },
+   "recipe": {
+    "kind": "note",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "event_id": "$m1",
+    "mentions": [],
+    "p": [],
+    "reply": null,
+    "relay_hint": "wss://nostr.example.org",
+    "media": null
+   },
+   "expected": {
+    "content": "*waves*",
+    "tags": [],
+    "created_at": 1761000000,
+    "id": "f39823281ed1cac079ec7a1a95c1bae0171ac0f86bed7222b106d00f22a073ec"
+   }
+  }
+ ],
+ "deletions": [
+  {
+   "name": "deletion with reason",
+   "matrix_event": {
+    "event_id": "$r1",
+    "type": "m.room.redaction",
+    "redacts": "$m1",
+    "origin_server_ts": 1761000500000,
+    "content": {
+     "reason": " posted by mistake "
+    }
+   },
+   "recipe": {
+    "kind": "deletion",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "redaction_event": "$r1",
+    "targets": [
+     {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": 1
+     }
+    ]
+   },
+   "expected": {
+    "content": "posted by mistake",
+    "tags": [
+     [
+      "e",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     [
+      "k",
+      "1"
+     ]
+    ],
+    "created_at": 1761000500,
+    "id": "1eb6f3e7885654eb1a5fe256c26adbe8b5cbac729227bffe06332836b8d48a56"
+   }
+  },
+  {
+   "name": "deletion, no reason, two targets",
+   "matrix_event": {
+    "event_id": "$r2",
+    "type": "m.room.redaction",
+    "origin_server_ts": 1761000600000,
+    "content": {
+     "redacts": "$m1"
+    }
+   },
+   "recipe": {
+    "kind": "deletion",
+    "v": 1,
+    "room_id": "!p:example.org",
+    "redaction_event": "$r2",
+    "targets": [
+     {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": 1
+     },
+     {
+      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kind": 1
+     }
+    ]
+   },
+   "expected": {
+    "content": "",
+    "tags": [
+     [
+      "e",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     [
+      "e",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     ],
+     [
+      "k",
+      "1"
+     ]
+    ],
+    "created_at": 1761000600,
+    "id": "7d38f49975170f7f56996c85962ec1cf60bc602220cb422f0426716d2605f650"
+   }
+  }
+ ]
+}

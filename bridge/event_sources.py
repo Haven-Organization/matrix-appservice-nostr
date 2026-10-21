@@ -14,6 +14,9 @@ Source kinds:
   Only for events that ARE bookkeeping, with no Matrix content behind them:
   relay lists, the media server list, later follow and mute lists. Their
   tags are references (relay URLs, pubkeys) and their content is empty.
+- ``note`` (kind 1) and ``deletion`` (kind 5), version 1: rebuilt from the
+  Matrix message or redaction they were made from (``bridge.notes``). If
+  that event has been redacted, the event is gone.
 - ``profile`` (kind 0), version 1: rebuilt from the Profile Room's
   ``m.room.name`` and ``m.room.topic`` state events, by event ID (an old
   state event can still be fetched after a newer one replaces it). The
@@ -49,6 +52,7 @@ from fastapi import FastAPI
 
 from bridge.homeserver_client import HomeserverError
 from bridge.nostr.event import compute_id
+from bridge.notes import CONVERTERS, EVENT_KINDS, is_redacted, matrix_event_id_of
 from bridge.repository import EventRow
 from bridge.users import bot_mxid
 
@@ -131,6 +135,15 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
             tags = []
             content = await profile_content_from_source(app, source)
             event_kind = PROFILE_KIND
+        elif (kind, source.get("v")) in CONVERTERS:
+            matrix_event = await _fetch(app, source["room_id"], matrix_event_id_of(source))
+            # A redaction with no reason has empty content in older room
+            # versions; it is only gone if it no longer exists.
+            if matrix_event is None or (kind != "deletion" and is_redacted(matrix_event)):
+                return Rebuilt("gone")
+            assert matrix_event is not None
+            content, tags = CONVERTERS[(kind, source["v"])](matrix_event, source)
+            event_kind = EVENT_KINDS[kind]
         else:
             logger.error("Event %s has unknown source kind %r", row.id, kind)
             return Rebuilt("mismatch")

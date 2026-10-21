@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -14,6 +15,7 @@ from bridge.sqlite_repository import SqliteBridgeRepository
 from tests.conftest import HS_TOKEN, raw_config
 
 AUTH = {"Authorization": f"Bearer {HS_TOKEN}"}
+_EVENT_IDS = itertools.count(1)
 
 # -- config ------------------------------------------------------------------
 
@@ -93,10 +95,10 @@ async def test_repository_ids_and_nip05_resolution() -> None:
     assert await repo.resolve_nip05("q-old", _iso(timedelta(days=31))) is None
     assert await repo.resolve_nip05("q-gone", _iso()) is None
 
-    assert not await repo.has_processed_transaction("t1")
-    await repo.mark_transaction_processed("t1")
-    await repo.mark_transaction_processed("t1")
-    assert await repo.has_processed_transaction("t1")
+    assert await repo.claim_event("$a", "2026-01-01")
+    assert not await repo.claim_event("$a", "2026-01-02")
+    await repo.prune_processed_events("2026-01-05")
+    assert await repo.claim_event("$a", "2026-01-06")
 
     await repo.set_state("k", "1")
     await repo.set_state("k", "2")
@@ -176,7 +178,7 @@ def _transaction(client, txn_id: str, *events: dict, headers=AUTH):
 def _message(body: str, sender: str = "@q:example.org", room: str = "!room:example.org") -> dict:
     return {
         "type": "m.room.message",
-        "event_id": f"$e{abs(hash(body))}",
+        "event_id": f"$e{next(_EVENT_IDS)}",
         "room_id": room,
         "sender": sender,
         "content": {"msgtype": "m.text", "body": body},
@@ -201,14 +203,19 @@ def test_ping_and_queries(client) -> None:
 
 
 def test_help_command_and_dedupe(client, homeserver) -> None:
-    assert _transaction(client, "t1", _message("[help")).status_code == 200
+    help_message = _message("[help")
+    assert _transaction(client, "t1", help_message).status_code == 200
     assert len(homeserver.sent) == 1
     room, content, sender = homeserver.sent[0]
     assert sender == "@nostrbot:example.org" and content["msgtype"] == "m.notice"
     assert "[status" in content["body"]
-    # The same transaction again is not processed twice.
-    _transaction(client, "t1", _message("[help"))
+    # The same transaction again is not processed twice...
+    _transaction(client, "t1", help_message)
     assert len(homeserver.sent) == 1
+    # ...but a reused transaction ID with new events is (Synapse on SQLite
+    # restarts its numbering after a restart).
+    _transaction(client, "t1", _message("[help status"))
+    assert len(homeserver.sent) == 2
 
 
 def test_prefix_needs_a_command(client, homeserver) -> None:
