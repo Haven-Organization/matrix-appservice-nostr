@@ -345,8 +345,16 @@ _PERMALINK_RE = re.compile(r"(?:https://matrix\.to/#/|matrix:)\S+")
 
 
 def share_caption(record_content: dict[str, Any]) -> str:
-    """What the reposter wrote: the record's body without the permalink to
-    the original (a bridge's own repost card has nothing else)."""
+    """What the reposter wrote. MSC4501 says whether there's any: a record
+    with ``content_inline`` stands for the original alone; without it, the
+    reposter's words are ``social.body``. Records that don't say (an
+    MSC4501 client's own) are their body minus the permalink."""
+    relation = record_content.get("org.matrix.msc4501.social.relates_to") or {}
+    if relation.get("content_inline") is True:
+        return ""
+    social_body = record_content.get("org.matrix.msc4501.social.body")
+    if relation.get("content_inline") is False and isinstance(social_body, str):
+        return social_body.strip()
     body = record_content.get("body")
     if not isinstance(body, str) or record_content.get("filename") == body:
         return ""

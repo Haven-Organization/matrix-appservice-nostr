@@ -104,7 +104,8 @@ def test_haven_repost_record_of_a_fediverse_post(shared, homeserver, relay_pool,
     permalink = f"https://matrix.to/#/{FEDI_ROOM}/{original['event_id']}"
     body = f"{caption}\n\n{permalink}" if caption else permalink
     send(shared, homeserver._store(q.profile_room_id, "m.room.message",
-                                   {"msgtype": "m.text", "body": body, RELATION: relation_to(original)}, "@q:example.org"))
+                                   {"msgtype": "m.text", "body": body,
+                                    RELATION: {**relation_to(original), "content_inline": not caption}}, "@q:example.org"))
     [note] = relay_pool.of_kind(1)
     expected = ["🔁 JoeBravo77:", "the original words", POST_URL]
     assert note.content.split("\n\n") == ([caption] if caption else []) + expected
@@ -128,3 +129,24 @@ def test_haven_repost_record_of_a_nostr_post(client, homeserver, relay_pool, cap
     [quote] = mine
     assert quote.content.startswith("quoting this nostr:nevent1")
     assert ["q", raw["id"], "wss://nostr.example.org", alice.pubkey] in [list(t) for t in quote.tags]
+
+
+def test_bluesky_quote_card_uses_only_the_commentary(shared, homeserver, relay_pool) -> None:
+    """A repost with commentary made through the Bluesky bridge: its card's
+    body also has "🔁 reposted X's post:", a quote and the link."""
+    send(shared, message("[create profile"))
+    [q] = ids_of(shared)
+    original = homeserver._store("!bsky:example.org", "m.room.message",
+                                 {"msgtype": "m.text", "body": "skeet text", "external_url": "https://bsky.app/profile/a/post/1"},
+                                 "@bsky_alice:example.org")
+    link = f"https://matrix.to/#/!bsky:example.org/{original['event_id']}"
+    card = {
+        "msgtype": "m.text",
+        "body": f"so good\n\n🔁 reposted Alice's post:\n> skeet text\n{link}",
+        RELATION: {**relation_to(original, room="!bsky:example.org", name="Alice"), "content_inline": False},
+        "org.matrix.msc4501.social.body": "so good",
+        "com.beeper.per_message_profile": {"id": "@q:example.org"},
+    }
+    send(shared, homeserver._store(q.profile_room_id, "m.room.message", card, FEDI_BOT))
+    [note] = relay_pool.of_kind(1)
+    assert note.content.split("\n\n") == ["so good", "🔁 Alice:", "skeet text", "https://bsky.app/profile/a/post/1"]
