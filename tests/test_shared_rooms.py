@@ -155,11 +155,11 @@ def test_link_another_bridges_profile_room_as_its_owner(client, homeserver, rela
         "events": {SOCIAL_PROFILE_USER_ID_STATE_TYPE: 100}}, ATPROTO_BOT, "")
     homeserver._store(room, SOCIAL_PROFILE_USER_ID_STATE_TYPE, {"user_id": "@q:example.org"}, ATPROTO_BOT, "")
     homeserver._room(room)["members"].update({"@q:example.org", "@nostrbot:example.org"})
-    ask_and_confirm(client, homeserver, "[link 1 keep", room)
-    assert ids_of(client)[0].profile_room_id == room
-
     # Someone else's marked room still needs an admin.
-    send(client, message("[create profile", sender="@admin:example.org"))
+    send(client, message("[create profile boss", sender="@admin:example.org"))
     homeserver._room(room)["members"].add("@admin:example.org")
     send(client, message("[link 1", sender="@admin:example.org", room=room))
     assert "You (not me) need to be an admin" in last_body(homeserver, room)
+
+    ask_and_confirm(client, homeserver, "[link 1 keep", room)
+    assert ids_of(client)[0].profile_room_id == room
