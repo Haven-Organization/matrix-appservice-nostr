@@ -168,8 +168,16 @@ async def _room_problem_text(
         return "This room is encrypted, so I can't read it. A Profile Room has to be unencrypted."
     if ((state.get(("m.room.create", "")) or {}).get("content") or {}).get("type") == "m.space":
         return "A space can't be a Profile Room."
-    if _power_of(state, sender) < _ADMIN_LEVEL:
-        return "You need to be an admin of this room (power level 100) to make it a Profile Room."
+    mine = _power_of(state, sender)
+    profile_editor = all(mine >= _level_for_state(state, t) for t in ("m.room.name", "m.room.topic", "m.room.avatar"))
+    if mine < _ADMIN_LEVEL and not (_owner_marked(state, sender) and profile_editor):
+        # Rooms the bridges create give their owner 99 and mark them as the
+        # owner's (MSC4501): that's enough. Anywhere else, only an admin.
+        return (
+            f"You (not me) need to be an admin of this room to make it your Profile Room: power level 100, "
+            f"and you have {mine}. If it's already your profile room on another bridge, being able to change "
+            "its name, topic and avatar is enough."
+        )
     bot = bot_mxid(app.state.config)
     # State another bridge already set correctly needn't be set again: rooms
     # the bridges create keep that one at 100, which the owner can't grant.

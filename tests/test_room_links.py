@@ -93,7 +93,7 @@ def test_link_refusals(client, homeserver, relay_pool) -> None:
     [q] = ids_of(client)
     room = established_room(homeserver, q_level=50)
     send(client, message("[link 1", room=room))
-    assert "need to be an admin" in last_body(homeserver, room)
+    assert "You (not me) need to be an admin" in last_body(homeserver, room) and "you have 50" in last_body(homeserver, room)
 
     room = established_room(homeserver, bot_level=0)
     send(client, message("[link 1 keep", room=room))

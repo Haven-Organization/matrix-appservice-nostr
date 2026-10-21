@@ -141,3 +141,25 @@ def test_other_bridges_ghosts_and_bots_are_never_acted_on(shared, homeserver, re
     profiles = relay_pool.of_kind(0)
     assert json.loads(profiles[-1].content)["about"] == "synced from Bluesky"
     assert len(relay_pool.of_kind(1)) == note_count
+
+
+def test_link_another_bridges_profile_room_as_its_owner(client, homeserver, relay_pool) -> None:
+    """The Bluesky bridge's own Profile Room (room v12, its bot the creator):
+    the owner has 99, the room is marked as theirs, and that's enough."""
+    send(client, message("[create profile"))
+    room = "!v12room"
+    homeserver._store(room, "m.room.create", {"room_version": "12", "type": "org.matrix.msc4501.social.profile"},
+                      ATPROTO_BOT, "")
+    homeserver._store(room, "m.room.power_levels", {
+        "users": {ATPROTO_BOT: 99, "@nostrbot:example.org": 99, "@q:example.org": 99}, "state_default": 50,
+        "events": {SOCIAL_PROFILE_USER_ID_STATE_TYPE: 100}}, ATPROTO_BOT, "")
+    homeserver._store(room, SOCIAL_PROFILE_USER_ID_STATE_TYPE, {"user_id": "@q:example.org"}, ATPROTO_BOT, "")
+    homeserver._room(room)["members"].update({"@q:example.org", "@nostrbot:example.org"})
+    ask_and_confirm(client, homeserver, "[link 1 keep", room)
+    assert ids_of(client)[0].profile_room_id == room
+
+    # Someone else's marked room still needs an admin.
+    send(client, message("[create profile", sender="@admin:example.org"))
+    homeserver._room(room)["members"].add("@admin:example.org")
+    send(client, message("[link 1", sender="@admin:example.org", room=room))
+    assert "You (not me) need to be an admin" in last_body(homeserver, room)
