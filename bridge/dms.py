@@ -257,9 +257,9 @@ async def maybe_send_dm(request: Request, event: dict[str, Any]) -> bool:
         return True
     if (content.get("m.relates_to") or {}).get("rel_type") == "m.replace":
         return True  # edits can't be sent
-    from bridge.commands import message_addresses_bot
+    from bridge.commands import message_for_a_bot
 
-    if message_addresses_bot(content, app.state.config):
+    if message_for_a_bot(content, app.state.config):
         return False
     try:
         await send_dm(app, local, info[1], event)

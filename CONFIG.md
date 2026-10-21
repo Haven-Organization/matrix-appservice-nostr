@@ -57,6 +57,8 @@ Every setting in `config.yaml`. `config.example.yaml` has the ones needed to sta
 | `bot_display_name` | unset | The bot's display name, applied on startup if set. |
 | `bot_avatar_mxc` | unset | The bot's avatar (an `mxc://` URI), applied on startup if set. |
 | `command_prefix` | `[` | What commands start with. Must differ from other bots in the same rooms (matrix-appservice-activitypub uses `;`, matrix-appservice-atproto `]`). |
+| `other_command_prefixes` | `[]` | Command prefixes of other bots that share rooms with this one, such as the sibling bridges (`[";", "]"]`). A message whose first line starts with one of them, straight away followed by a word and then a space or the end of the line (`]follow alice.bsky.social`, `;help`), is that bot's command: it's never published or answered here. `[Update] …` isn't matched, since the word is followed by `]`. Can't include `command_prefix`. |
+| `other_bot_users` | `[]` | MXIDs of other bots that share rooms with this one. A message that mentions one (a pill, or the MXID typed in its first line) is meant for that bot and is never published here. |
 
 ## `storage`
 

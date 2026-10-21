@@ -139,6 +139,11 @@ class AppserviceSection:
     # What a command starts with when the bot isn't tagged: "[help".
     # matrix-appservice-activitypub uses ";", matrix-appservice-atproto "]".
     command_prefix: str = "["
+    # Other bots sharing rooms with this one (the sibling bridges, say):
+    # their command prefixes, and their MXIDs. Messages meant for them are
+    # never published or answered here.
+    other_command_prefixes: tuple[str, ...] = ()
+    other_bot_users: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -395,6 +400,15 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
     command_prefix = str(appservice_raw.get("command_prefix", "[")).strip()
     if not command_prefix:
         raise ConfigError("appservice.command_prefix must not be empty")
+    other_prefixes = tuple(dict.fromkeys(p.strip() for p in _string_list(appservice_raw, "other_command_prefixes", "appservice")))
+    if "" in other_prefixes:
+        raise ConfigError("appservice.other_command_prefixes must not contain an empty prefix")
+    if command_prefix in other_prefixes:
+        raise ConfigError("appservice.other_command_prefixes must not include this bridge's own command_prefix")
+    other_bots = tuple(dict.fromkeys(u.strip() for u in _string_list(appservice_raw, "other_bot_users", "appservice")))
+    for user in other_bots:
+        if not re.fullmatch(r"@[^:\s]+:\S+", user):
+            raise ConfigError(f"appservice.other_bot_users: {user!r} isn't a Matrix user ID (@name:server)")
     user_prefix = str(appservice_raw.get("user_prefix", "nostr_"))
     bot_localpart = str(appservice_raw.get("bot_localpart", "nostrbot"))
     if bot_localpart.startswith(user_prefix):
@@ -409,6 +423,8 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         bot_display_name=appservice_raw.get("bot_display_name") or None,
         bot_avatar_mxc=appservice_raw.get("bot_avatar_mxc") or None,
         command_prefix=command_prefix,
+        other_command_prefixes=other_prefixes,
+        other_bot_users=other_bots,
     )
 
     storage_raw = _section(raw, "storage")

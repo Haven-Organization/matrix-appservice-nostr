@@ -24,6 +24,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+from functools import lru_cache
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -97,6 +98,36 @@ def message_addresses_bot(content: dict, config: Any) -> bool:
     """Whether a message is directed at the bot. Also used to make sure
     such a message is never published as a post."""
     return _tags_bot(content, config) or _extract_prefixed_command(content, config) is not None
+
+
+@lru_cache(maxsize=32)
+def _other_prefix_re(prefixes: tuple[str, ...]) -> re.Pattern[str] | None:
+    # A prefix straight away followed by a word and then a space or the end
+    # of the line: "]follow alice" or ";help", but not "[Update] ...".
+    if not prefixes:
+        return None
+    alternatives = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
+    return re.compile(rf"^(?:{alternatives})[A-Za-z][\w-]*(?:\s|$)")
+
+
+def message_addresses_other_bot(content: dict, config: Any) -> bool:
+    """Whether a message is a command for another bot sharing the room
+    (``appservice.other_command_prefixes`` and ``other_bot_users``)."""
+    section = config.appservice
+    pattern = _other_prefix_re(tuple(section.other_command_prefixes))
+    line = first_line(content)
+    if pattern is not None and pattern.match(line):
+        return True
+    if section.other_bot_users:
+        mentioned = set((content.get("m.mentions") or {}).get("user_ids") or [])
+        return any(bot in mentioned or bot in line for bot in section.other_bot_users)
+    return False
+
+
+def message_for_a_bot(content: dict, config: Any) -> bool:
+    """Whether a message is meant for this bot or another one: either way,
+    it's never published."""
+    return message_addresses_bot(content, config) or message_addresses_other_bot(content, config)
 
 
 def _handle(app: FastAPI, nostr_id: NostrId) -> str:
@@ -739,8 +770,11 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
     content = event.get("content") or {}
     sender = event.get("sender", "")
     room_id = event.get("room_id", "")
-    if not sender or not room_id or not message_addresses_bot(content, config):
+    if not sender or not room_id:
         return False
+    if not message_addresses_bot(content, config):
+        # Another bot's command: not ours to answer, and never a post.
+        return message_addresses_other_bot(content, config)
     if is_bridge_user(config, sender):
         return True
 

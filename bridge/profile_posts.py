@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 
 from bridge import ids
-from bridge.commands import message_addresses_bot
+from bridge.commands import message_for_a_bot
 from bridge.media import MediaProblem, publish_matrix_media
 from bridge.messages import notice
 from bridge.inbound import index_tags
@@ -43,7 +43,8 @@ from bridge.notes import (
 from bridge.remote import pubkey_of_ghost
 from bridge.publishing import NotifyTarget, publish_in_background
 from bridge.repository import EventRow, NostrId
-from bridge.users import is_bridge_user, is_local_user
+from bridge.homeserver_client import HomeserverError
+from bridge.users import bot_mxid, is_bridge_user, is_local_user
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,20 @@ async def _replied_post(app: FastAPI, content: dict[str, Any]) -> EventRow | Non
         if row is not None and row.kind in REPLYABLE_KINDS:
             return row
     return None
+
+
+async def _replies_to_own_message(app: FastAPI, room_id: str, content: dict[str, Any], sender: str) -> bool:
+    """True for a message that isn't a reply, or answers ``sender``'s own
+    message. False if it answers anyone else's, or what it answers can't be
+    found."""
+    targets = _reply_targets(content)
+    if not targets:
+        return True
+    try:
+        target = await app.state.homeserver.get_event(room_id, targets[0], as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        return False
+    return bool(target) and target.get("sender") == sender
 
 
 async def _mentions(app: FastAPI, content: dict[str, Any]) -> list[dict[str, str]]:
@@ -149,7 +164,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
     profile_id = await repository.get_id_for_profile_room(room_id)
     if is_bridge_user(config, sender) or not is_local_user(config, sender):
         return profile_id is not None
-    if _is_edit(content) or message_addresses_bot(content, config):
+    if _is_edit(content) or message_for_a_bot(content, config):
         return profile_id is not None
     if content.get("msgtype") not in POSTABLE_MSGTYPES:
         return profile_id is not None
@@ -163,6 +178,11 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
     else:
         return profile_id is not None  # conversation, not a post
     if author is None:
+        return True
+    if parent is None and not await _replies_to_own_message(app, room_id, content, sender):
+        # Answering something that isn't on Nostr and isn't the owner's own:
+        # another bridge's post or bot (a room shared with other bridges), or
+        # someone in the room. That's conversation, not a Nostr post.
         return True
 
     event_id = event.get("event_id", "")

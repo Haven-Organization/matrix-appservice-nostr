@@ -6,6 +6,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 
 - [Nostr IDs](#nostr-ids)
 - [Your Profile Room](#your-profile-room)
+- [Sharing a room with other bridges](#sharing-a-room-with-other-bridges)
 - [Publishing, and when it doesn't work](#publishing-and-when-it-doesnt-work)
 - [Handles](#handles)
 - [Following Nostr accounts](#following-nostr-accounts)
@@ -67,6 +68,16 @@ Each ID also publishes, and keeps up to date:
 **Other people in your Profile Room:** a local user who replies to one of your posts publishes that reply from *their own* active ID, as a reply to your post. Anything else they say there is conversation and stays in Matrix.
 
 **Posts from your other Nostr apps:** if you brought your own key, what you post from another app as that ID is shown in its Profile Room too, sent by the bot under your ID's name (MSC4144), and your deletions are applied.
+
+## Sharing a room with other bridges
+
+One room can be your Profile Room on several networks at once: link it with this bridge's `[link` and the sibling bridges' own link commands (matrix-appservice-activitypub, matrix-appservice-atproto). Its name, topic and avatar are then your profile on each network, and what you post there goes to each.
+
+- **Commands:** give each bridge a different `command_prefix` (the defaults already differ: `[` Nostr, `;` ActivityPub, `]` Bluesky). List the other bridges' prefixes in `appservice.other_command_prefixes`, and their bots in `appservice.other_bot_users`, so a command for one bridge is never posted by another. Do the same in each sibling bridge's config.
+- **Replies:** a reply to something that isn't on Nostr and isn't your own message, such as a reply mirrored from Bluesky or another bridge's "reply confirm" question, stays in Matrix. Only replies to Nostr posts, and to your own messages, are published.
+- **Other bridges' users:** their bots and ghosts are never published as you. A ghost replying to one of your posts isn't published on Nostr either.
+- **Power:** each bridge's bot needs enough power to set the room's profile state (50 in most rooms). The MSC4501 "whose profile this is" state is shared: once one bridge has set it, the others don't need the power to set it again, and unlinking one bridge leaves it in place for the rest.
+- **Linking:** `[link` says which other bridges are already in the room. Without `keep`, the room takes on the Nostr ID's profile, which changes the profile on those networks too; `[link <id> keep` uses the room's own.
 
 ## Publishing, and when it doesn't work
 

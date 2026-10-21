@@ -85,6 +85,28 @@ def _level_for_state(state: dict[tuple[str, str], dict[str, Any]], event_type: s
     return int(value) if isinstance(value, int) else 50
 
 
+def _other_bridges(state: dict[tuple[str, str], dict[str, Any]]) -> list[str]:
+    """Other bridges marking this room as theirs (``m.bridge`` state not
+    ours), by their protocol's name: a room shared with sibling bridges."""
+    names = []
+    for (event_type, state_key), event in state.items():
+        content = event.get("content") or {}
+        if event_type != "m.bridge" or not content or state_key.startswith(f"{PROTOCOL_ID}://"):
+            continue
+        protocol = content.get("protocol") or {}
+        name = protocol.get("displayname") or protocol.get("id") or "another bridge"
+        if name not in names:
+            names.append(str(name))
+    return names
+
+
+def _owner_marked(state: dict[tuple[str, str], dict[str, Any]], owner: str) -> bool:
+    """Whether MSC4501 already says the room is ``owner``'s profile (set by
+    this bridge or a sibling)."""
+    content = (state.get((SOCIAL_PROFILE_USER_ID_STATE_TYPE, "")) or {}).get("content") or {}
+    return content.get("user_id") == owner
+
+
 async def _room_problem(app: FastAPI, room_id: str, sender: str, nostr_id: NostrId) -> str | None:
     """Why ``room_id`` can't become ``nostr_id``'s Profile Room, if it can't."""
     repository = app.state.repository
@@ -110,7 +132,10 @@ async def _room_problem(app: FastAPI, room_id: str, sender: str, nostr_id: Nostr
     if _power_of(state, sender) < _ADMIN_LEVEL:
         return "You need to be an admin of this room (power level 100) to make it a Profile Room."
     bot = bot_mxid(app.state.config)
-    needed = max(_level_for_state(state, t) for t in _BOT_STATE_TYPES)
+    # State another bridge already set correctly needn't be set again: rooms
+    # the bridges create keep that one at 100, which the owner can't grant.
+    types = [t for t in _BOT_STATE_TYPES if not (t == SOCIAL_PROFILE_USER_ID_STATE_TYPE and _owner_marked(state, sender))]
+    needed = max(_level_for_state(state, t) for t in types)
     if _power_of(state, bot) < needed:
         return (
             f"I need power level {needed} in this room to keep its profile in sync with Nostr. "
@@ -202,7 +227,14 @@ async def _detach(app: FastAPI, nostr_id: NostrId, room_id: str, *, moved_to: st
     """Make ``room_id`` stop looking like ``nostr_id``'s Profile Room."""
     homeserver = app.state.homeserver
     bot = bot_mxid(app.state.config)
-    clears = [(SOCIAL_PROFILE_USER_ID_STATE_TYPE, "")] + [(t, f"{PROTOCOL_ID}://{nostr_id.pubkey}") for t in BRIDGE_INFO_TYPES]
+    clears = [(t, f"{PROTOCOL_ID}://{nostr_id.pubkey}") for t in BRIDGE_INFO_TYPES]
+    try:
+        shared = bool(_other_bridges(await _state(app, room_id)))
+    except HomeserverError:
+        shared = True  # when unsure, leave the shared marker alone
+    if not shared:
+        # Whose profile the room is: only cleared when no other bridge uses it.
+        clears.insert(0, (SOCIAL_PROFILE_USER_ID_STATE_TYPE, ""))
     for state_type, state_key in clears:
         try:
             await homeserver.send_state_event(room_id, state_type, {}, as_user_id=bot, state_key=state_key)
@@ -223,10 +255,11 @@ async def _detach(app: FastAPI, nostr_id: NostrId, room_id: str, *, moved_to: st
 async def _attach(app: FastAPI, nostr_id: NostrId, room_id: str) -> NostrId:
     await app.state.repository.set_profile_room(nostr_id.id, room_id)
     try:
-        await app.state.homeserver.send_state_event(
-            room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, {"user_id": nostr_id.matrix_user_id},
-            as_user_id=bot_mxid(app.state.config),
-        )
+        if not _owner_marked(await _state(app, room_id), nostr_id.matrix_user_id):
+            await app.state.homeserver.send_state_event(
+                room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, {"user_id": nostr_id.matrix_user_id},
+                as_user_id=bot_mxid(app.state.config),
+            )
     except HomeserverError:
         logger.info("Could not mark %s as %s's profile room", room_id, nostr_id.matrix_user_id, exc_info=True)
     from bridge.room_widget import add_widget_once
@@ -309,11 +342,20 @@ async def handle_link(app: FastAPI, room_id: str, sender: str, argument: str) ->
         "and so are replies to your posts here from other people on this server who have Nostr IDs. "
         "Nothing already in the room is published.",
     ]
+    try:
+        others = _other_bridges(await _state(app, room_id))
+    except HomeserverError:
+        others = []
     if keep:
         lines.append(f"This room's name, topic and avatar become the Nostr profile of {handle}.")
     else:
         lines.append(f"This room's name, topic and avatar are replaced with the current profile of {handle} "
                      f'(add "keep" to the command to use the room\'s own instead).')
+    if others:
+        bridged = ", ".join(others)
+        lines.append(f"This room is also bridged to {bridged}: posts here go there too, and "
+                     + ("so does any change to its name, topic or avatar." if keep else
+                        f"replacing its profile changes it on {bridged} as well. \"keep\" avoids that."))
     if target.profile_room_id:
         lines.append(f"{target.profile_room_id} stops being its Profile Room; its history stays there.")
     await confirm.ask(

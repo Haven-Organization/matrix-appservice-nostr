@@ -76,6 +76,11 @@ appservice:
   # Commands start with this: "[help". Must differ from any other bot in the
   # same rooms (matrix-appservice-activitypub uses ";", matrix-appservice-atproto "]").
   command_prefix: "["
+  # Other bots sharing rooms with this one, like the sibling bridges: their
+  # command prefixes and MXIDs. Messages meant for them are never published
+  # to Nostr.
+  # other_command_prefixes: [";", "]"]
+  # other_bot_users: ["@apbot:example.org", "@atprotobot:example.org"]
   # Decide these before going live: changing them later orphans users.
   # user_prefix: nostr_
   # bot_localpart: nostrbot
