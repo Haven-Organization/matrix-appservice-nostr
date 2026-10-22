@@ -590,7 +590,9 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     remote = await remotes.get_or_create_remote(app, raw["pubkey"]) if (local or followed) else None
     if remote is None:
         return REJECTED
+    reaction: tuple[str, str] | None = None
     if local is not None and target is not None and target.room_id and target.matrix_event_id:
+        # One of ours: a 🔁 on the post and a notification for its author.
         if await repository.is_blocked_by_any(raw["pubkey"], [local.id]):
             return IngestResult(False, "blocked: not accepted")
         await remotes.ensure_ghost_in_room(app, remote.ghost_user_id, target.room_id)
@@ -598,9 +600,13 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
             app, {"m.relates_to": {"rel_type": "m.annotation", "event_id": target.matrix_event_id, "key": "🔁"}}, raw, remote
         )
         reaction_id = await _send(app, target.room_id, content, sender=remote.ghost_user_id, ts=None, event_type="m.reaction")
-        await _store(app, raw, room_id=target.room_id, matrix_event_id=reaction_id, scope="public")
         await notify_format.send(app, local, "repost", raw["pubkey"], own=(target.room_id, target.matrix_event_id))
-        return IngestResult(True, "", stored=True)
+        if not followed:
+            await _store(app, raw, room_id=target.room_id, matrix_event_id=reaction_id, scope="public")
+            return IngestResult(True, "", stored=True)
+        # Followed too: the repost also belongs in the reposter's own room,
+        # like any of its reposts. The 🔁 is a copy, undone along with it.
+        reaction = (target.room_id, reaction_id)
     if not followed:
         return REJECTED
     original = await _original_of_repost(app, raw, target_id)
@@ -630,9 +636,11 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
         app, remote.room_id, _with_extras(app, content, raw, remote, link=event_url(app, original)), sender=remote.ghost_user_id,
         ts=int(raw["created_at"]) * 1000, event_type=_post_event_type(app),
     )
-    await _store(app, raw, room_id=remote.room_id, matrix_event_id=event_id, scope="followed")
+    await _store(app, raw, room_id=remote.room_id, matrix_event_id=event_id, scope="public" if reaction else "followed")
     if original_row is not None:
         await repository.put_mirrored_event(event_id, original_row.id, remote.room_id)
+    if reaction is not None:
+        await repository.put_mirrored_event(reaction[1], raw["id"], reaction[0])
     return IngestResult(True, "", stored=True)
 
 

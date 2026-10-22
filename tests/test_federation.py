@@ -426,3 +426,25 @@ def test_account_commands_default_to_the_rooms_account(client, homeserver, relay
     # Anywhere else, it still asks.
     command(client, "[follow")
     assert "Which account?" in homeserver.sent_to("!dm:example.org")[-1]["body"]
+
+
+def test_followed_account_reposting_a_local_post(client, homeserver, relay_pool) -> None:
+    """The repost shows in the reposter's room as well as a 🔁 on the post,
+    and undoing it removes both."""
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    message = post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "my own post"})
+    note = [e for e, _ in relay_pool.published if e.kind == 1 and e.pubkey == q.pubkey][-1]
+    repost = alice.event(6, "", [["e", note.id, "wss://nostr.example.org"], ["p", q.pubkey]])
+    assert run(client, ingest, client.app, repost, origin="subscription").stored
+
+    [reaction] = homeserver.messages(q.profile_room_id, "m.reaction")
+    assert reaction["content"]["m.relates_to"] == {"rel_type": "m.annotation", "event_id": message["event_id"], "key": "🔁"}
+    assert any("reposted your post" in b for b in notifications(client, homeserver))
+    card = homeserver.messages(remote.room_id)[-1]
+    assert card["content"]["body"].startswith("🔁 reposted ") and "my own post" in card["content"]["body"]
+    assert card["content"]["org.matrix.msc4501.social.relates_to"]["event_id"] == message["event_id"]
+
+    undo = alice.event(5, "", [["e", repost["id"]], ["k", "6"]])
+    run(client, ingest, client.app, undo, origin="subscription")
+    redacted = {event_id for _, event_id, _ in homeserver.redactions}
+    assert {reaction["event_id"], card["event_id"]} <= redacted
