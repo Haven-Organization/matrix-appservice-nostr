@@ -4,7 +4,7 @@ Turns your Matrix server into a Nostr server. Every Matrix user can have one or 
 
 It is a sibling of [matrix-appservice-activitypub](https://github.com/Haven-Organization/matrix-appservice-activitypub) and [matrix-appservice-atproto](https://github.com/Haven-Organization/matrix-appservice-atproto). It uses the same room model, command structure and storage rules, and all three can run side by side on one homeserver.
 
-> **Status: in development.** Working: Nostr IDs (several per user, with chosen names, switching and renaming), each with a Profile Room whose name, topic, avatar and banner are its Nostr profile; posting from Profile Rooms (text, media, mentions, quotes, polls, threads, pins, deletions); the bridge's own relay; following Nostr accounts, each in its own room; replies, reactions, reposts and quotes both ways; NIP-17 DMs; polls both ways; notifications; bringing your own key (`nsec`, `ncryptsec` or a NIP-46 remote signer) through a widget; Blossom media serving and uploads; and layered spam protection with NIP-86 relay management. Webxdc games are an optional last phase, not built. See [FEATURES.md](FEATURES.md) for how things work, and [DESIGN.md](DESIGN.md) for the design.
+See [FEATURES.md](FEATURES.md) for how things work, [COMMANDS.md](COMMANDS.md) for the commands, and [DESIGN.md](DESIGN.md) for the design.
 
 ## How it works
 

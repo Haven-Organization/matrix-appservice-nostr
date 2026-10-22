@@ -1,8 +1,6 @@
-# matrix-appservice-nostr: design plan
+# matrix-appservice-nostr: design
 
-Status: built through step 9 of the [build order](#build-order) (parity);
-webxdc games (step 10) are still tabled as an optional last phase. Written
-to be read next to matrix-appservice-activitypub and matrix-appservice-atproto, whose room
+Written to be read next to matrix-appservice-activitypub and matrix-appservice-atproto, whose room
 model, command structure, storage rules and MSC4501 behaviour this bridge
 copies. The command prefix is `[` (the siblings use `;` and `]`).
 
@@ -424,7 +422,7 @@ bridge keeps an index. It holds references and timestamps only, never
 ```
 nostr_events(id PK, pubkey, kind, created_at, d_tag, room_id, matrix_event_id,
              source, sig, expires_at)
-nostr_event_tags(event_id, letter, value)   -- only e, p, a, q, k, d (+ i with webxdc on)
+nostr_event_tags(event_id, letter, value)   -- only e, p, a, q, k, d
 ```
 
 Serving a `REQ` means: query the index, apply `limit`, fetch each Matrix
@@ -434,7 +432,7 @@ which is cleared on restart and on redaction, so popular events don't hit
 the homeserver every time. `max_limit` (NIP-11) caps how many events one `REQ` can
 pull.
 
-**Hashtags (`#t`) and full-text search (NIP-50) aren't supported for now.**
+**Hashtags (`#t`) and full-text search (NIP-50) aren't supported.**
 Hashtag values are words from a post's text, so indexing them would go
 against the storage rule. This may be revisited later. What the relay does:
 
@@ -581,13 +579,6 @@ Once unwrapped, the real sender goes through the same tiers and bans. A DM
 from a stranger arrives as an **invite** to a new DM room. Declining it is a "no", and nothing appears in the user's room
 list until they accept.
 
-### Later
-
-- Honour shared block lists: NIP-51 mute lists or NIP-56 reports
-  (kind 1984) published by pubkeys the admin trusts.
-- The NIP-86 relay management API, so admins can moderate from Nostr tools
-  too, authenticated with a local admin ID.
-
 ## Getting posts from followed accounts
 
 Nostr has no inbox and no firehose. The bridge is a client that goes and
@@ -677,9 +668,10 @@ Incoming, it's the reverse. A `"+"` reaction shows as 👍, a `"-"` (dislike)
 is ignored, a kind 9735 zap receipt is a notification ("⚡ X zapped your post
 1,000 sats"), and NIP-04 legacy DMs are received and shown but never sent.
 
-Out of scope for v1: sending zaps (needs a Lightning wallet, NIP-47/57),
-long-form articles (kind 30023), polls (NIP-88), communities (NIP-72),
-groups (NIP-29), and outbound edits.
+Not supported: sending zaps (needs a Lightning wallet, NIP-47/57),
+communities (NIP-72), groups (NIP-29), and outbound edits. Long-form
+articles (kind 30023) are shown as a title, summary and link; polls (NIP-88)
+work both ways.
 
 ## Media
 
@@ -698,13 +690,11 @@ repository.
   `nostr.max_media_mb`). The raw event keeps the original URLs.
 - **Uploads from users' other Nostr apps** (imported-key IDs): BUD-02
   `PUT /upload` with a kind 24242 auth event signed by a local key. The file
-  goes into the Matrix media repo, and the server returns a descriptor. Later
-  phase.
+  goes into the Matrix media repo, and the server returns a descriptor.
 
 ## Posting and media in detail
 
-The details the first milestone ([posting and media both ways](#build-order))
-depends on, which the sections above leave open.
+The details of posting and media, which the sections above leave open.
 
 ### Outbound: a Matrix message becomes a kind 1
 
@@ -723,8 +713,7 @@ media URL. An `imeta` tag carries `url`, `m`, `x`, `size`, `dim` and
 `blurhash`. Every file type is posted this way: Nostr has no separate "link
 card" form, and clients show images, video and audio inline from `imeta`.
 Images are EXIF-stripped and re-encoded when needed, exactly as in the atproto
-bridge. One Matrix message is one file, so a post has at most one attachment
-for now.
+bridge. One Matrix message is one file, so a post has at most one attachment.
 
 **Frozen inputs.** The converter may not read config, but the media URL
 contains the media host, and a host can change its domain. So the
@@ -857,139 +846,10 @@ lets a host restrict it.
 
 ### Testing
 
-The siblings have no test suite. This bridge needs one from the start,
-because of the frozen-converter rule: if a converter's output ever changes,
-every event it made stops being served.
-
-- **Golden tests**: for each converter version, fixtures of Matrix events
-  with the exact Nostr event id they must produce. A fixture is never edited
-  once a version ships; a new version adds new fixtures.
-- **Protocol tests**: NIP-01 serialization and id hashing against the spec's
-  test vectors, NIP-19 encoding, NIP-44 vectors (later).
-- **Round-trip tests** against a local relay (e.g. `nak serve` or strfry in
-  Docker) for publish → subscribe → mirror.
-
-## Webxdc games and apps (optional)
-
-Off unless the host enables `webxdc.enabled`. Not needed for anything else in
-the bridge to work.
-
-**What it is.** Webxdc apps come from Delta Chat. Each one is a zipped HTML5
-app (`.xdc`), usually a game, poll or shared editor, that runs in a sandbox
-with no network access. It talks to other players only through
-`webxdc.sendUpdate()` and `setUpdateListener()`, plus an optional realtime
-channel. On Nostr this is **NIP-DC**, a draft proposed by Alex Gleason
-(Ditto); the spec is
-[`NOSTR_WEBXDC.md`](https://gitlab.com/soapbox-pub/dittoroma/-/raw/main/NOSTR_WEBXDC.md).
-It has three parts:
-
-- **The app**: attached to any event (normally a kind 1 post) through an
-  `imeta` tag with `m: application/x-webxdc`, the file's `url` and `x` hash,
-  and a `webxdc` property holding a random instance ID. Kind 1063 (NIP-94) is
-  an alternative.
-- **State updates**: kind 4932, a regular public event with `["i",
-  <instance id>]`, an `alt` tag, and the `sendUpdate` payload as JSON
-  `content`. The optional `info`/`document`/`summary` are tags. Every
-  participant fetches all 4932s for the instance (`#i` filter) and replays
-  them in `created_at` order. That is also how high scores work: each player's
-  update carries their score, and the app builds the leaderboard from the log.
-- **Realtime**: kind 20932, ephemeral, with the same `i` tag and base64
-  payload. Relays pass it to live subscribers and don't store it.
-
-Everything is public and unencrypted. The spec also warns that apps can't
-see signatures, so an app can't verify who sent an update.
-
-**Without this feature**, a post carrying an app is mirrored like any other
-post with an attachment: the `.xdc` file is copied into Matrix and shown as a
-file nobody can run. Nothing breaks on the Nostr side.
-
-### Playing from Matrix
-
-No Matrix client runs webxdc apps, so the bridge widget does it.
-
-- A mirrored post carrying an app gets a **▶ Play** link that opens the app
-  in the widget. So does a local user's own post that attaches an `.xdc`
-  (which then gets a fresh instance ID).
-- The widget injects a `webxdc.js` shim into the app's frame. The shim
-  connects it to the bridge through the widget, authenticated with the
-  widget's existing OpenID token:
-
-| webxdc API | Bridge does |
-|---|---|
-| `selfAddr` / `selfName` | the acting ID's `npub` and display name |
-| `sendUpdate(update)` | signs a kind 4932 as the acting ID and publishes it (below) |
-| `setUpdateListener(cb, serial)` | replays the instance's updates from Matrix, then streams new ones; serial numbers are positions in that log |
-| `joinRealtimeChannel()` | subscribes to kind 20932 for the instance and relays both ways while the frame is open; nothing is stored |
-| `sendToChat` / `importFiles` | posts to the acting ID's Profile Room / file picker |
-| `sendUpdateInterval` / `sendUpdateMaxSize` | 10000 ms / **60000 bytes**, not the spec's 128000, because the update must fit in a Matrix event (see below) |
-
-The **acting ID** follows the usual rule: the Profile Room's ID when the app
-was opened from one of your Profile Rooms, otherwise your active ID.
-Switching IDs mid-game means the next update comes from the other ID, as the
-app sees a different `selfAddr`.
-
-### Storage: one room per app instance
-
-Game state is content, so it lives in Matrix like everything else:
-
-- The first time any local user opens an instance, the bot creates a
-  **Webxdc room** for it, and the user is joined. Further local players join
-  the same room. It isn't added to anyone's space; the widget is the way in.
-- Every kind 4932 for that instance goes into the room as a
-  `software.haven.nostr.webxdc.update` event (a custom type, so ordinary
-  clients don't show it as chat), with the raw event embedded. Local players'
-  updates are posted by the bot with a per-message profile; remote players'
-  are posted by their ghosts. The `info` text, if any, also appears as a small
-  `m.notice`, as Delta Chat shows it in the chat.
-- These rows go into the relay index like any other event, with `i` added to
-  the indexed tag letters, so the relay can answer `#i` queries for instances
-  that have a room here.
-- An update too large for a Matrix event (over ~64 KB) can't be stored, so
-  it's skipped and logged. That's why the bridge tells apps 60000 bytes.
-
-### Sending and receiving updates
-
-- **Out**: updates go to `publish_relays` and to the write relays of the
-  account that posted the app, where the other players are most likely
-  listening.
-- **In**: while an instance has been opened within `webxdc.active_days`
-  (default 14), the bridge keeps an `#i` subscription for it on those same
-  relays and stores what arrives. After that, the subscription is dropped and
-  re-made, catching up from the room's last update, the next time someone
-  opens it.
-- **Relay writes**: with the feature on, the relay also accepts kind 4932 and
-  20932 for instances that have a Webxdc room here, from anyone, under the
-  normal spam rules. A game is public, so strangers playing it is expected.
-  A 4932 for an instance with no room here is still refused.
-
-### Sandboxing
-
-A `.xdc` is untrusted HTML and JavaScript. The rules:
-
-- **Separate origin**: apps are served from `webxdc.sandbox_domain` (e.g.
-  `xdc.example.org`), never from the relay or widget host. A malicious app
-  then can't call the bridge's widget or admin APIs or read their cookies.
-- **One origin per instance**, when the host has wildcard DNS/TLS for it
-  (`<instance hash>.xdc.example.org`). Each app then gets its own
-  `localStorage`, which many webxdc apps expect, and apps can't read each
-  other's. Without the wildcard, apps run in an opaque-origin sandbox:
-  safe, but `localStorage` doesn't persist between sessions.
-- **No network**: a Content-Security-Policy that allows only the app's own
-  files and inline/`data:`/`blob:` resources, `connect-src 'none'`, and no
-  WebRTC. That's what the webxdc spec requires. The only way out is the
-  shim's `postMessage` channel to the widget.
-- **Integrity**: the file's sha256 must match the `imeta` `x` hash before it
-  is run. The file itself lives only in the Matrix media repository, as with
-  any other media.
-
-### Not covered
-
-- Updates can't be authenticated inside the app (a limit of the spec, not
-  the bridge), so a determined player can fake a score.
-- Delta Chat's `notify` field (pinging a specific player) has no NIP-DC
-  equivalent yet and is ignored.
-- NIP-DC is a draft. This section follows it as of October 2026 and will
-  need revisiting if it changes before being merged.
+Every converter version has golden tests: fixtures of Matrix events with the
+exact Nostr event id they must produce. A fixture is never edited once its
+version ships (a changed converter would make every event it built
+unservable); a new version adds new fixtures.
 
 ## Bookkeeping tables
 
@@ -1010,7 +870,6 @@ migration command.
 | `relay_cursors` | relay URL + subscription → last `created_at` |
 | `bans` | pubkey or IP, until, reason, strike count, escalation level |
 | `pending_publishes` | events waiting for a NIP-46 signer or a relay to come back (ids and recipes only) |
-| `webxdc_instances` | instance id → Webxdc room, the app's sha256 (whose bytes are in `blobs`), the posting event, last opened (webxdc phase only) |
 | `processed_events` | Matrix event IDs already handled, kept 7 days. Deduplicated by event ID, not transaction ID as the siblings do: Synapse on SQLite restarts transaction numbering after a restart, and a reused ID would otherwise drop new events |
 | `bridge_state` | as in the siblings |
 
@@ -1076,94 +935,4 @@ nostr:
   backfill_on_follow: 20
   inbound_policy: open
   serve_followed_to_local_clients: false   # off by default
-webxdc:
-  enabled: false                   # optional phase
-  # sandbox_domain: xdc.example.org
-  # active_days: 14
 ```
-
-## Build order
-
-**Progress:** steps 1 to 9 are done. Step 10, webxdc games, is tabled: an
-optional last phase, built only if it's still wanted and NIP-DC still looks
-stable. FEATURES.md describes what the bridge does now.
-
-### Milestone 1: posting and media both ways
-
-The goal: a local user creates an ID, posts text and media from
-Matrix that any Nostr app can see under `q@example.org`, follows a Nostr
-account, and sees its posts and media arrive in Matrix.
-
-1. **Skeleton** (done): config, storage (SQLite and Postgres), appservice routes,
-   bot, `[` commands, the guarded URL fetcher, the outgoing relay pool
-   (queues, backoff, outbound NIP-42), NIP-01/NIP-19 primitives with their
-   test vectors, and the NIP-05 endpoint and self-check.
-2. **IDs** (done; Blossom-style serving of Matrix media was pulled in from
-   step 3, since a profile picture needs a public URL): `[create profile` (with the invalid-localpart flow),
-   `[create profile <id>`, `[profiles`, `[switch`, `[rename`, key generation and
-   encryption, Profile Room, space, notifications room, and kind
-   0/10002/10050/10063 published to `publish_relays`.
-3. **Outbound posting** (done): Profile Room messages and media become kind 1,
-   media is served Blossom-style from Matrix, redaction becomes kind 5, the
-   `rebuilt` source with versioned converters and golden tests, the relay
-   index, `pending_publishes`, and failure notices.
-4. **Minimal relay** (done): NIP-01/11 server that serves local IDs' events from
-   the index to anyone and accepts writes signed by local IDs. Spam layers 1
-   and 2, and the `#t`/search handling. That's enough for NIP-05's `relays`
-   hint to lead somewhere.
-5. **Following and inbound posting** (done): `[follow`/`[unfollow`/`[following` in
-   all their input forms, ghosts with verified NIP-05, Remote User Rooms,
-   relay-list discovery, subscriptions with cursors, mirroring kinds
-   1/6/16/20/21/22 with media and embedded raw events, kind 5 →
-   redaction, backfill on follow, kind 3.
-
-### After milestone 1
-
-6. **Interactions** (done): inbound replies, reactions, reposts and quotes (relay
-   writes and `#p` subscriptions), spam layers 3–5 and the ban commands,
-   notifications, outbound replies, reactions, reposts and quotes, zap
-   receipts, relay NIP-42 and reading gift wraps, kind 1111 comments.
-7. **DMs** (done): NIP-17 both ways, NIP-04 receive-only.
-8. **Bring your own key** (done): widget import (`nsec`/`ncryptsec`), export, follow
-   and post import, then NIP-46 signers with `pending_publishes`.
-9. **Parity and extras** (done): MSC4501 settings, backfill, pins, blocks
-   and mutes, BUD-02 uploads, shared block lists, NIP-86, long-form
-   articles (shown as title, summary and link) and polls (NIP-88, both ways).
-10. **Webxdc (optional; tabled)**: the widget runtime and `webxdc.js` shim, sandbox
-    origin and CSP, Webxdc rooms, kind 4932/20932 in and out, `#i` indexing.
-    Built last, and only if NIP-DC still looks stable by then.
-
-## Decided
-
-- Command prefix: `[`.
-- IDs are chosen, may differ from the MXID, and a user may have several,
-  with an active one. When the localpart isn't a valid ID, the user gets a
-  warning with a confirmable suggestion and the `[create profile <id>` form.
-- No hashtag or full-text search for now. A filter only `#t` could narrow
-  gets `CLOSED` with `error:`.
-- Relay URL is host-configurable (`nostr.relay_url`).
-- Spam: layered rate limits, content checks, trust tiers, automatic
-  escalating bans, and automatic "shields up" during bot waves.
-- Serving followed accounts' posts to users' own Nostr apps: supported,
-  host toggle, off by default.
-- Handle domain: `bridge.domain`, configurable and independent of the
-  homeserver's `server_name`, as in the siblings.
-- IDs can be renamed with `[rename`, keeping their key. The old name keeps
-  resolving for a grace period.
-- Webxdc games (NIP-DC) are an optional last phase, off by default.
-
-- Default relays: Damus, nos.lol, Primal and poster.place (both addresses)
-  for publishing; Damus, nos.lol and Primal for fallback reads (poster.place
-  needs auth even to read), and purplepag.es and Damus for
-  discovery. All answered NIP-11 on 2026-10-21. Damus, nos.lol and Primal run
-  strfry with open writes. purplepag.es is an indexer for profiles and lists.
-  poster.place is a **web-of-trust relay**. Its NIP-11 `curation` says
-  publishing is limited to authors inside its web of trust, and that it
-  rejects bridged (NIP-48 proxy) content and accounts on bridge relays it
-  lists. So new IDs should expect `restricted:`/`blocked:` there until
-  they're inside its trust graph, and whether it treats a given bridge's relay as a
-  bridge is up to its operator.
-
-## Open questions
-
-None at the moment.

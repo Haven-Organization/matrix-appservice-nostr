@@ -248,4 +248,4 @@ Bridge admins are listed in `bridge.admins` (or, optionally, are Synapse server 
 - **Hashtag and full-text search** on the bridge's relay.
 - **Sending zaps.** Zaps you receive are shown.
 - **Encrypted Matrix rooms:** the bridge doesn't do end-to-end encryption.
-- **Webxdc games and apps** (NIP-DC): planned as an optional last phase.
+- **Webxdc games and apps** (NIP-DC).
