@@ -6,7 +6,7 @@ Only users of the bridge's own homeserver can use commands.
 
 The same sections are shown by `[help`, laid out like matrix-appservice-activitypub's. Keep this file and `_help_sections` in `bridge/commands.py` in sync.
 
-Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1…`, a 64-character hex key, a handle (`name@domain`, or a bare `domain` for `_@domain`), or a link to a profile on a Nostr website.
+Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1…`, a 64-character hex key, a handle (`name@domain`, or a bare `domain` for `_@domain`), or a link to a profile on a Nostr website. In a Nostr account's room, or a DM room with one, the account can be left out: `[follow`, `[unfollow`, `[block`, `[unblock` and `[dm` then mean that account.
 
 ## Contents
 

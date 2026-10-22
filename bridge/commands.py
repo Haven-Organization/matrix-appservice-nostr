@@ -169,11 +169,13 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
             "Following, messaging, and everyday commands.",
             [
                 (f"{p}help", "Show this message, or run with a section name to see its commands."),
-                (f"{p}follow <account>",
+                (f"{p}follow [<account>]",
                  "Follow a Nostr account (npub, nprofile, name@domain or a profile link) as your Active identity, "
-                 f'in a room of its own for its posts. Undo it with "{p}unfollow", or by leaving that room.'),
+                 f'in a room of its own for its posts. Undo it with "{p}unfollow", or by leaving that room. Run '
+                 "in an account's room, the account can be left out (the same goes for unfollow, block, unblock "
+                 "and dm)."),
                 (f"{p}following", "List every account your Active identity follows."),
-                (f"{p}dm <account>", "Start, or get back into, a private DM with a Nostr account."),
+                (f"{p}dm [<account>]", "Start, or get back into, a private DM with a Nostr account."),
             ],
         ),
         "advanced": (
@@ -183,7 +185,7 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                 (f"{p}backfill [N]",
                  "Run in an account's room: bring in its latest N posts (20 by default). Ones already here are "
                  "skipped."),
-                (f"{p}block <account>",
+                (f"{p}block [<account>]",
                  "Block an account for your Active identity: its replies, mentions and reactions stop reaching "
                  f'you. "{p}unblock" undoes it.'),
                 (f"{p}widget",
@@ -559,10 +561,21 @@ async def _actor(app: FastAPI, room_id: str, sender: str) -> NostrId | None:
 
 
 async def _resolve(app: FastAPI, room_id: str, argument: str):
-    from bridge.follows import ReferenceError, resolve_reference
+    """The account a command names, or with none named, the one the room is
+    about: a Nostr account's room, or the other side of a DM room."""
+    from bridge.follows import Reference, ReferenceError, resolve_reference
 
     if not argument.strip():
-        await notice(app, room_id, "Which account? Give an npub, an nprofile, a handle (name@domain) or a profile link.")
+        repository = app.state.repository
+        remote = await repository.get_remote_account_for_room(room_id)
+        if remote is not None:
+            return Reference(remote.pubkey, remote.write_relays, remote.nip05)
+        dm = await repository.get_dm_room_info(room_id)
+        if dm is not None:
+            remote = await repository.get_remote_account(dm[1])
+            return Reference(dm[1], remote.write_relays if remote else (), remote.nip05 if remote else None)
+        await notice(app, room_id, "Which account? Give an npub, an nprofile, a handle (name@domain) or a profile link, "
+                                   "or run this in that account's room.")
         return None
     try:
         return await resolve_reference(app, argument.split()[0])
@@ -588,7 +601,7 @@ async def _handle_follow(app: FastAPI, room_id: str, sender: str, argument: str)
     if await app.state.repository.get_id_by_pubkey(reference.pubkey) is not None:
         await notice(app, room_id, "That's an ID on this server: join its Profile Room to follow it in Matrix.")
         return
-    await notice(app, room_id, f"Following {reference.nip05 or argument.split()[0]}…")
+    await notice(app, room_id, f"Following {await _account_label(app, reference.pubkey, reference.nip05)}…")
     remote, new, problem = await safe_follow(app, actor, reference)
     if remote is None:
         await notice(app, room_id, problem or "Couldn't follow that account.")

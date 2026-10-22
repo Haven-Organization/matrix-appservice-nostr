@@ -403,3 +403,26 @@ def test_posts_from_another_app_are_mirrored_with_external_url(client, homeserve
     assert nip19.decode(content["external_url"].rsplit("/", 1)[1]).id == raw["id"]
     assert content["com.beeper.per_message_profile"] == {
         "id": "@q:example.org", "displayname": "Q Person", "avatar_url": "mxc://example.org/qface"}
+
+
+def test_account_commands_default_to_the_rooms_account(client, homeserver, relay_pool) -> None:
+    """Run in a Nostr account's room (or a DM room), [follow, [unfollow,
+    [block, [unblock and [dm need no account named."""
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    repo = client.app.state.repository
+    command(client, "[unfollow", room=remote.room_id)
+    assert run(client, repo.list_follows, q.id) == []
+    command(client, "[follow", room=remote.room_id)
+    assert run(client, repo.list_follows, q.id) == [alice.pubkey]
+    command(client, "[block", room=remote.room_id)
+    assert alice.pubkey in run(client, repo.list_blocks, q.id)
+    command(client, "[unblock", room=remote.room_id)
+    assert alice.pubkey not in run(client, repo.list_blocks, q.id)
+    command(client, "[dm", room=remote.room_id)
+    dm_room = run(client, repo.get_dm_room, q.id, alice.pubkey)
+    assert dm_room
+    command(client, "[block", room=dm_room)
+    assert alice.pubkey in run(client, repo.list_blocks, q.id)
+    # Anywhere else, it still asks.
+    command(client, "[follow")
+    assert "Which account?" in homeserver.sent_to("!dm:example.org")[-1]["body"]
