@@ -88,3 +88,23 @@ def test_import_an_addressable_short_video(client, homeserver, relay_pool) -> No
     row = run(client, client.app.state.repository.get_event, video["id"])
     assert row is not None and row.d_tag == "clip1"
     assert last(homeserver)["body"].startswith("Imported: ")
+
+
+def test_import_finds_posts_on_their_authors_relays(client, homeserver, relay_pool) -> None:
+    """A link with no relay hints, to a post only on its author's relays."""
+    create_id(client)
+    alice = Stranger()
+    relay_pool.network.append(alice.event(10002, "", [["r", "wss://alice.only"]], created_at=1000))
+    video = alice.event(34236, "clip", [["d", "c"], ["imeta", "url https://media.example/c.mp4", "m video/mp4"]])
+    asked: list[list[str]] = []
+    original = relay_pool.query
+
+    async def query(urls, filters, **kwargs):
+        asked.append(list(urls))
+        found = await original(urls, filters, **kwargs)
+        return found + ([video] if "wss://alice.only" in urls else [])
+
+    relay_pool.query = query
+    command(client, f"[import {nip19.naddr_encode(nip19.Address('c', alice.pubkey, 34236))}")
+    assert run(client, client.app.state.repository.get_event, video["id"]) is not None
+    assert any("wss://alice.only" in urls for urls in asked)

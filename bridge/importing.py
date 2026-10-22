@@ -56,6 +56,21 @@ def parse_post_reference(text: str) -> nip19.EventPointer | nip19.Address:
     raise ImportProblem("That's not a post reference.")
 
 
+async def _learn_author(app: FastAPI, pubkey: str | None) -> None:
+    """Look the author's relay list up (NIP-65, through the discovery
+    relays), so their own relays are tried too: a link often has no relay
+    hints, and many posts are only on their author's relays."""
+    from bridge import remote as remotes
+
+    if not pubkey or await app.state.repository.get_id_by_pubkey(pubkey) is not None:
+        return
+    try:
+        account = await remotes.get_or_create_remote(app, pubkey)
+        await remotes.refresh(app, account)
+    except Exception:
+        logger.info("Couldn't look up the relays of %s", pubkey, exc_info=True)
+
+
 async def fetch_post(app: FastAPI, reference: nip19.EventPointer | nip19.Address) -> dict[str, Any]:
     from bridge.inbound import fetch_event
     from bridge.nostr import event as nostr_event
@@ -63,10 +78,14 @@ async def fetch_post(app: FastAPI, reference: nip19.EventPointer | nip19.Address
 
     if isinstance(reference, nip19.EventPointer):
         found = await fetch_event(app, reference.id, hints=list(reference.relays), author=reference.author)
+        if found is None and reference.author:
+            await _learn_author(app, reference.author)
+            found = await fetch_event(app, reference.id, hints=list(reference.relays), author=reference.author)
         if found is None:
             raise ImportProblem("I couldn't find that post on any relay I tried.")
         return found
-    # An address (a long-form article): the newest version of it.
+    # An address (an article or an addressable video): its newest version.
+    await _learn_author(app, reference.pubkey)
     remote = await app.state.repository.get_remote_account(reference.pubkey)
     relays = [*reference.relays, *write_relays_for(app, remote), *app.state.config.nostr.fallback_relays]
     query = {"kinds": [reference.kind], "authors": [reference.pubkey], "#d": [reference.identifier]}
