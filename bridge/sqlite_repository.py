@@ -914,6 +914,59 @@ class SqliteBridgeRepository:
 
         return await self._run(query)
 
+    async def delete_events_by(self, pubkey: str, *, until: int, keep: tuple[str, ...] = ()) -> list[EventRow]:
+        """Take every event ``pubkey`` signed up to ``until`` (created_at)
+        out of the index, except ``keep``. Returns what was removed."""
+        def delete(conn: Any) -> list[EventRow]:
+            rows = [
+                _event_row(conn, row) for row in conn.execute(
+                    f"SELECT {_EVENT_COLUMNS} FROM nostr_events WHERE pubkey = ? AND created_at <= ?", (pubkey, until)
+                ).fetchall()
+            ]
+            rows = [row for row in rows if row.id not in keep]
+            for row in rows:
+                conn.execute("DELETE FROM nostr_event_tags WHERE event_id = ?", (row.id,))
+                conn.execute("DELETE FROM nostr_events WHERE id = ?", (row.id,))
+                conn.execute("DELETE FROM pending_publishes WHERE event_id = ?", (row.id,))
+                conn.execute("DELETE FROM mirrored_events WHERE nostr_id = ?", (row.id,))
+            return rows
+
+        return await self._run(delete)
+
+    async def delete_gift_wraps_to(self, pubkey: str) -> int:
+        """Take the DMs (NIP-59 gift wraps, kind 1059) addressed to
+        ``pubkey`` out of the index."""
+        def delete(conn: Any) -> int:
+            ids = [row[0] for row in conn.execute(
+                "SELECT e.id FROM nostr_events e JOIN nostr_event_tags t ON t.event_id = e.id "
+                "WHERE e.kind = 1059 AND t.letter = 'p' AND t.value = ?", (pubkey,)
+            ).fetchall()]
+            for event_id in ids:
+                conn.execute("DELETE FROM nostr_event_tags WHERE event_id = ?", (event_id,))
+                conn.execute("DELETE FROM nostr_events WHERE id = ?", (event_id,))
+                conn.execute("DELETE FROM pending_publishes WHERE event_id = ?", (event_id,))
+            return len(ids)
+
+        return await self._run(delete)
+
+    async def delete_id(self, id: int, retired: RetiredName) -> None:
+        """Forget an ID: its key, follows, blocks and DM rooms. Its name is
+        retired for good (and so are names it was renamed from)."""
+        def delete(conn: Any) -> None:
+            for table in ("follows", "followers", "blocks", "dm_rooms"):
+                conn.execute(f"DELETE FROM {table} WHERE id_ref = ?", (id,))
+            conn.execute("UPDATE user_settings SET active_id = NULL WHERE active_id = ?", (id,))
+            conn.execute("UPDATE retired_ids SET resolves_until = NULL WHERE id_ref = ?", (id,))
+            conn.execute("DELETE FROM ids WHERE id = ?", (id,))
+            conn.execute(
+                f"INSERT INTO retired_ids ({_RETIRED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (name) DO UPDATE SET matrix_user_id = excluded.matrix_user_id, id_ref = excluded.id_ref, "
+                "reason = excluded.reason, retired_at = excluded.retired_at, resolves_until = excluded.resolves_until",
+                (retired.name, retired.matrix_user_id, retired.id_ref, retired.reason, retired.retired_at, retired.resolves_until),
+            )
+
+        await self._run(delete)
+
     async def delete_event(self, event_id: str) -> None:
         def delete(conn: Any) -> None:
             conn.execute("DELETE FROM nostr_event_tags WHERE event_id = ?", (event_id,))

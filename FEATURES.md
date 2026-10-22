@@ -26,7 +26,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 
 ## Nostr IDs
 
-Each Matrix user can hold several Nostr IDs (`[create profile`, `[id` to list them and pick the Active one, `[rename`). An ID's Profile Room can be moved to an existing room with `[link`, unlinked with `[unlink`, or replaced with a fresh one with `[create room`. Each ID has its own key, its own NIP-05 handle (`name@<bridge.domain>`), and its own **Profile Room**. One of them is your **active** ID: it's the one that follows, reacts and replies when you're not inside a room that belongs to a particular ID (see [COMMANDS.md](COMMANDS.md#ids-and-which-one-is-used)).
+Each Matrix user can hold several Nostr IDs (`[create profile`, `[id` to list them and pick the Active one, `[rename`, and `[delete profile`, which asks every relay to delete the identity's posts and destroys the bridge's copy of its key). An ID's Profile Room can be moved to an existing room with `[link`, unlinked with `[unlink`, or replaced with a fresh one with `[create room`. Each ID has its own key, its own NIP-05 handle (`name@<bridge.domain>`), and its own **Profile Room**. One of them is your **active** ID: it's the one that follows, reacts and replies when you're not inside a room that belongs to a particular ID (see [COMMANDS.md](COMMANDS.md#ids-and-which-one-is-used)).
 
 Each ID also publishes, and keeps up to date:
 
@@ -204,7 +204,7 @@ It does what the commands do (creating and switching IDs, following, unfollowing
 
 The bridge is a Nostr relay at `nostr.relay_url` (NIP-01, NIP-11 information document, NIP-42 login, `COUNT`). It's your IDs' home relay: their handles point there, and it's where the rest of the network finds their posts.
 
-**It accepts** events that have a home in Matrix: anything signed by a local ID, and replies, comments, mentions, quotes, reactions, reposts, zap receipts and DMs aimed at a local ID, after the [spam checks](#spam-protection). Deletions of events it holds are applied. Follow lists that add or drop a local ID are noted (a "followed you" notification) but not stored. Anything else is refused with `restricted:`. Protected events (NIP-70) are only taken from their author, logged in.
+**It accepts** events that have a home in Matrix: anything signed by a local ID, and replies, comments, mentions, quotes, reactions, reposts, zap receipts and DMs aimed at a local ID, after the [spam checks](#spam-protection). Deletions of events it holds are applied, and so are requests to vanish (NIP-62) that name it or `ALL_RELAYS`: everything the key signed up to then leaves the relay (a remote account's posts are redacted in Matrix too), DMs to it leave the index, and none of it is taken again. Follow lists that add or drop a local ID are noted (a "followed you" notification) but not stored. Anything else is refused with `restricted:`. Protected events (NIP-70) are only taken from their author, logged in.
 
 **It serves**, rebuilding each event from Matrix on request:
 

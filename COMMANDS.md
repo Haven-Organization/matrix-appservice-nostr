@@ -37,6 +37,7 @@ Where a command takes an `<account>`, any of these work: `npub1â€¦`, `nprofile1â
   - [`[link <number or id> [keep]`](#link-number-or-id-keep)
   - [`[unlink <number or id>`](#unlink-number-or-id)
   - [`[rename <number or id> <new id>`](#rename-number-or-id-new-id)
+  - [`[delete profile [<number|id>]`](#delete-profile-numberid)
 - [IDs, and which one is used](#ids-and-which-one-is-used)
 
 ## Profile
@@ -203,6 +204,17 @@ Gives an ID a new name and keeps its key, so its followers, posts and Profile Ro
 - The new name follows the same rules as `[create profile <id>`.
 - The old handle keeps working for `bridge.renamed_id_grace_days` (30 by default). After that, it stays reserved for you: nobody else can take it, and you can take it back.
 - An ID can be renamed once every `bridge.rename_cooldown_days` (7 by default).
+
+### `[delete profile [<number|id>]`
+
+Deletes an identity for good. Nostr keys can't be revoked, so this does everything the protocol allows. The bot lists exactly what will happen, and nothing changes until you reply **confirm** to that message within 10 minutes. With more than one identity, name the one to delete: without a name, the bot lists them instead of guessing.
+
+- Every relay the bridge knows is sent a request to vanish (NIP-62, tagged `ALL_RELAYS`), asking it to delete everything the identity ever posted. Relays that don't support NIP-62 may keep copies, and people who saved posts still have them.
+- A last profile marked `"deleted": true` and an empty follow list are published, so apps show the account as gone.
+- The bridge destroys its copy of the key. If you brought the key yourself (or use a remote signer), the key still exists wherever you keep it.
+- The handle stops answering, and is never given to anyone else.
+- Its followers, follows, blocks and DM rooms are forgotten by the bridge, and if it was your Active identity, your next one becomes Active.
+- Its Profile Room stays, with its history, but nothing said there is published any more.
 
 ## IDs, and which one is used
 

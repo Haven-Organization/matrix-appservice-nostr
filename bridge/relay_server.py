@@ -51,7 +51,7 @@ MAX_FILTERS = 10
 _NARROWING = ("ids", "authors", "#e", "#p", "#a", "#q", "#E", "#P", "#A", "#d")
 _CACHE_SIZE = 5000
 _AUTH_WINDOW = 600
-SUPPORTED_NIPS = [1, 2, 9, 10, 11, 13, 17, 18, 22, 25, 27, 40, 42, 44, 45, 59, 65, 70, 86, 88]
+SUPPORTED_NIPS = [1, 2, 9, 10, 11, 13, 17, 18, 22, 25, 27, 40, 42, 44, 45, 59, 62, 65, 70, 86, 88]
 
 
 def matches(flt: dict[str, Any], event: dict[str, Any]) -> bool:

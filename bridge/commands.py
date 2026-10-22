@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 
-from bridge import confirm, ids, room_links
+from bridge import confirm, id_deletion, ids, room_links
 from bridge.admins import is_admin
 from bridge.homeserver_client import HomeserverError
 from bridge.identity_events import sync_identity
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "profiles|create|switch|rename|unlink|link|id|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
+    "profiles|create|switch|rename|unlink|link|delete|id|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
     "widget|import|export|status|help"
 )
 
@@ -219,6 +219,11 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                  "Stop a room being the identity's Profile Room. The room and its history stay; the identity "
                  f'keeps its key, handle and followers, but has no Profile Room until "{p}link" or '
                  f'"{p}create room".'),
+                (f"{p}delete profile [<number|id>]",
+                 "Delete an identity for good: every relay is asked to delete everything it posted (NIP-62), its "
+                 "profile is marked deleted, the bridge destroys its key, and its handle is retired. Irreversible, "
+                 "unlike everything else here. Its Profile Room stays, with its history. With more than one "
+                 "identity, says which to pick rather than guessing."),
                 (f"{p}rename <number|id> <new id>",
                  f"Change an identity's handle (<new id>@{domain}). Followers and posts stay, the old handle "
                  "keeps working for a while, and an identity can only be renamed once a week."),
@@ -861,6 +866,8 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_switch(app, room_id, sender, argument)
     elif keyword == "rename":
         await _handle_rename(app, room_id, sender, argument)
+    elif keyword == "delete":
+        await id_deletion.handle_delete(app, room_id, sender, argument)
     elif keyword in ("link", "unlink"):
         handler = room_links.handle_link if keyword == "link" else room_links.handle_unlink
         await handler(app, room_id, sender, argument)

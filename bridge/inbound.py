@@ -308,6 +308,11 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
         return IngestResult(False, "blocked: removed by a relay admin")
     if not app.state.seen.add(event.id):
         return IngestResult(True, "duplicate: already seen")
+    from bridge.vanish import VANISH_KIND, is_vanished
+
+    if event.kind != VANISH_KIND and await is_vanished(app, event.pubkey, event.created_at):
+        # NIP-62: what a key asked this relay to delete can't come back.
+        return IngestResult(False, "blocked: its author asked this relay to delete it")
     if (
         local_author is None
         and event.pubkey in getattr(app.state, "shared_blocks", ())
@@ -335,6 +340,10 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
     except nostr_event.InvalidEvent as exc:
         return IngestResult(False, f"invalid: {exc}")
 
+    if event.kind == VANISH_KIND:
+        from bridge.vanish import receive_vanish
+
+        return await receive_vanish(app, raw, local=local_author is not None)
     if local_author is not None:
         return await _from_local_author(app, raw, local_author, origin=origin)
 

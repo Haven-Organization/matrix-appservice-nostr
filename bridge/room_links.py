@@ -269,7 +269,9 @@ async def _apply_profile(app: FastAPI, room_id: str, profile: dict[str, dict[str
 # -- attaching and detaching -------------------------------------------------------
 
 
-async def _detach(app: FastAPI, nostr_id: NostrId, room_id: str, *, moved_to: str | None) -> None:
+async def _detach(
+    app: FastAPI, nostr_id: NostrId, room_id: str, *, moved_to: str | None, message: str | None = None
+) -> None:
     """Make ``room_id`` stop looking like ``nostr_id``'s Profile Room."""
     homeserver = app.state.homeserver
     bot = bot_mxid(app.state.config)
@@ -291,8 +293,8 @@ async def _detach(app: FastAPI, nostr_id: NostrId, room_id: str, *, moved_to: st
     try:
         await notice(
             app, room_id,
-            f"This is no longer the Profile Room of {_handle(app, nostr_id)}: nothing said here is published "
-            f"to Nostr any more. Posts already published stay as they are.{where}",
+            message or f"This is no longer the Profile Room of {_handle(app, nostr_id)}: nothing said here is "
+            f"published to Nostr any more. Posts already published stay as they are.{where}",
         )
     except HomeserverError:
         pass
