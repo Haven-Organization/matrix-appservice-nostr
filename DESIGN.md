@@ -185,19 +185,21 @@ does: the proposed name is carried on the warning message itself (in a
 
 ### Listing and switching
 
-`[profiles` lists the user's IDs, numbered in creation order:
+`[id` lists the user's IDs, numbered in creation order, as
+matrix-appservice-activitypub's `;id` does:
 
 ```
-Your Nostr IDs:
-1. q@example.org        ← active
+Your Nostr identities:
+1. q@example.org (active)
 2. qbot@example.org
 3. q-art@example.org
-Switch with [switch <number or ID>
+Switch with "[id <number|id>".
 ```
 
-`[switch 2` or `[switch qbot` (or `[switch qbot@example.org`) makes that ID
+`[id 2` or `[id qbot` (or `[id qbot@example.org`) makes that ID
 **active**. The numbers are positions in that list, so deleting an ID
-renumbers the ones after it. `[profiles` always shows the current numbers.
+renumbers the ones after it. `[id` always shows the current numbers.
+(`[profiles` and `[switch` were the first names for these, and still work.)
 `[status` shows the active ID too.
 
 A user's first ID becomes active automatically. Deleting the active ID makes

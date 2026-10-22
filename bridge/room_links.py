@@ -332,7 +332,7 @@ async def handle_unlink(app: FastAPI, room_id: str, sender: str, argument: str) 
         reference = linked.name if linked is not None and linked.matrix_user_id == sender else ""
     target = await ids.find_own_id(app, sender, reference) if reference else None
     if target is None:
-        await notice(app, room_id, f'Which ID? "{prefix}unlink <number or ID>"; "{prefix}profiles" lists yours.')
+        await notice(app, room_id, f'Which ID? "{prefix}unlink <number or ID>"; "{prefix}id" lists yours.')
         return
     if not target.profile_room_id:
         await notice(app, room_id, f"{_handle(app, target)} has no Profile Room.")
@@ -376,7 +376,7 @@ async def handle_link(app: FastAPI, room_id: str, sender: str, argument: str) ->
     target = await ids.find_own_id(app, sender, words[0]) if words else None
     if target is None or (len(words) > 1 and not keep) or len(words) > 2:
         await notice(app, room_id, f'Usage: "{prefix}link <number or ID> [keep]", sent in the room to link. '
-                                   f'"{prefix}profiles" lists your IDs.')
+                                   f'"{prefix}id" lists your identities.')
         return
     retry = f"{prefix}link {target.name}" + (" keep" if keep else "")
     problem = await _room_problem(app, room_id, sender, target, retry)
@@ -455,7 +455,7 @@ async def handle_create_room(app: FastAPI, room_id: str, sender: str, reference:
     prefix = app.state.config.appservice.command_prefix
     target = await ids.find_own_id(app, sender, reference) if reference else None
     if target is None:
-        await notice(app, room_id, f'Which ID? "{prefix}create room <number or ID>"; "{prefix}profiles" lists yours.')
+        await notice(app, room_id, f'Which ID? "{prefix}create room <number or ID>"; "{prefix}id" lists yours.')
         return
     if target.profile_room_id:
         await notice(app, room_id, f"{_handle(app, target)} already has a Profile Room: {target.profile_room_id}. "

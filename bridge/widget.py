@@ -199,9 +199,9 @@ async def _command(request: Request, handler, arguments) -> JSONResponse:
 
 @router.post("/widget/api/switch")
 async def switch(request: Request) -> JSONResponse:
-    from bridge.commands import _handle_switch
+    from bridge.commands import _handle_id
 
-    return await _command(request, _handle_switch, lambda b: [str(b.get("id", ""))])
+    return await _command(request, _handle_id, lambda b: [str(b.get("id", "")) or "list"])
 
 
 @router.post("/widget/api/create")

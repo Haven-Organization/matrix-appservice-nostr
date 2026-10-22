@@ -135,7 +135,7 @@ def test_create_profile_default(client, homeserver, relay_pool) -> None:
 
     # The reply names the handle, and it's the active ID.
     body = last_body(homeserver)
-    assert "q@example.org" in body and "active ID" in body
+    assert "q@example.org" in body and "Active identity" in body
 
 
 def test_profile_events_rebuild_from_matrix(client, relay_pool) -> None:
@@ -297,25 +297,35 @@ async def _force_rename(app, nostr_id, new_name):
 # -- several IDs ------------------------------------------------------------------
 
 
-def test_profiles_and_switch(client, homeserver) -> None:
+def test_id_lists_and_switches(client, homeserver) -> None:
+    """Like matrix-appservice-activitypub's ;id."""
+    send(client, message("[id"))
+    assert last_body(homeserver) == 'You don\'t have a Nostr identity yet -- run "[create profile" first.'
     send(client, message("[create profile"))
+    send(client, message("[id"))
+    assert last_body(homeserver) == "Your Nostr identities:\n1. q@example.org (active)"
     send(client, message("[create profile qbot"))
-    assert "isn't your active ID" in last_body(homeserver) and "[switch 2" in last_body(homeserver)
+    assert "isn't your Active identity" in last_body(homeserver) and "[id 2" in last_body(homeserver)
     q, qbot = ids_of(client)
     # The second ID's room is named after the ID, not the Matrix user.
     assert homeserver.state_of(qbot.profile_room_id, "m.room.name") == {"name": "qbot"}
 
-    send(client, message("[profiles"))
-    listing = last_body(homeserver)
-    assert "1. q@example.org  ← active" in listing and "2. qbot@example.org\n" in listing
+    send(client, message("[id list"))
+    assert last_body(homeserver) == (
+        'Your Nostr identities:\n1. q@example.org (active)\n2. qbot@example.org\nSwitch with "[id <number|id>".')
 
-    send(client, message("[switch 2"))
-    assert "Now acting as qbot@example.org" in last_body(homeserver)
+    send(client, message("[id 2"))
+    assert last_body(homeserver) == "Active identity is now qbot@example.org."
     assert repo_call(client, ids.active_id, client.app, "@q:example.org").id == qbot.id
-    send(client, message("[switch q@example.org"))
+    send(client, message("[id q@example.org"))
     assert repo_call(client, ids.active_id, client.app, "@q:example.org").id == q.id
-    send(client, message("[switch 7"))
-    assert "don't have an ID" in last_body(homeserver)
+    send(client, message("[id 7"))
+    assert last_body(homeserver) == 'No identity matching "7" -- run "[id list" to see yours.'
+    # The old spellings still work.
+    send(client, message("[switch 2"))
+    assert repo_call(client, ids.active_id, client.app, "@q:example.org").id == qbot.id
+    send(client, message("[profiles"))
+    assert last_body(homeserver).startswith("Your Nostr identities:")
 
 
 def test_id_limit(config, repository, homeserver, relay_pool) -> None:
@@ -416,8 +426,25 @@ def test_owner_knock_and_join(client, homeserver) -> None:
     assert "This is the Profile Room of q@example.org" in welcome and "public on Nostr" in welcome
 
 
-def test_help_lists_profile_commands(client, homeserver) -> None:
+def test_help_sections(client, homeserver) -> None:
+    send(client, message("[help"))
+    overview = last_body(homeserver)
+    for section in ("profile", "general", "advanced", "admin", "danger"):
+        assert f"[help {section}\n" in overview
     send(client, message("[help profile"))
     body = last_body(homeserver)
-    for command in ("[create profile", "[profiles", "[switch", "[rename"):
+    for command in ("[create profile [<id>]", "[id\n", "[create room"):
         assert command in body
+    assert "[profiles" not in body and "[switch" not in body
+    # Everything that asks for "confirm" is in the Danger Zone.
+    send(client, message("[help danger"))
+    danger = last_body(homeserver)
+    for command in ("[link <number|id> [keep]", "[unlink <number|id>", "[rename <number|id> <new id>"):
+        assert command in danger
+    send(client, message("[help all"))
+    assert "[link" in last_body(homeserver) and "[ban" not in last_body(homeserver)
+    # The admin section only for admins.
+    send(client, message("[help admin"))
+    assert last_body(homeserver) == "Only a bridge admin can use this."
+    send(client, message("[help admin", sender="@admin:example.org"))
+    assert "[ban <npub|handle|IP>" in last_body(homeserver)

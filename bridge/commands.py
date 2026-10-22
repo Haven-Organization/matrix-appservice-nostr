@@ -15,7 +15,7 @@ Anything that addresses the bot is consumed here, recognized or not, so a
 mistyped command sent in a Profile Room is never published as a post.
 
 Commands are grouped into sections; ``help`` lists every section and
-``help <section>`` one section. ``_HELP_SECTIONS`` and COMMANDS.md follow
+``help <section>`` one section. ``_help_sections`` and COMMANDS.md follow
 the same breakdown: keep both in sync when adding a command.
 """
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "profiles|create|switch|rename|unlink|link|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
+    "profiles|create|switch|rename|unlink|link|id|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
     "widget|import|export|status|help"
 )
 
@@ -135,79 +135,132 @@ def _handle(app: FastAPI, nostr_id: NostrId) -> str:
 
 
 # -- help ---------------------------------------------------------------------
-
-# (section, [(usage, description)]). Usage strings omit the prefix.
-_HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
-    (
-        "Profile",
-        (
-            ("create profile", "Create a Nostr ID named after your Matrix username, with its own Profile Room."),
-            ("create profile <id>", "Create a Nostr ID with any name you like (<id>@domain)."),
-            ("profiles", "List your Nostr IDs, numbered, and which one is active."),
-            ("switch <number or id>", "Make one of your IDs the active one."),
-            ("rename <number or id> <new id>", "Give an ID a new name. Followers and posts stay."),
-            ("unlink <number or id>", "Stop a room being the ID's Profile Room (the room and its history stay)."),
-            ("link <number or id> [keep]", "In a room you admin (invite me first): make it the ID's Profile Room. "
-             "keep: use the room's name, topic and avatar as the profile."),
-            ("create room <number or id>", "A new Profile Room for an ID that has none."),
-        ),
-    ),
-    (
-        "Following",
-        (
-            ("follow <account>", "Follow a Nostr account (npub, nprofile, name@domain or profile link) as your active ID."),
-            ("unfollow <account>", "Stop following it (leaving its room does the same)."),
-            ("following", "The accounts your active ID follows."),
-            ("backfill [N]", "In an account's room: bring in its latest N posts (default 20)."),
-            ("block <account>", "Block an account for your active ID: its replies, mentions and reactions stop."),
-            ("unblock <account>", "Unblock it."),
-            ("dm <account>", "Start (or get back into) a DM with an account, as your active ID."),
-        ),
-    ),
-    (
-        "Keys",
-        (
-            ("widget", "Add the bridge's widget to this room: IDs, following, and bringing your own key."),
-            ("import key", "Explains how to bring a key you already have (it's done in the widget, never in chat)."),
-            ("export key", "Explains how to get an ID's key out (also only in the widget)."),
-        ),
-    ),
-    (
-        "Admin",
-        (
-            ("ban <npub, handle or IP> [1h|6h|1d|7d|30d|forever] [purge] [reason]", "Ban from the relay; purge also removes their events here."),
-            ("unban <npub, handle or IP>", "Lift a ban."),
-            ("bans", "List current bans."),
-        ),
-    ),
-    (
-        "General",
-        (
-            ("help [section]", "List commands, or the commands in one section."),
-            ("status", "Your Nostr IDs, and whether the bridge's handles and relay are working."),
-        ),
-    ),
-)
+#
+# Laid out like matrix-appservice-activitypub's ;help: bare "[help" shows a
+# table of sections with a line about each, "[help <section>" that section's
+# commands, "[help all" every section but Admin. Anything that asks for a
+# "confirm" before acting lives in the Danger Zone. COMMANDS.md follows the
+# same sections: keep both in sync when adding a command.
 
 
-async def _handle_help(app: FastAPI, room_id: str, argument: str = "") -> None:
-    prefix = app.state.config.appservice.command_prefix
-    wanted = argument.strip().lower()
-    sections = [s for s in _HELP_SECTIONS if not wanted or s[0].lower() == wanted]
-    if not sections:
-        names = ", ".join(s[0] for s in _HELP_SECTIONS)
-        await notice(app, room_id, f'No help section "{argument}". Sections: {names}.')
-        return
-    plain = ["Nostr bridge commands:"]
-    rich = ["<p>Nostr bridge commands:</p>"]
-    for title, commands in sections:
-        plain.append(f"\n{title}")
-        rich.append(f"<p><strong>{html.escape(title)}</strong></p><ul>")
-        for usage, description in commands:
-            plain.append(f"  {prefix}{usage}: {description}")
-            rich.append(f"<li><code>{html.escape(prefix + usage)}</code>: {html.escape(description)}</li>")
-        rich.append("</ul>")
-    await notice(app, room_id, "\n".join(plain), html_message="".join(rich))
+def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str]]]]:
+    """``{key: (title, blurb, [(command, description)])}``; ``[help <key>``."""
+    p = config.appservice.command_prefix
+    domain = config.bridge.domain
+    return {
+        "profile": (
+            "Profile",
+            "Setting up and maintaining your own Nostr identities.",
+            [
+                (f"{p}create profile [<id>]",
+                 f"Set up a new Nostr identity (<id>@{domain}, or your Matrix username without <id>) and its "
+                 "Profile Room in one step. Run it again for one you have to be invited back into your rooms."),
+                (f"{p}id",
+                 "List your Nostr identities (numbered, Active one marked), or switch which one is Active: "
+                 f'"{p}id <number|id>". Active is used for anything that doesn\'t already have an identity '
+                 "tied to it; in a Profile Room, that room's own identity is always used."),
+                (f"{p}create room <number|id>",
+                 "Give an identity that has no Profile Room (after unlinking it) a new one, starting from its "
+                 "current profile."),
+            ],
+        ),
+        "general": (
+            "General",
+            "Following, messaging, and everyday commands.",
+            [
+                (f"{p}help", "Show this message, or run with a section name to see its commands."),
+                (f"{p}follow <account>",
+                 "Follow a Nostr account (npub, nprofile, name@domain or a profile link) as your Active identity, "
+                 f'in a room of its own for its posts. Undo it with "{p}unfollow", or by leaving that room.'),
+                (f"{p}following", "List every account your Active identity follows."),
+                (f"{p}dm <account>", "Start, or get back into, a private DM with a Nostr account."),
+            ],
+        ),
+        "advanced": (
+            "Advanced/Maintenance",
+            "Keys, moderation of your own feed, and other things almost nobody needs day to day.",
+            [
+                (f"{p}backfill [N]",
+                 "Run in an account's room: bring in its latest N posts (20 by default). Ones already here are "
+                 "skipped."),
+                (f"{p}block <account>",
+                 "Block an account for your Active identity: its replies, mentions and reactions stop reaching "
+                 f'you. "{p}unblock" undoes it.'),
+                (f"{p}widget",
+                 "Add the bridge's widget to this room: buttons for your identities, following, and bringing "
+                 "your own key, for clients that support Matrix widgets."),
+                (f"{p}import key",
+                 "How to bring a Nostr key you already have. It's done in the widget over HTTPS, never in chat."),
+                (f"{p}export key", "How to take an identity's key with you (also only in the widget)."),
+                (f"{p}status", "Your Nostr identities, and whether the bridge's handles and relay are working."),
+            ],
+        ),
+        "admin": (
+            "Admin",
+            "Moderating the bridge's relay, gated to bridge admins.",
+            [
+                (f"{p}ban <npub|handle|IP> [1h|6h|1d|7d|30d|forever] [purge] [reason]",
+                 "Ban an account or address from the relay (7 days by default). purge also removes their "
+                 "events from Matrix."),
+                (f"{p}unban <npub|handle|IP>", "Lift a ban."),
+                (f"{p}bans", "List current bans."),
+            ],
+        ),
+        "danger": (
+            "⚠️ Danger Zone",
+            "Commands that change what a room or an identity IS, in ways that are hard to undo. Each sends a "
+            'warning and requires a "confirm" reply before anything actually happens.',
+            [
+                (f"{p}link <number|id> [keep]",
+                 "Run in an existing room you admin (invite me first): make it that identity's Profile Room. "
+                 "Everything you post there is then published on Nostr. The room takes on the identity's "
+                 "profile, or with keep, the identity takes on the room's name, topic and avatar."),
+                (f"{p}unlink <number|id>",
+                 "Stop a room being the identity's Profile Room. The room and its history stay; the identity "
+                 f'keeps its key, handle and followers, but has no Profile Room until "{p}link" or '
+                 f'"{p}create room".'),
+                (f"{p}rename <number|id> <new id>",
+                 f"Change an identity's handle (<new id>@{domain}). Followers and posts stay, the old handle "
+                 "keeps working for a while, and an identity can only be renamed once a week."),
+            ],
+        ),
+    }
+
+
+def _render_help_table(intro: str, intro_html: str, commands: list[tuple[str, str]]) -> tuple[str, str]:
+    body = intro + "\n\n" + "\n\n".join(f"{cmd}\n  - {desc}" for cmd, desc in commands)
+    rows = "".join(f"<tr><td>{html.escape(cmd)}</td><td>{html.escape(desc)}</td></tr>" for cmd, desc in commands)
+    formatted = (f"<p>{intro_html}</p><table><thead><tr><th>Command</th><th>Description</th></tr></thead>"
+                 f"<tbody>{rows}</tbody></table>")
+    return body, formatted
+
+
+async def _handle_help(app: FastAPI, room_id: str, argument: str = "", sender: str = "") -> None:
+    """Sent as an ordinary message, not a notice, so it stands out."""
+    config = app.state.config
+    p = config.appservice.command_prefix
+    sections = _help_sections(config)
+    key = argument.strip().lower()
+    intro = (f'Hi, I\'m the Nostr bridge! Start a message with "{p}" to give me a command (e.g. "{p}help"). '
+             f'You can also tag me in place of "{p}":')
+    intro_html = (f"Hi, I'm the Nostr bridge! Start a message with <code>{html.escape(p)}</code> to give me a "
+                  f"command (e.g. <code>{html.escape(p)}help</code>). You can also tag me in place of "
+                  f"<code>{html.escape(p)}</code>:")
+    if key == "admin":
+        if not await is_admin(config, app.state.homeserver, sender):
+            await notice(app, room_id, "Only a bridge admin can use this.")
+            return
+        rows = sections["admin"][2]
+    elif key == "all":
+        rows = [row for k, (_t, _b, commands) in sections.items() if k != "admin" for row in commands]
+    elif key in sections:
+        rows = sections[key][2]
+    else:
+        rows = [(f"{p}help {k}", blurb) for k, (_title, blurb, _cmds) in sections.items()]
+        intro += f'\n\nRun "{p}help <section>" to see a section\'s own commands.'
+        intro_html += f"</p><p>Run <code>{html.escape(p)}help &lt;section&gt;</code> to see a section's own commands."
+    body, formatted = _render_help_table(intro, intro_html, rows)
+    await notice(app, room_id, body, html_message=formatted, msgtype="m.text")
 
 
 # -- create profile -----------------------------------------------------------
@@ -253,10 +306,10 @@ async def _finish_creating(
     )
     active = await ids.active_id(app, sender)
     if active is not None and active.id == nostr_id.id:
-        active_line = "It's your active ID."
+        active_line = "It's your Active identity."
     else:
         number = ids.id_number(await repository.list_ids_for_user(sender), nostr_id)
-        active_line = f'It isn\'t your active ID; make it so with "{prefix}switch {number}".'
+        active_line = f'It isn\'t your Active identity; make it so with "{prefix}id {number}".'
     assert nostr_id.profile_room_id is not None
     await notice(
         app,
@@ -383,45 +436,42 @@ async def _execute_create(app: FastAPI, room_id: str, sender: str, args: dict[st
     await _create(app, room_id, sender, name)
 
 
-# -- profiles and switch ------------------------------------------------------
+# -- id: listing your identities, and which one is Active ------------------------
+# As matrix-appservice-activitypub's ;id. "[profiles" and "[switch <x>" are
+# kept as old spellings of "[id" and "[id <x>".
 
 
-async def _handle_profiles(app: FastAPI, room_id: str, sender: str) -> None:
-    prefix = app.state.config.appservice.command_prefix
+async def _handle_id(app: FastAPI, room_id: str, sender: str, argument: str = "") -> None:
+    config = app.state.config
+    p = config.appservice.command_prefix
     owned = await app.state.repository.list_ids_for_user(sender)
     if not owned:
-        await notice(app, room_id, f'You don\'t have a Nostr ID yet. Create one with "{prefix}create profile".')
+        await notice(app, room_id, f'You don\'t have a Nostr identity yet -- run "{p}create profile" first.')
         return
-    active = await ids.active_id(app, sender)
-    plain = ["Your Nostr IDs:"]
-    rich = ["<p>Your Nostr IDs:</p><ol>"]
-    for number, nostr_id in enumerate(owned, start=1):
-        handle = _handle(app, nostr_id)
-        marker = "  ← active" if active is not None and nostr_id.id == active.id else ""
-        plain.append(f"{number}. {handle}{marker}")
-        room = f" ({room_link_html(nostr_id.profile_room_id, 'Profile Room')})" if nostr_id.profile_room_id else " (no Profile Room)"
-        rich.append(f"<li><strong>{html.escape(handle)}</strong>{room}{html.escape(marker)}</li>")
-    hint = f"Switch with {prefix}switch <number or ID>"
-    plain.append(hint)
-    rich.append(f"</ol><p>{html.escape(hint)}</p>")
-    await notice(app, room_id, "\n".join(plain), html_message="".join(rich))
+    arg = argument.strip()
+    if not arg or arg.lower() == "list":
+        active = await ids.active_id(app, sender)
+        lines = ["Your Nostr identities:"]
+        for number, nostr_id in enumerate(owned, start=1):
+            marker = " (active)" if active is not None and nostr_id.id == active.id else ""
+            lines.append(f"{number}. {_handle(app, nostr_id)}{marker}")
+        if len(owned) > 1:
+            lines.append(f'Switch with "{p}id <number|id>".')
+        await notice(app, room_id, "\n".join(lines))
+        return
+    target = await ids.find_own_id(app, sender, arg.split()[0])
+    if target is None:
+        await notice(app, room_id, f'No identity matching "{arg}" -- run "{p}id list" to see yours.')
+        return
+    await app.state.repository.set_active_id(sender, target.id)
+    await notice(app, room_id, f"Active identity is now {_handle(app, target)}.")
 
 
 async def _handle_switch(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
-    prefix = app.state.config.appservice.command_prefix
+    """The old "[switch <x>" (and the widget's switch button)."""
     if not argument.strip():
-        await notice(app, room_id, f'Which ID? "{prefix}switch 2" or "{prefix}switch <name>"; "{prefix}profiles" lists them.')
-        return
-    target = await ids.find_own_id(app, sender, argument.split()[0])
-    if target is None:
-        await notice(app, room_id, f'You don\'t have an ID "{argument.split()[0]}". "{prefix}profiles" lists yours.')
-        return
-    await app.state.repository.set_active_id(sender, target.id)
-    await notice(
-        app,
-        room_id,
-        f"Now acting as {_handle(app, target)}. (In one of your Profile Rooms, that room's own ID is always used.)",
-    )
+        argument = "list"
+    await _handle_id(app, room_id, sender, argument)
 
 
 # -- rename -------------------------------------------------------------------
@@ -436,7 +486,7 @@ async def _handle_rename(app: FastAPI, room_id: str, sender: str, argument: str)
         return
     target = await ids.find_own_id(app, sender, words[0])
     if target is None:
-        await notice(app, room_id, f'You don\'t have an ID "{words[0]}". "{prefix}profiles" lists yours.')
+        await notice(app, room_id, f'You don\'t have an ID "{words[0]}". "{prefix}id" lists yours.')
         return
     new_name = ids.normalize_requested(words[1], config.bridge.domain)
     if new_name is None:
@@ -800,13 +850,13 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await notice(app, room_id, f"Only users of {config.homeserver.server_name} can use this bridge.")
         return True
     if keyword == "help":
-        await _handle_help(app, room_id, argument)
+        await _handle_help(app, room_id, argument, sender)
     elif keyword == "status":
         await _handle_status(app, room_id, sender)
     elif keyword == "create":
         await _handle_create(app, room_id, sender, argument)
-    elif keyword == "profiles":
-        await _handle_profiles(app, room_id, sender)
+    elif keyword in ("id", "profiles"):
+        await _handle_id(app, room_id, sender, argument)
     elif keyword == "switch":
         await _handle_switch(app, room_id, sender, argument)
     elif keyword == "rename":

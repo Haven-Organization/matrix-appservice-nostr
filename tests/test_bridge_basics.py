@@ -207,8 +207,10 @@ def test_help_command_and_dedupe(client, homeserver) -> None:
     assert _transaction(client, "t1", help_message).status_code == 200
     assert len(homeserver.sent) == 1
     room, content, sender = homeserver.sent[0]
-    assert sender == "@nostrbot:example.org" and content["msgtype"] == "m.notice"
-    assert "[status" in content["body"]
+    # Like matrix-appservice-activitypub's: a message, not a notice, with a
+    # table of sections.
+    assert sender == "@nostrbot:example.org" and content["msgtype"] == "m.text"
+    assert "[help advanced" in content["body"] and "<table>" in content["formatted_body"]
     # The same transaction again is not processed twice...
     _transaction(client, "t1", help_message)
     assert len(homeserver.sent) == 1

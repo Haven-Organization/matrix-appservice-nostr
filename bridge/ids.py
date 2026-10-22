@@ -248,7 +248,7 @@ async def active_id(app: FastAPI, matrix_user_id: str) -> NostrId | None:
 
 
 async def find_own_id(app: FastAPI, matrix_user_id: str, reference: str) -> NostrId | None:
-    """One of the user's IDs, by its number in ``[profiles`` (``2``) or its
+    """One of the user's IDs, by its number in ``[id`` (``2``) or its
     name (``qbot``, ``qbot@<domain>``)."""
     ids = await app.state.repository.list_ids_for_user(matrix_user_id)
     reference = reference.strip()
