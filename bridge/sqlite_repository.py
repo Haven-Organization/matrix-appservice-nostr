@@ -914,6 +914,14 @@ class SqliteBridgeRepository:
 
         return await self._run(query)
 
+    async def list_events_of_kinds(self, kinds: tuple[int, ...]) -> list[EventRow]:
+        def query(conn: Any) -> list[EventRow]:
+            marks = ", ".join("?" for _ in kinds)
+            rows = conn.execute(f"SELECT {_EVENT_COLUMNS} FROM nostr_events WHERE kind IN ({marks})", kinds).fetchall()
+            return [_event_row(conn, row) for row in rows]
+
+        return await self._run(query)
+
     async def delete_events_by(self, pubkey: str, *, until: int, keep: tuple[str, ...] = ()) -> list[EventRow]:
         """Take every event ``pubkey`` signed up to ``until`` (created_at)
         out of the index, except ``keep``. Returns what was removed."""

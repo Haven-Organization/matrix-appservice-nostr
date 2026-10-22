@@ -67,6 +67,13 @@ class BridgeSection:
     # (on every event the ghost sends), "both", or "off". Same setting as
     # the sibling bridges. Takes effect once ghosts exist (following).
     msc4503_external_handle: str = "off"
+    # Whether a custom-emoji reaction from Nostr (NIP-30: ":name:" with an
+    # image) is shown as an MSC4027 image reaction: the image's mxc:// as
+    # the reaction key, and the ":name:" in a "shortcode" field, as Element
+    # does it. Off by default, as in matrix-appservice-activitypub: a client
+    # that doesn't know MSC4027 shows the mxc:// text itself, so turn it on
+    # once your users' clients support it. Off, the reaction is ":name:".
+    msc4027_custom_reactions: bool = False
     # Join rule of a Remote User Room: "knock" (default: anyone may ask, and
     # is let straight in), "invite" or "public".
     ghost_room_join_rule: str = "knock"
@@ -369,6 +376,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         notifications_room_avatar_mxc=bridge_raw.get("notifications_room_avatar_mxc") or None,
         local_profile_room_join_rule=local_profile_room_join_rule,
         msc4503_external_handle=msc4503_external_handle,
+        msc4027_custom_reactions=bool(bridge_raw.get("msc4027_custom_reactions", False)),
         ghost_room_join_rule=_choice(bridge_raw, "ghost_room_join_rule", ("public", "invite", "knock"), "knock"),
         world_readable_remote_rooms=bool(bridge_raw.get("world_readable_remote_rooms", False)),
         accept_federated_knocks=bool(bridge_raw.get("accept_federated_knocks", False)),

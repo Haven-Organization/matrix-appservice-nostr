@@ -301,7 +301,13 @@ def create_app(
                 run_in_background(app, add_missing_widgets(app), name="widgets")
                 from bridge.remote import converge_all
 
-                run_in_background(app, converge_all(app), name="remote accounts")
+                async def converge() -> None:
+                    from bridge.inbound import repair_repost_cards
+
+                    await converge_all(app)
+                    await repair_repost_cards(app)
+
+                run_in_background(app, converge(), name="remote accounts")
             logger.info(
                 "Bridge identity: _@%s (%s)", config.bridge.domain, app.state.bot_identity.pubkey
             )

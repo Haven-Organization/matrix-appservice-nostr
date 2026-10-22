@@ -33,6 +33,7 @@ ignored when it arrives from a subscription.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import html
 import json
 import logging
@@ -148,7 +149,7 @@ def reaction_key(raw: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         shortcode = content[1:-1]
         url = next((t[2] for t in _tags(raw, "emoji") if len(t) >= 3 and t[1] == shortcode), None)
         if url:
-            return content, {"com.beeper.reaction.shortcode": content, "_emoji_url": url}
+            return content, {"shortcode": content, "_emoji_url": url}
     return content[:64], {}
 
 
@@ -539,12 +540,14 @@ async def _reaction(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     remote = await remotes.get_or_create_remote(app, raw["pubkey"])
     reaction, extra = key
     emoji_url = extra.pop("_emoji_url", None)
-    if emoji_url:
+    if emoji_url and app.state.config.bridge.msc4027_custom_reactions:
         mxc = await _emoji_mxc(app, emoji_url, remote.ghost_user_id)
         if mxc is None:
-            reaction, extra = "👍", {}
+            extra = {}  # the image couldn't be had: the ":name:" text
         else:
             reaction = mxc
+    else:
+        extra = {}
     await remotes.ensure_ghost_in_room(app, remote.ghost_user_id, target.room_id)
     content = _with_extras(
         app, {"m.relates_to": {"rel_type": "m.annotation", "event_id": target.matrix_event_id, "key": reaction}, **extra}, raw, remote
@@ -609,6 +612,17 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
         reaction = (target.room_id, reaction_id)
     if not followed:
         return REJECTED
+    return await _repost_card(app, raw, remote, target_id, reaction)
+
+
+async def _repost_card(
+    app: FastAPI, raw: dict[str, Any], remote: RemoteAccount, target_id: str, reaction: tuple[str, str] | None
+) -> IngestResult:
+    """A followed account's repost, shown in its room as "🔁 reposted X's
+    post:" with the original, and the MSC4501 repost relation to it.
+    ``reaction``: the 🔁 already on the original (a local post), recorded
+    as a copy so that undoing the repost removes it too."""
+    repository = app.state.repository
     original = await _original_of_repost(app, raw, target_id)
     if original is None:
         return IngestResult(False, "restricted: the reposted post couldn't be found")
@@ -642,6 +656,46 @@ async def _repost(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     if reaction is not None:
         await repository.put_mirrored_event(reaction[1], raw["id"], reaction[0])
     return IngestResult(True, "", stored=True)
+
+
+async def repair_repost_cards(app: FastAPI) -> int:
+    """Startup pass: reposts of local posts by followed accounts that only
+    got a 🔁 on the post (before such reposts were also shown in the
+    reposter's room) get their card. Returns how many were repaired."""
+    from bridge.event_sources import rebuild
+
+    repository = app.state.repository
+    repaired = 0
+    for row in await repository.list_events_of_kinds(tuple(REPOST_KINDS)):
+        if not row.room_id or not row.matrix_event_id or await repository.list_mirrored_copies(row.id):
+            continue
+        remote = await repository.get_remote_account(row.pubkey)
+        if remote is None or not remote.room_id or row.room_id == remote.room_id:
+            continue
+        if not await repository.list_followers_of_remote(row.pubkey):
+            continue
+        rebuilt = await rebuild(app, row)
+        if rebuilt.status != "ok" or rebuilt.event is None:
+            continue
+        raw = rebuilt.event
+        target_id = reaction_target(raw)
+        if not target_id:
+            continue
+        reaction = (row.room_id, row.matrix_event_id)
+        await repository.delete_event(row.id)
+        try:
+            result = await _repost_card(app, raw, remote, target_id, reaction)
+        except Exception:
+            result = None
+            logger.warning("Could not repair the repost %s", row.id, exc_info=True)
+        if result is None or not result.stored:
+            # Leave it as it was.
+            await repository.put_event(dataclasses.replace(row, tags=index_tags(raw.get("tags") or [])))
+            continue
+        repaired += 1
+    if repaired:
+        logger.info("Showed %d earlier repost(s) in their reposters' rooms", repaired)
+    return repaired
 
 
 async def _original_of_repost(app: FastAPI, raw: dict[str, Any], target_id: str) -> dict[str, Any] | None:

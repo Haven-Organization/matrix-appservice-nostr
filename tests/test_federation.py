@@ -448,3 +448,65 @@ def test_followed_account_reposting_a_local_post(client, homeserver, relay_pool)
     run(client, ingest, client.app, undo, origin="subscription")
     redacted = {event_id for _, event_id, _ in homeserver.redactions}
     assert {reaction["event_id"], card["event_id"]} <= redacted
+
+
+def test_repair_reposts_that_only_got_a_reaction(client, homeserver, relay_pool) -> None:
+    from bridge.inbound import repair_repost_cards
+
+    q, message, note = local_post(client, homeserver, relay_pool, text="worth reposting")
+    bob = Stranger()
+    relay_pool.network.append(bob.event(0, json.dumps({"name": "Bob"}), created_at=1000))
+    repost = bob.event(6, json.dumps(note.to_dict()), [["e", note.id, "wss://nostr.example.org"], ["p", q.pubkey]])
+    assert relay_send(client, repost)[2] is True  # not followed yet: only the 🔁
+    command(client, f"[follow {bob.pubkey}")
+    remote = run(client, client.app.state.repository.get_remote_account, bob.pubkey)
+    before = [m["content"].get("body", "") for m in homeserver.messages(remote.room_id)]
+    assert not any(b.startswith("🔁") for b in before)
+
+    assert run(client, repair_repost_cards, client.app) == 1
+    card = homeserver.messages(remote.room_id)[-1]
+    assert card["content"]["body"].startswith("🔁 reposted ") and "worth reposting" in card["content"]["body"]
+    relation = card["content"]["org.matrix.msc4501.social.relates_to"]
+    assert relation["rel_type"] == "org.matrix.msc4501.social.repost" and relation["event_id"] == message["event_id"]
+    assert card["content"]["external_url"].startswith("https://ditto.pub/nevent1")
+    # Done once only.
+    assert run(client, repair_repost_cards, client.app) == 0
+    row = run(client, client.app.state.repository.get_event, repost["id"])
+    assert row.matrix_event_id == card["event_id"]
+
+
+@pytest.mark.parametrize("msc4027", [False, True])
+def test_custom_emoji_reactions(repository, homeserver, relay_pool, msc4027) -> None:
+    """NIP-30 custom emoji: an MSC4027 image reaction only when
+    bridge.msc4027_custom_reactions is on, as in matrix-appservice-activitypub."""
+    import io
+
+    from PIL import Image
+
+    from bridge.config import parse_config
+    from bridge.safe_fetch import Fetched
+    from tests.conftest import make_client, raw_config
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), (250, 200, 0)).save(buffer, format="PNG")
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            return Fetched(url, 200, buffer.getvalue(), "image/png")
+
+        async def aclose(self):
+            pass
+
+    config = parse_config(raw_config(bridge={"msc4027_custom_reactions": msc4027}))
+    with make_client(config, repository, homeserver, relay_pool) as client:
+        client.app.state.fetcher = Fetcher()
+        q, message, note = local_post(client, homeserver, relay_pool)
+        stranger = Stranger()
+        tags = [["e", note.id], ["p", q.pubkey], ["emoji", "blobcat", "https://img.example/blobcat.png"]]
+        assert relay_send(client, stranger.event(7, ":blobcat:", tags))[2] is True
+        [reaction] = homeserver.messages(q.profile_room_id, "m.reaction")
+        key = reaction["content"]["m.relates_to"]["key"]
+        if msc4027:
+            assert key.startswith("mxc://") and reaction["content"]["shortcode"] == ":blobcat:"
+        else:
+            assert key == ":blobcat:" and "shortcode" not in reaction["content"]

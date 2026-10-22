@@ -44,6 +44,9 @@ bridge:
   # set_msc4501_profile_room: false
   # msc4144_per_message_profiles: true
   # msc4503_external_handle: "off"        # off | profile | events | both
+  # Custom-emoji reactions as MSC4027 image reactions (clients without
+  # MSC4027 show the mxc:// text, hence off by default).
+  # msc4027_custom_reactions: false
   # quote_import_policy: known            # known | always | never
 
   # Nostr IDs.
