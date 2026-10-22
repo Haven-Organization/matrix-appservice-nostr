@@ -34,7 +34,7 @@ from bridge.nostr.relay_pool import normalize_relay_url
 
 logger = logging.getLogger(__name__)
 
-FOLLOW_KINDS = [0, 1, 5, 6, 7, 16, 20, 21, 22, 1068, 1111, 10002, 30023]
+FOLLOW_KINDS = [0, 1, 5, 6, 7, 16, 20, 21, 22, 1068, 1111, 10002, 30023, 34235, 34236]
 INBOX_KINDS = [1, 3, 6, 7, 16, 1111, 9735]
 DM_KINDS = [4, 1059]
 _SAFETY_SECONDS = 300

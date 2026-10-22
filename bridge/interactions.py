@@ -246,6 +246,6 @@ async def find_quote(app: FastAPI, text: str) -> dict[str, str] | None:
                 return {"id": event_id, "pubkey": pubkey, "link": link}
         else:
             row = await app.state.repository.get_event_by_matrix_event(match.group(3))
-            if row is not None and row.kind in (1, 20, 21, 22, 1111, 30023):
+            if row is not None and row.kind in (1, 20, 21, 22, 1111, 30023, 34235, 34236):
                 return {"id": row.id, "pubkey": row.pubkey, "link": link}
     return None

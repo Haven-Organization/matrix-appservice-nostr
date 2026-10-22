@@ -15,7 +15,8 @@ Media is found from ``imeta`` tags (NIP-92), and in posts without them from
 URLs ending in a media extension. As in matrix-appservice-atproto, the first
 image or video becomes the Matrix message (copied into the media
 repository), captioned with the text; any further attachments are listed
-as links. Picture and video posts (kinds 20, 21, 22) work the same way.
+as links. Picture and video posts (kinds 20, 21, 22, and the addressable videos 34235
+and 34236) work the same way.
 """
 
 from __future__ import annotations
@@ -130,7 +131,7 @@ async def render(app: FastAPI, raw: dict[str, Any], *, skip_urls: set[str] | fro
     shown as the message itself) are left out of the text."""
     viewer = app.state.config.nostr.web_viewer_url
     content = raw.get("content") or ""
-    if raw.get("kind") in (20, 21, 22):
+    if raw.get("kind") in (20, 21, 22, 34235, 34236):
         title = next((t[1] for t in raw.get("tags") or [] if isinstance(t, list) and len(t) >= 2 and t[0] == "title"), "")
         if title and title not in content:
             content = f"{title}\n{content}" if content else title

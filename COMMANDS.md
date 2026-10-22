@@ -21,6 +21,7 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[unfollow <account>`](#unfollow-account)
   - [`[following`](#following)
   - [`[dm <account>`](#dm-account)
+  - [`[import <link|nevent|note|naddr>`](#import-linkneventnotenaddr)
 - [Advanced/Maintenance](#advancedmaintenance)
   - [`[backfill [N]`](#backfill-n)
   - [`[block <account>`](#block-account)
@@ -114,6 +115,17 @@ Lists the accounts the ID follows, with links to their rooms.
 ### `[dm <account>`
 
 Opens a DM room with the account, as the ID, and invites you to it. Run it again to be re-invited. Messages there are sent as NIP-17 private DMs. An ID on this server can't be DMed this way: message its owner in Matrix.
+
+
+### `[import <link|nevent|note|naddr>`
+
+Brings one Nostr post into Matrix without following its author, like matrix-appservice-activitypub's `;import <url>`. Give a link to the post on any Nostr website (`https://njump.me/nevent1…`, `https://ditto.pub/naddr1…`), or the `nevent`, `note` or `naddr` itself (`nostr:` in front works too). An `naddr` is a long-form article: its newest version is brought in.
+
+- A reply is threaded into its conversation: its ancestors are fetched up the thread (up to 10) until one is already here, or the root is reached and goes into its author's room. `[backfill` in that room brings in more.
+- Anything else goes into its author's room, which is made if needed.
+- A post that's already here isn't brought in twice.
+
+You're invited to the room, and the bot replies with a link to the post. `[import key` is still about keys.
 
 ## Advanced/Maintenance
 

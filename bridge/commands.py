@@ -176,6 +176,10 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                  "and dm)."),
                 (f"{p}following", "List every account your Active identity follows."),
                 (f"{p}dm [<account>]", "Start, or get back into, a private DM with a Nostr account."),
+                (f"{p}import <link|nevent|note|naddr>",
+                 "Bring one Nostr post (or article) into Matrix by its link, without following its author. A reply "
+                 "is threaded into its conversation; anything else lands in its author's room. You're invited, "
+                 "and I reply with a link to it."),
             ],
         ),
         "advanced": (
@@ -906,6 +910,10 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         added = await add_bridge_widget(app, room_id)
         await notice(app, room_id, "Added the Nostr Bridge widget to this room." if added else
                      "Couldn't add the widget here: the bot needs permission to change room settings.")
+    elif keyword == "import" and (not argument.split() or argument.split()[0].lower() not in ("key", "keys")):
+        from bridge.importing import handle_import
+
+        await handle_import(app, room_id, sender, argument)
     elif keyword in ("import", "export"):
         await notice(
             app, room_id,
