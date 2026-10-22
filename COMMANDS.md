@@ -135,6 +135,8 @@ Keys, moderating your own feed, and other things almost nobody needs day to day.
 
 In a Nostr account's room: brings in its latest `N` posts (20 by default; at most 100, except for bridge admins). It runs in the background, and the bot says how many posts it found.
 
+Inside a thread whose root is a Nostr post (send it in the thread, or as a reply to the post in clients without threads), it brings in that conversation's replies instead, like matrix-appservice-activitypub's `;backfill`: replies and comments (NIP-10 and NIP-22) from the root author's relays and the fallback relays, oldest first, each threaded under the reply it answers. This works in any room, your Profile Room included. Replies already here are skipped.
+
 ### `[block <account>`
 
 Blocks an account for the ID: its replies, mentions, reactions, reposts and DMs stop reaching you. The account is added to the ID's public mute list (kind 10000).

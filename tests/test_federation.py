@@ -510,3 +510,36 @@ def test_custom_emoji_reactions(repository, homeserver, relay_pool, msc4027) -> 
             assert key.startswith("mxc://") and reaction["content"]["shortcode"] == ":blobcat:"
         else:
             assert key == ":blobcat:" and "shortcode" not in reaction["content"]
+
+
+def test_backfill_a_thread(client, homeserver, relay_pool) -> None:
+    """[backfill inside a thread brings in that conversation's replies, as
+    matrix-appservice-activitypub's ;backfill does."""
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    bob, carol = Stranger(), Stranger()
+    first = bob.event(1, "first reply", [["e", raw["id"], "", "root"], ["p", alice.pubkey]], created_at=raw["created_at"] + 10)
+    nested = carol.event(1, "reply to the reply", [["e", raw["id"], "", "root"], ["e", first["id"], "", "reply"]],
+                         created_at=raw["created_at"] + 20)
+    comment = carol.event(1111, "a comment", [["E", raw["id"]], ["K", "1"], ["e", raw["id"]], ["k", "1"]],
+                          created_at=raw["created_at"] + 30)
+    unrelated = bob.event(1, "elsewhere")
+    relay_pool.network += [first, nested, comment, unrelated]
+    transact(client, {"type": "m.room.message", "event_id": "$bf1", "room_id": remote.room_id, "sender": "@q:example.org",
+                      "content": {"msgtype": "m.text", "body": "[backfill",
+                                  "m.relates_to": {"rel_type": "m.thread", "event_id": mirrored["event_id"],
+                                                   "is_falling_back": True, "m.in_reply_to": {"event_id": mirrored["event_id"]}}}})
+    repo = client.app.state.repository
+    rows = {e["id"]: run(client, repo.get_event, e["id"]) for e in (first, nested, comment, unrelated)}
+    assert rows[unrelated["id"]] is None
+    for event in (first, nested, comment):
+        assert rows[event["id"]] is not None and rows[event["id"]].room_id == remote.room_id
+    nested_msg = next(m for m in homeserver.messages(remote.room_id) if m["event_id"] == rows[nested["id"]].matrix_event_id)
+    relation = nested_msg["content"]["m.relates_to"]
+    assert relation["event_id"] == mirrored["event_id"]
+    assert relation["m.in_reply_to"]["event_id"] == rows[first["id"]].matrix_event_id
+    assert "Done: 3 replies brought in." in homeserver.sent_to(remote.room_id)[-1]["body"]
+    # Again: nothing new.
+    transact(client, {"type": "m.room.message", "event_id": "$bf2", "room_id": remote.room_id, "sender": "@q:example.org",
+                      "content": {"msgtype": "m.text", "body": "[backfill",
+                                  "m.relates_to": {"rel_type": "m.thread", "event_id": mirrored["event_id"]}}})
+    assert homeserver.sent_to(remote.room_id)[-1]["body"] == "No more replies found."

@@ -187,8 +187,9 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
             "Keys, moderation of your own feed, and other things almost nobody needs day to day.",
             [
                 (f"{p}backfill [N]",
-                 "Run in an account's room: bring in its latest N posts (20 by default). Ones already here are "
-                 "skipped."),
+                 "Run in an account's room: bring in its latest N posts (20 by default). Run inside a thread "
+                 "(or as a reply to a post) of a Nostr conversation: bring in that conversation's replies instead. "
+                 "Ones already here are skipped."),
                 (f"{p}block [<account>]",
                  "Block an account for your Active identity: its replies, mentions and reactions stop reaching "
                  f'you. "{p}unblock" undoes it.'),
@@ -669,17 +670,30 @@ async def _handle_block(app: FastAPI, room_id: str, sender: str, argument: str, 
         await notice(app, room_id, f"{'Unblocked' if changed else 'Not blocked:'} {label} for {_handle(app, actor)}.")
 
 
-async def _handle_backfill(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
-    from bridge.follows import backfill_posts
+async def _handle_backfill(app: FastAPI, room_id: str, sender: str, argument: str, content: dict | None = None) -> None:
+    """In an account's room: its latest posts. Inside a thread (or as a
+    reply to a post) that's a Nostr conversation: that conversation's
+    replies, as matrix-appservice-activitypub's ;backfill does."""
+    from bridge.follows import backfill_posts, backfill_thread, thread_root_row
     from bridge.tasks import run_in_background
 
-    remote = await app.state.repository.get_remote_account_for_room(room_id)
-    if remote is None:
-        await notice(app, room_id, "Run this in a Nostr account's room.")
-        return
     count = int(argument.split()[0]) if argument.split() and argument.split()[0].isdigit() else 20
     if count > 100 and not await is_admin(app.state.config, app.state.homeserver, sender):
         count = 100
+    root = await thread_root_row(app, room_id, content or {})
+    if root is not None:
+        await notice(app, room_id, f"Bringing in up to {count} replies in this conversation…")
+
+        async def run_thread() -> None:
+            found = await backfill_thread(app, root, count)
+            await notice(app, room_id, f"Done: {found} replies brought in." if found else "No more replies found.")
+
+        run_in_background(app, run_thread(), name=f"backfill thread {root.id[:8]}")
+        return
+    remote = await app.state.repository.get_remote_account_for_room(room_id)
+    if remote is None:
+        await notice(app, room_id, "Run this in a Nostr account's room, or inside a thread of a Nostr post.")
+        return
     await notice(app, room_id, f"Bringing in up to {count} posts…")
 
     async def run() -> None:
@@ -897,7 +911,7 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
     elif keyword in ("block", "unblock"):
         await _handle_block(app, room_id, sender, argument, blocked=keyword == "block")
     elif keyword == "backfill":
-        await _handle_backfill(app, room_id, sender, argument)
+        await _handle_backfill(app, room_id, sender, argument, content)
     elif keyword == "dm":
         await _handle_dm(app, room_id, sender, argument)
     elif keyword in ("ban", "unban"):

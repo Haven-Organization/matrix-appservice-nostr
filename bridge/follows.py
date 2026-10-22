@@ -28,6 +28,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -180,6 +181,76 @@ async def block(app: FastAPI, nostr_id: NostrId, pubkey: str, blocked: bool) -> 
         return False
     await publish_list(app, nostr_id, MUTE_LIST_KIND)
     return True
+
+
+async def thread_root_row(app: FastAPI, room_id: str, content: dict[str, Any]):
+    """The Nostr post a command sent inside a thread (or as a reply) is
+    about: the thread's root, else the post it replies to. ``None`` if
+    neither is a Nostr post."""
+    relates = content.get("m.relates_to") or {}
+    targets = []
+    if relates.get("rel_type") == "m.thread" and isinstance(relates.get("event_id"), str):
+        targets.append(relates["event_id"])
+    in_reply_to = (relates.get("m.in_reply_to") or {}).get("event_id")
+    if isinstance(in_reply_to, str) and relates.get("is_falling_back") is not True:
+        targets.append(in_reply_to)
+    for target in targets:
+        row = await app.state.repository.get_event_by_matrix_event(target)
+        if row is not None and row.kind in THREAD_KINDS:
+            return row
+    return None
+
+
+THREAD_KINDS = frozenset({1, 20, 21, 22, 1111, 30023, 34235, 34236})
+
+
+async def backfill_thread(app: FastAPI, root_row, count: int) -> int:
+    """Bring in up to ``count`` replies in the conversation ``root_row``
+    belongs to (NIP-10 replies naming it as their root, and NIP-22 comments
+    on it), oldest first, each threaded under the reply it answers.
+    Returns how many were new."""
+    from bridge.event_sources import rebuild
+    from bridge.importing import ImportProblem, import_post
+    from bridge.inbound import reply_targets
+    from bridge.nostr import event as nostr_event
+
+    repository = app.state.repository
+    roots = [root_row.id]
+    rebuilt = await rebuild(app, root_row)
+    if rebuilt.status == "ok" and rebuilt.event is not None:
+        _parent, conversation_root = reply_targets(rebuilt.event)
+        if conversation_root and conversation_root not in roots:
+            roots.append(conversation_root)
+    author = await repository.get_remote_account(root_row.pubkey)
+    relays = [*remotes.write_relays_for(app, author), *app.state.config.nostr.fallback_relays]
+    if author is None:  # one of ours: replies go to the relays it was published to
+        relays = [*app.state.config.nostr.publish_relays, *relays]
+    filters = [
+        {"kinds": [1, 20, 21, 22, 34235, 34236], "#e": roots, "limit": count},
+        {"kinds": [1111], "#E": roots, "limit": count},
+    ]
+    found = await app.state.relay_pool.query(relays, filters, timeout=12.0)
+    replies: dict[str, dict[str, Any]] = {}
+    for raw in found:
+        if raw.get("id") in replies or raw.get("id") in roots:
+            continue
+        try:
+            nostr_event.verify(raw)
+        except nostr_event.InvalidEvent:
+            continue
+        replies[raw["id"]] = raw
+    brought = 0
+    for raw in sorted(replies.values(), key=lambda e: e.get("created_at", 0))[:count]:
+        if await repository.get_event(raw["id"]) is not None:
+            continue
+        try:
+            await import_post(app, raw)
+            brought += 1
+        except ImportProblem:
+            continue
+        except Exception:
+            logger.warning("Could not bring in reply %s", raw.get("id"), exc_info=True)
+    return brought
 
 
 async def backfill_posts(app: FastAPI, remote: RemoteAccount, count: int) -> int:
