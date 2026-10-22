@@ -39,6 +39,8 @@ from bridge.notes import (
     event_kind_of,
     message_body,
     pills,
+    COMMENT_VERSION,
+    NOTE_VERSION,
 )
 from bridge.remote import pubkey_of_ghost
 from bridge.publishing import NotifyTarget, publish_in_background
@@ -204,6 +206,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
         p_tags += context["p"]
         if "comment" in context:
             recipe["kind"] = "comment"
+            recipe["v"] = COMMENT_VERSION
             recipe["comment"] = context["comment"]
         else:
             recipe["reply"] = context["reply"]
@@ -230,9 +233,9 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
         }
 
     if recipe["kind"] == "note":
+        recipe["v"] = NOTE_VERSION
         quote = await find_quote(app, message_body(content))
         if quote is not None:
-            recipe["v"] = 2
             recipe["quote"] = quote
             if quote["pubkey"] != author.pubkey and quote["pubkey"] not in recipe["p"]:
                 recipe["p"].append(quote["pubkey"])

@@ -32,7 +32,8 @@ from fastapi import FastAPI, Request
 from bridge.homeserver_client import HomeserverError
 from bridge.media import MediaProblem, publish_matrix_media
 from bridge.notes import (
-    MEDIA_MSGTYPES, SHARE_CONVERTERS, SHARE_VERSION, _PERMALINK_RE, event_kind_of, note_v2, share_caption,
+    CONVERTERS, MEDIA_MSGTYPES, NOTE_VERSION, SHARE_CONVERTERS, SHARE_VERSION, _PERMALINK_RE, event_kind_of,
+    share_caption,
 )
 from bridge.publishing import NotifyTarget
 from bridge.users import bot_mxid, is_other_bot
@@ -124,12 +125,12 @@ async def _quote_nostr_post(app: FastAPI, author, event: dict[str, Any], quoted)
         return True
     link = _PERMALINK_RE.search(content.get("body") or "")
     recipe: dict[str, Any] = {
-        "kind": "note", "v": 2, "room_id": event.get("room_id", ""), "event_id": event.get("event_id", ""),
+        "kind": "note", "v": NOTE_VERSION, "room_id": event.get("room_id", ""), "event_id": event.get("event_id", ""),
         "mentions": [], "p": [quoted.pubkey] if quoted.pubkey != author.pubkey else [], "reply": None,
         "relay_hint": app.state.config.nostr.relay_url, "media": None,
         "quote": {"id": quoted.id, "pubkey": quoted.pubkey, "link": link.group(0) if link else ""},
     }
-    text, tags = note_v2(event, recipe)
+    text, tags = CONVERTERS[("note", NOTE_VERSION)](event, recipe)
     await _publish(app, author, event, recipe, text, tags)
     return True
 

@@ -330,6 +330,36 @@ def deletion_v1(redaction: dict[str, Any], recipe: dict[str, Any]) -> tuple[str,
     return content, tags
 
 
+# -- hashtags (NIP-24 "t" tags), added by note v3, comment v2 and share v3 ----------
+# A "#word" that starts the text or follows whitespace or an opening bracket
+# (so a URL's "#fragment" isn't one), not all digits. Lowercase, as NIP-24
+# asks; each once, in order; at most _MAX_HASHTAGS.
+
+_HASHTAG_RE = re.compile(r"(?:(?<=^)|(?<=[\s(\[]))#(\w[\w-]{0,63})", re.UNICODE)
+_MAX_HASHTAGS = 20
+
+
+def hashtag_tags(text: str) -> list[list[str]]:
+    found: list[str] = []
+    for match in _HASHTAG_RE.finditer(text):
+        tag = match.group(1).rstrip("-_").lower()
+        if tag and not tag.isdigit() and tag not in found:
+            found.append(tag)
+    return [["t", tag] for tag in found[:_MAX_HASHTAGS]]
+
+
+def note_v3(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v2 (v1, plus a quoted post if the recipe has one) plus hashtags."""
+    text, tags = note_v2(event, recipe)
+    return text, [*tags, *hashtag_tags(text)]
+
+
+def comment_v2(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v1 plus hashtags."""
+    text, tags = comment_v1(event, recipe)
+    return text, [*tags, *hashtag_tags(text)]
+
+
 # -- kind 1 "share": reposting something that isn't on Nostr ----------------------
 # A repost made in Matrix (MSC4501 ``social.relates_to`` with rel_type repost)
 # of a post from another network (the fediverse or Bluesky, through their
@@ -410,14 +440,24 @@ def share_v2(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
     return "\n\n".join(part for part in parts if part), tags
 
 
-SHARE_CONVERTERS = {1: share_v1, 2: share_v2}
-SHARE_VERSION = 2
+def share_v3(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v2 plus hashtags."""
+    text, tags = share_v2(event, original, recipe)
+    return text, [*tags, *hashtag_tags(text)]
+
+
+SHARE_CONVERTERS = {1: share_v1, 2: share_v2, 3: share_v3}
+SHARE_VERSION = 3
+NOTE_VERSION = 3
+COMMENT_VERSION = 2
 
 
 CONVERTERS = {
     ("note", 1): note_v1,
     ("note", 2): note_v2,
+    ("note", 3): note_v3,
     ("comment", 1): comment_v1,
+    ("comment", 2): comment_v2,
     ("reaction", 1): reaction_v1,
     ("repost", 1): repost_v1,
     ("deletion", 1): deletion_v1,

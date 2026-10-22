@@ -51,6 +51,7 @@ Each ID also publishes, and keeps up to date:
 - **Captions** become the note's text, with the file's URL on the next line.
 - **Mentions:** a pill of a local user who has a Nostr ID becomes a `nostr:npub…` reference and a `p` tag, pointing at the ID that user had active at the time. A pill of a Nostr account's ghost does the same for that account.
 - **Quotes:** a post that links to a Nostr post (a `nostr:note…`/`nevent…` link, a link on any Nostr website, or a matrix.to link to a bridged post) quotes it (`q` tag), tagging its author.
+- **Hashtags** (`#word`) also become `t` tags (lowercase, NIP-24), so the post shows up when people browse that hashtag on Nostr. Reposts carry the original's hashtags.
 - **Spoilers** add a `content-warning` tag, with the spoiler's reason if it has one.
 - **Polls** become Nostr polls. See [Polls](#polls).
 - **Replies and threads:** a rich reply or thread message answering a Nostr post becomes a reply to it, so threads stay threads on Nostr. A reply to anything else is an ordinary post.

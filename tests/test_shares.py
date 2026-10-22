@@ -162,3 +162,14 @@ def test_share_v1_still_rebuilds() -> None:
     original = {"content": {"msgtype": "m.text", "body": "words", "external_url": POST_URL}}
     text, tags = share_v1(record, original, {"author": "JoeBravo77", "media": None})
     assert text == f"🔁 JoeBravo77:\n\nwords\n\n{POST_URL}" and tags == [["r", POST_URL]]
+
+
+def test_repost_carries_the_originals_hashtags(shared, homeserver, relay_pool) -> None:
+    send(shared, message("[create profile"))
+    [q] = ids_of(shared)
+    original = fedi_post(homeserver, image=False, text="Election integrity requires free software #election #voting")
+    send(shared, bot_card(homeserver, q.profile_room_id, original))
+    [note] = relay_pool.of_kind(1)
+    assert [list(t) for t in note.tags if t[0] == "t"] == [["t", "election"], ["t", "voting"]]
+    row = shared.portal.call(shared.app.state.repository.get_event, note.id)
+    assert '"v":3' in row.source and shared.portal.call(rebuild, shared.app, row).event == note.to_dict()
