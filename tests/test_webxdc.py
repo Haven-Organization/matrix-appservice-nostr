@@ -144,3 +144,50 @@ def test_active_games_are_followed(games, homeserver, relay_pool) -> None:
     desired = run(games, games.app.state.feeds._desired)
     filters = [f for (relay, name), fs in desired.items() if name == "games" for f in fs]
     assert {"#i": [GAME], "kinds": [webxdc.UPDATE_KIND]} in [{k: v for k, v in f.items() if k != "since"} for f in filters]
+
+
+def play(client, homeserver, room, target):
+    transact(client, {"type": "m.room.message", "event_id": f"$play{target}", "room_id": room, "sender": "@q:example.org",
+                      "content": {"msgtype": "m.text", "body": "[play", "m.relates_to": {"m.in_reply_to": {"event_id": target}}}})
+
+
+def test_play_opens_the_game_in_the_games_room(games, homeserver, relay_pool) -> None:
+    from bridge.games_room import GAME_WIDGET_ID, LAYOUT_STATE_TYPE
+
+    q, alice, post, remote, shown = followed_game(games, homeserver, relay_pool)
+    play(games, homeserver, remote.room_id, shown["event_id"])
+    reply = homeserver.sent_to(remote.room_id)[-1]["body"]
+    assert reply.startswith("Opened Chess in your Games room: ") and "widgets" in reply
+    games_room = run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org")
+    widget = homeserver._room(games_room)["state"][("im.vector.modular.widgets", GAME_WIDGET_ID)]["content"]
+    assert widget["name"] == "🎮 Chess" and f"/xdc/play?game={GAME}" in widget["url"]
+    assert "$matrix_user_id" in widget["url"]
+    assert homeserver.state_of(games_room, LAYOUT_STATE_TYPE)["widgets"][GAME_WIDGET_ID]["container"] == "center"
+    assert (games_room, "@q:example.org") in homeserver.invites
+    assert "need a Matrix client that supports widgets" in homeserver.sent_to(games_room)[0]["body"]
+    assert GAME in run(games, webxdc.active_games, games.app)
+
+    # Another game replaces the widget, in the same room; no second room.
+    other = game_post(alice, game_id="22222222-2222-2222-2222-222222222222", url="https://files.example/tetris.xdc")
+    other["tags"][0] = [t if not t.startswith("alt ") else "alt Webxdc app: Tetris" for t in other["tags"][0]]
+    other = alice.event(1, other["content"], other["tags"])
+    assert run(games, ingest, games.app, other, origin="subscription").stored
+    second = homeserver.messages(remote.room_id)[-1]
+    play(games, homeserver, remote.room_id, second["event_id"])
+    widget = homeserver._room(games_room)["state"][("m.widget", GAME_WIDGET_ID)]["content"]
+    assert widget["name"] == "🎮 Tetris"
+    assert run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org") == games_room
+
+
+def test_play_needs_a_game_post(games, homeserver, relay_pool) -> None:
+    q, alice, post, remote, shown = followed_game(games, homeserver, relay_pool)
+    plain = alice.event(1, "not a game")
+    run(games, ingest, games.app, plain, origin="subscription")
+    play(games, homeserver, remote.room_id, homeserver.messages(remote.room_id)[-1]["event_id"])
+    assert "Reply \"[play\" to a game post" in homeserver.sent_to(remote.room_id)[-1]["body"]
+
+
+def test_play_is_off_when_games_are(client, homeserver, relay_pool) -> None:
+    send(client, message("[create profile"))
+    send(client, message("[play"))
+    assert homeserver.sent_to("!dm:example.org")[-1]["body"] == "Games aren't turned on on this bridge."
