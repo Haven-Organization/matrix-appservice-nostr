@@ -354,6 +354,21 @@ def note_v3(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[li
     return text, [*tags, *hashtag_tags(text)]
 
 
+def note_v4(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v3; a webxdc app (NIP-DC) also gets its ``webxdc`` identifier and an
+    ``alt`` in its ``imeta``. Recipe media may carry "webxdc" and "name"."""
+    text, tags = note_v3(event, recipe)
+    media = recipe.get("media") or {}
+    if not media.get("webxdc"):
+        return text, tags
+    out = []
+    for tag in tags:
+        if tag and tag[0] == "imeta" and f"url {media['url']}" in tag:
+            tag = [*tag, f"webxdc {media['webxdc']}", f"alt Webxdc app: {media.get('name') or 'app'}"]
+        out.append(tag)
+    return text, out
+
+
 def comment_v2(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
     """v1 plus hashtags."""
     text, tags = comment_v1(event, recipe)
@@ -448,7 +463,7 @@ def share_v3(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
 
 SHARE_CONVERTERS = {1: share_v1, 2: share_v2, 3: share_v3}
 SHARE_VERSION = 3
-NOTE_VERSION = 3
+NOTE_VERSION = 4
 COMMENT_VERSION = 2
 
 
@@ -456,6 +471,7 @@ CONVERTERS = {
     ("note", 1): note_v1,
     ("note", 2): note_v2,
     ("note", 3): note_v3,
+    ("note", 4): note_v4,
     ("comment", 1): comment_v1,
     ("comment", 2): comment_v2,
     ("reaction", 1): reaction_v1,

@@ -86,6 +86,12 @@ async def _replied_post(app: FastAPI, content: dict[str, Any]) -> EventRow | Non
     return None
 
 
+def _is_xdc(content: dict[str, Any]) -> bool:
+    name = str(content.get("filename") or content.get("body") or "").lower()
+    mime = str((content.get("info") or {}).get("mimetype") or "").lower()
+    return content.get("msgtype") == "m.file" and (name.endswith(".xdc") or mime == "application/x-webxdc")
+
+
 async def _replies_to_own_message(app: FastAPI, room_id: str, content: dict[str, Any], sender: str) -> bool:
     """True for a message that isn't a reply, or answers ``sender``'s own
     message. False if it answers anyone else's, or what it answers can't be
@@ -147,6 +153,9 @@ async def _store_and_send(
         tags=index_tags(tags),
     )
     await app.state.repository.put_event(row)
+    from bridge.webxdc import register_games
+
+    await register_games(app, event.to_dict())
     publish_in_background(app, event, notify=notify, extra_relays=extra_relays)
     return row
 
@@ -231,6 +240,13 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
             "size": media.size,
             "dim": f"{media.width}x{media.height}" if media.width and media.height else None,
         }
+        if config.webxdc.enabled and _is_xdc(content):
+            from bridge.webxdc import MIME, new_game_id
+
+            # A webxdc app (NIP-DC): a game of its own, with a new identifier.
+            name = str(content.get("filename") or content.get("body") or "app").rsplit("/", 1)[-1]
+            recipe["media"].update({"m": MIME, "webxdc": new_game_id(),
+                                    "name": name[:-4] if name.lower().endswith(".xdc") else name})
 
     if recipe["kind"] == "note":
         recipe["v"] = NOTE_VERSION

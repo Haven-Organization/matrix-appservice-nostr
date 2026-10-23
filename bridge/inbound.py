@@ -57,7 +57,7 @@ from bridge.users import bot_mxid
 
 logger = logging.getLogger(__name__)
 
-INDEXED_TAG_LETTERS = frozenset("epaqkdEPAK")
+INDEXED_TAG_LETTERS = frozenset("epaqkdiEPAK")
 # 34235/34236: NIP-71's addressable videos, shown like kinds 21 and 22.
 POST_KINDS = frozenset({1, 20, 21, 22, 1111, 30023, 34235, 34236})
 REACTION_KIND = 7
@@ -206,6 +206,9 @@ async def _store(
             tags=index_tags(raw.get("tags")),
         )
     )
+    from bridge.webxdc import register_games
+
+    await register_games(app, raw)
     hub = getattr(app.state, "relay_hub", None)
     if hub is not None:
         hub.broadcast(raw, scope)
@@ -322,6 +325,16 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
     ):
         return IngestResult(False, "blocked: on a block list this relay follows")
 
+    from bridge import webxdc
+
+    if event.kind == webxdc.REALTIME_KIND:
+        # Ephemeral game traffic, 20-30 a second, from keys made per session:
+        # only for a game someone here is playing, and never stored.
+        try:
+            await asyncio.to_thread(nostr_event.verify, raw)
+        except nostr_event.InvalidEvent as exc:
+            return IngestResult(False, f"invalid: {exc}")
+        return await webxdc.receive_realtime(app, raw)
     guard = getattr(app.state, "spam", None)
     if guard is not None and origin in ("relay", "subscription"):
         verdict = await guard.check_event(
@@ -346,6 +359,8 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
         from bridge.vanish import receive_vanish
 
         return await receive_vanish(app, raw, local=local_author is not None)
+    if event.kind == webxdc.UPDATE_KIND:
+        return await webxdc.receive_update(app, raw)
     if local_author is not None:
         return await _from_local_author(app, raw, local_author, origin=origin)
 

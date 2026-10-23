@@ -1068,6 +1068,16 @@ class SqliteBridgeRepository:
 
         return await self._run(query)
 
+    async def list_state(self, prefix: str) -> list[tuple[str, str]]:
+        """Every (key, value) whose key starts with ``prefix``."""
+        def query(conn: Any) -> list[tuple[str, str]]:
+            escaped = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            return [(r[0], r[1]) for r in conn.execute(
+                "SELECT key, value FROM bridge_state WHERE key LIKE ? ESCAPE '!'", (escaped + "%",)
+            ).fetchall()]
+
+        return await self._run(query)
+
     async def set_state(self, key: str, value: str) -> None:
         await self._run(
             lambda conn: conn.execute(

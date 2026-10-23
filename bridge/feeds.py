@@ -109,7 +109,44 @@ class Feeds:
                     {"#P": local_keys, "kinds": [1111], "since": since},
                 ]
                 desired[(relay, "dms")] = [{"#p": local_keys, "kinds": DM_KINDS, "since": dm_since}]
+        if config.webxdc.enabled:
+            await self._desired_games(desired)
         return desired
+
+    async def _desired_games(self, desired: dict[tuple[str, str], list[dict[str, Any]]]) -> None:
+        """Moves of games opened lately, and realtime packets of games being
+        played here now, from their authors' relays and the fallbacks."""
+        from bridge import webxdc
+
+        app = self.app
+        repository = app.state.repository
+        active = await webxdc.active_games(app)
+        live = set(webxdc.hub(app).realtime_games())
+        by_relay: dict[str, tuple[list[str], list[str]]] = {}
+        for game_id in dict.fromkeys([*active, *live]):
+            post = await webxdc.game_post(app, game_id)
+            if post is None:
+                continue
+            author = await repository.get_remote_account(post.pubkey)
+            relays = [*(author.write_relays[:3] if author else ()), *app.state.config.nostr.fallback_relays]
+            if author is None:  # one of ours: its moves go to the publish relays
+                relays = [*app.state.config.nostr.publish_relays, *relays]
+            for relay in dict.fromkeys(normalize_relay_url(r) for r in relays):
+                moves, packets = by_relay.setdefault(relay, ([], []))
+                if game_id in active:
+                    moves.append(game_id)
+                if game_id in live:
+                    packets.append(game_id)
+        for relay, (moves, packets) in by_relay.items():
+            filters: list[dict[str, Any]] = []
+            if moves:
+                filters.append({"#i": sorted(moves), "kinds": [webxdc.UPDATE_KIND], "since": await self._since(relay, "games")})
+            if packets:
+                # Backdated: "since" is compared with the sender's clock, and a
+                # few seconds of skew would otherwise drop every packet.
+                filters.append({"#i": sorted(packets), "kinds": [webxdc.REALTIME_KIND], "since": int(time.time()) - 120})
+            if filters:
+                desired[(relay, "games")] = filters
 
     async def _since(self, relay: str, name: str, *, lookback: int = _SAFETY_SECONDS) -> int:
         cursor = await self.app.state.repository.get_cursor(relay, name)

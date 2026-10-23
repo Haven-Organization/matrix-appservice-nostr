@@ -48,7 +48,7 @@ router = APIRouter()
 
 MAX_MESSAGE_BYTES = 256 * 1024
 MAX_FILTERS = 10
-_NARROWING = ("ids", "authors", "#e", "#p", "#a", "#q", "#E", "#P", "#A", "#d")
+_NARROWING = ("ids", "authors", "#e", "#p", "#a", "#q", "#E", "#P", "#A", "#d", "#i")
 _CACHE_SIZE = 5000
 _AUTH_WINDOW = 600
 SUPPORTED_NIPS = [1, 2, 9, 10, 11, 13, 17, 18, 22, 25, 27, 40, 42, 44, 45, 59, 62, 65, 70, 86, 88]
@@ -156,6 +156,12 @@ class RelayHub:
         self.cache.put(event)
         for connection in list(self.connections):
             asyncio.create_task(self._deliver(connection, event, scope))
+
+    def broadcast_ephemeral(self, event: dict[str, Any]) -> None:
+        """An ephemeral event (NIP-01, kinds 20000-29999): to current
+        subscribers only, never kept."""
+        for connection in list(self.connections):
+            asyncio.create_task(self._deliver(connection, event, "public"))
 
     async def _deliver(self, connection: Connection, event: dict[str, Any], scope: str) -> None:
         if scope == "dm":
@@ -362,6 +368,19 @@ async def _on_req(app, connection: Connection, sub_id: str, filters: list[Any], 
             delivered += 1
             await connection.send(["EVENT", sub_id, event])
     await connection.send(["EOSE", sub_id])
+
+
+async def query_events(app, filters: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    """Public events matching ``filters``, from the index, rebuilt."""
+    now = int(time.time())
+    found: dict[str, dict[str, Any]] = {}
+    for flt in filters:
+        rows = await app.state.repository.query_events(
+            flt, limit=limit, now=now, dm_readers=frozenset(), followed_readers=frozenset()
+        )
+        for event in await _materialize(app, [row for row in rows if row.id not in found]):
+            found[event["id"]] = event
+    return list(found.values())
 
 
 async def _materialize(app, rows) -> list[dict[str, Any]]:

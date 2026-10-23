@@ -242,6 +242,20 @@ class LoggingSection:
 
 
 @dataclass(frozen=True)
+class WebxdcSection:
+    """Games: webxdc mini apps over Nostr (NIP-DC). See DESIGN.md."""
+
+    enabled: bool = False
+    # The sandbox origin apps run on: a hostname of its own, never the
+    # bridge's or the homeserver's. Default: "xdc." + bridge.domain.
+    sandbox_domain: str = ""
+    # How long after a game was last opened its moves are followed.
+    active_days: int = 14
+    # Largest move (sendUpdate payload) accepted, in KB.
+    max_update_kb: int = 128
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     bridge: BridgeSection
     homeserver: HomeserverSection
@@ -251,6 +265,19 @@ class BridgeConfig:
     logging: LoggingSection
     # The relay's spam rules (bridge.spam.SpamConfig); see CONFIG.md.
     spam: Any = None
+    webxdc: WebxdcSection = field(default_factory=WebxdcSection)
+
+
+def _webxdc_section(raw: dict[str, Any], domain: str) -> WebxdcSection:
+    sandbox = str(raw.get("sandbox_domain") or f"xdc.{domain}").strip().lower().rstrip(".")
+    if not _DOMAIN_RE.match(sandbox) or sandbox == domain:
+        raise ConfigError("webxdc.sandbox_domain must be a hostname of its own (e.g. xdc.example.org)")
+    active_days = int(raw.get("active_days", 14))
+    max_update_kb = int(raw.get("max_update_kb", 128))
+    if active_days < 1 or max_update_kb < 1:
+        raise ConfigError("webxdc.active_days and webxdc.max_update_kb must be at least 1")
+    return WebxdcSection(enabled=bool(raw.get("enabled", False)), sandbox_domain=sandbox,
+                         active_days=active_days, max_update_kb=max_update_kb)
 
 
 def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
@@ -496,6 +523,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         raise ConfigError(str(exc)) from exc
     return BridgeConfig(
         spam=spam_section,
+        webxdc=_webxdc_section(_section(raw, "webxdc"), domain),
         bridge=bridge_section,
         homeserver=homeserver_section,
         appservice=appservice_section,

@@ -53,7 +53,7 @@ def test_posts_carry_hashtags_and_rebuild(client, homeserver, relay_pool) -> Non
     note = relay_pool.of_kind(1)[-1]
     assert [list(t) for t in note.tags if t[0] == "t"] == [["t", "foss"], ["t", "freedom"]]
     row = run(client, client.app.state.repository.get_event, note.id)
-    assert '"v":3' in row.source
+    assert '"v":4' in row.source
     assert run(client, rebuild, client.app, row).event == note.to_dict()
 
 

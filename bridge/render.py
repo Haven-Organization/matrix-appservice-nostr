@@ -275,6 +275,13 @@ async def message_content(
     rendered = await render(app, raw, skip_urls=skip)
     others = [a for a in attachments if copied is None or a is not main]
     body, formatted = rendered.body, rendered.html
+    games = []
+    if app.state.config.webxdc.enabled:
+        from bridge import webxdc
+
+        games = webxdc.apps_of(raw)
+        game_urls = {g.url for g in games}
+        others = [a for a in others if a.url not in game_urls]
     listed = [a for a in others if a.url not in body]
     if listed:
         body += "\n\nOther Attachments:\n" + "\n".join(a.url for a in listed)
@@ -284,6 +291,10 @@ async def message_content(
     if header_plain:
         body = f"{header_plain}\n{body}" if body else header_plain
         formatted = f"{header_html}<br>{formatted}" if formatted else header_html
+    for game in games[:1]:
+        line_plain, line_html = webxdc.game_line(game, app.state.config.appservice.command_prefix)
+        body = f"{body}\n\n{line_plain}" if body.strip() else line_plain
+        formatted = f"{formatted}<br><br>{line_html}" if formatted else line_html
     if footer_plain:
         body = f"{body}\n\n{footer_plain}" if body.strip() else footer_plain
         formatted = f"{formatted}<br><br>{footer_html}" if formatted else footer_html
@@ -299,6 +310,8 @@ async def message_content(
         if body:
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = formatted
+    if games:
+        content[webxdc.GAME_FIELD] = webxdc.game_field(games[0])
     return content
 
 
