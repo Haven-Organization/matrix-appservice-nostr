@@ -543,3 +543,63 @@ def test_backfill_a_thread(client, homeserver, relay_pool) -> None:
                       "content": {"msgtype": "m.text", "body": "[backfill",
                                   "m.relates_to": {"rel_type": "m.thread", "event_id": mirrored["event_id"]}}})
     assert homeserver.sent_to(remote.room_id)[-1]["body"] == "No more replies found."
+
+
+def _repost_by_reaction(client, homeserver, relay_pool):
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    reaction = homeserver._store(remote.room_id, "m.reaction",
+                                 {"m.relates_to": {"rel_type": "m.annotation", "event_id": mirrored["event_id"], "key": "🔁"}},
+                                 "@q:example.org")
+    transact(client, reaction)
+    [repost] = relay_pool.of_kind(6)
+    card = homeserver.messages(q.profile_room_id)[-1]
+    return q, alice, raw, remote, mirrored, reaction, repost, card
+
+
+def test_repost_card_matches_the_sibling_bridges(client, homeserver, relay_pool) -> None:
+    q, alice, raw, remote, mirrored, reaction, repost, card = _repost_by_reaction(client, homeserver, relay_pool)
+    content = card["content"]
+    link = f"https://matrix.to/#/{remote.room_id}/{mirrored['event_id']}?via=example.org"
+    assert card["sender"] == "@nostrbot:example.org"
+    assert content["msgtype"] == "m.text" and content["body"] == link
+    assert content["formatted_body"] == (
+        f'<p>🔁 <a href="https://matrix.to/#/@q:example.org">Q Person</a> reposted '
+        f'<a href="https://matrix.to/#/{remote.ghost_user_id}">Alice</a>\'s <a href="{link}">post</a></p>'
+        "<blockquote>alice says hi</blockquote>")
+    assert content["external_url"].startswith("https://ditto.pub/nevent1")
+    assert content["com.beeper.per_message_profile"] == {"id": "@q:example.org", "displayname": "Q Person"}
+    assert content["org.matrix.msc4501.social.relates_to"] == {
+        "rel_type": "org.matrix.msc4501.social.repost", "event_id": mirrored["event_id"], "room_id": remote.room_id,
+        "sender": remote.ghost_user_id, "via": ["example.org"], "displayname": "Alice", "content_inline": True}
+    assert content["org.matrix.msc4501.social.body"] == "alice says hi"
+
+
+def test_redacting_the_card_undoes_the_repost(client, homeserver, relay_pool) -> None:
+    q, alice, raw, remote, mirrored, reaction, repost, card = _repost_by_reaction(client, homeserver, relay_pool)
+    redaction = homeserver._store(q.profile_room_id, "m.room.redaction", {"redacts": card["event_id"]}, "@q:example.org")
+    redaction["redacts"] = card["event_id"]
+    transact(client, redaction)
+    [undo] = relay_pool.of_kind(5)
+    assert ["e", repost.id] in [list(t) for t in undo.tags]
+    assert reaction["event_id"] in {event_id for _, event_id, _ in homeserver.redactions}
+
+
+def test_redacting_the_reaction_removes_the_card(client, homeserver, relay_pool) -> None:
+    q, alice, raw, remote, mirrored, reaction, repost, card = _repost_by_reaction(client, homeserver, relay_pool)
+    redaction = homeserver._store(remote.room_id, "m.room.redaction", {"redacts": reaction["event_id"]}, "@q:example.org")
+    redaction["redacts"] = reaction["event_id"]
+    transact(client, redaction)
+    assert len(relay_pool.of_kind(5)) == 1
+    assert card["event_id"] in {event_id for _, event_id, _ in homeserver.redactions}
+
+
+def test_repost_card_without_msc4501(repository, homeserver, relay_pool) -> None:
+    from bridge.config import parse_config
+    from tests.conftest import make_client, raw_config
+
+    config = parse_config(raw_config(bridge={"set_msc4501_relates_to": False, "msc4144_per_message_profiles": False}))
+    with make_client(config, repository, homeserver, relay_pool) as client:
+        q, alice, raw, remote, mirrored, reaction, repost, card = _repost_by_reaction(client, homeserver, relay_pool)
+    content = card["content"]
+    assert "org.matrix.msc4501.social.relates_to" not in content and "com.beeper.per_message_profile" not in content
+    assert content["body"].startswith("🔁 reposted Alice's post:\n> alice says hi\nhttps://matrix.to/#/")

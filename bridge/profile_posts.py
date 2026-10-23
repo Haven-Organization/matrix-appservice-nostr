@@ -270,11 +270,31 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
     app = request.app
     repository = app.state.repository
     row = await repository.get_event_by_matrix_event(target, include_copies=False)
+    via_card = False
+    if row is None:
+        # A repost card (a copy of a local repost): redacting it undoes the
+        # repost, as redacting the 🔁 does.
+        copy_of = await repository.get_event_by_matrix_event(target)
+        if copy_of is not None and copy_of.kind in (6, 16) and await repository.get_id_by_pubkey(copy_of.pubkey):
+            row, via_card = copy_of, True
     if row is None or row.kind == DELETION_KIND:
         return False
     if is_other_bot(app.state.config, event.get("sender", "")) and json.loads(row.source).get("kind") != "share":
         return True  # another bridge may only undo the reposts made through it
     author = await repository.get_id_by_pubkey(row.pubkey)
+    if author is not None and row.kind in (6, 16):
+        # A repost: its card and its 🔁, whichever wasn't the one redacted.
+        others = await repository.list_mirrored_copies(row.id)
+        if via_card and row.room_id and row.matrix_event_id:
+            others.append((row.room_id, row.matrix_event_id))
+        for other_room, other_event in others:
+            if other_event == target:
+                continue
+            try:
+                await app.state.homeserver.redact_event(other_room, other_event, as_user_id=bot_mxid(app.state.config),
+                                                        reason="Repost undone")
+            except HomeserverError:
+                logger.info("Could not redact %s", other_event, exc_info=True)
     await repository.delete_event(row.id)
     hub = getattr(app.state, "relay_hub", None)
     if hub is not None:

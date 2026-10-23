@@ -19,6 +19,7 @@ NIP-65 read relays), where their clients look for them.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -154,7 +155,91 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
     )
     if row is not None:
         await notify_local_author(app, actor, target, reason, reaction=shown)
+        if key == REPOST_KEY:
+            await post_repost_card(app, actor, target, room_id=room_id, target_event=target_event, repost=row)
     return True
+
+
+async def post_repost_card(app: FastAPI, actor: NostrId, target: EventRow, *, room_id: str, target_event: str,
+                           repost: EventRow) -> None:
+    """The "🔁 reposted X's post" card in the reposter's Profile Room, sent
+    by the bot on their behalf, in the sibling bridges' exact format:
+
+    - the body is the link to the post in Matrix (MSC4501: a pure repost's
+      card stands for the post itself), the formatted body "🔁 <you>
+      reposted <author>'s <post>" and a quote of the post; an image or video
+      post makes the card that image or video at preview size;
+    - ``external_url``: the post on the web;
+    - MSC4144: shown as the reposter (``msc4144_per_message_profiles``);
+    - MSC4501: the repost relation, ``content_inline``, and the post's text
+      as ``social.body`` (``set_msc4501_relates_to``).
+
+    It's a copy of the repost: redacting it, or the 🔁, undoes the repost."""
+    from bridge.homeserver_client import HomeserverError
+    from bridge.inbound import _per_message_profile, event_url
+    from bridge.notify_format import event_link, post_preview, quote_block
+    from bridge.users import bot_mxid
+
+    config = app.state.config
+    if not actor.profile_room_id:
+        return
+    homeserver = app.state.homeserver
+    bot = bot_mxid(config)
+    try:
+        original = await homeserver.get_event(room_id, target_event, as_user_id=bot)
+    except HomeserverError:
+        original = None
+    if not original:
+        return
+    author_mxid = original.get("sender", "")
+    preview_text, media = await post_preview(app, room_id, target_event)
+    link = event_link(app, room_id, target_event)
+
+    async def display(user_id: str) -> tuple[str, str]:
+        try:
+            name = (await homeserver.get_profile(user_id)).get("displayname")
+        except HomeserverError:
+            name = None
+        name = str(name or user_id)
+        return name, f'<a href="https://matrix.to/#/{html.escape(user_id, quote=True)}">{html.escape(name)}</a>'
+
+    author_name, author_html = await display(author_mxid)
+    _, reposter_html = await display(actor.matrix_user_id)
+    quoted_plain, quoted_html = quote_block(preview_text)
+    formatted = (f"<p>🔁 {reposter_html} reposted {author_html}'s "
+                 f'<a href="{html.escape(link, quote=True)}">post</a></p>{quoted_html}')
+    plain = f"🔁 reposted {author_name}'s post:" + (f"\n{quoted_plain}" if quoted_plain else "") + f"\n{link}"
+    relation = None
+    if config.bridge.set_msc4501_relates_to:
+        relation = {
+            "rel_type": "org.matrix.msc4501.social.repost", "event_id": target_event, "room_id": room_id,
+            "sender": author_mxid, "via": [config.homeserver.server_name], "displayname": author_name,
+            "content_inline": True,
+        }
+    body = link if relation else plain
+    if media is None:
+        content: dict[str, Any] = {"msgtype": "m.text", "body": body, "format": "org.matrix.custom.html",
+                                   "formatted_body": formatted}
+    else:
+        content = {"msgtype": media["msgtype"], "body": body, "filename": media["filename"],
+                   "format": "org.matrix.custom.html", "formatted_body": formatted, "url": media["url"],
+                   "info": media["info"]}
+    raw = await raw_of(app, target)
+    external = (original.get("content") or {}).get("external_url")
+    content["external_url"] = external if isinstance(external, str) else (event_url(app, raw) if raw else link)
+    if relation is not None:
+        content["org.matrix.msc4501.social.relates_to"] = relation
+        if preview_text:
+            content["org.matrix.msc4501.social.body"] = preview_text
+            content["org.matrix.msc4501.social.formatted_body"] = html.escape(preview_text)
+    if config.bridge.msc4144_per_message_profiles:
+        content["com.beeper.per_message_profile"] = await _per_message_profile(app, actor)
+    try:
+        card_id = await homeserver.send_message_event(actor.profile_room_id, content, as_user_id=bot)
+    except HomeserverError:
+        logger.warning("Could not post the repost card in %s", actor.profile_room_id, exc_info=True)
+        return
+    await app.state.repository.put_mirrored_event(card_id, repost.id, actor.profile_room_id)
 
 
 # -- replies --------------------------------------------------------------------------
