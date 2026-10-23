@@ -851,6 +851,71 @@ exact Nostr event id they must produce. A fixture is never edited once its
 version ships (a changed converter would make every event it built
 unservable); a new version adds new fixtures.
 
+## Games: webxdc mini apps (NIP-DC)
+
+Off unless `webxdc.enabled`. Bot-refereed games (chess, Connect 4, cards on
+poster.place) need nothing of their own: they are ordinary posts, replies and
+DMs with a bot, and work through the bridge like any other.
+
+**The protocol** is Ditto's NIP-DC draft, which poster.place implements too,
+so a game is playable from any of them:
+
+- **The game** is a post with a `.xdc` file (a zipped web app): an `imeta`
+  tag with `m application/x-webxdc`, `url`, `x` and a `webxdc` identifier,
+  random per post. The identifier, not the event, is the game: a repost is
+  the same game, the same file posted again a new one.
+- **A move** (`sendUpdate()`) is a kind 4932 event, signed by the player,
+  with the identifier in an `i` tag, the payload as its content and an `alt`.
+  Serials are assigned locally, by `(created_at, id)`.
+- **Realtime** (`joinRealtimeChannel()`) is kind 20932: ephemeral, signed by
+  a key made per session (never the player's), base64 content, `i` tag.
+
+**Game posts in Matrix.** A game post shows where any post would (its
+author's room, a Profile Room, a thread) as text plus "🎮 *name*: reply
+`[play` to open". The `.xdc` is not copied into Matrix: players' browsers
+fetch it from where it was posted, and check `x` when it is a hash. A `.xdc`
+uploaded to a Profile Room is published as a game post (note v4, which adds
+the `webxdc` identifier to the `imeta`), served from the Matrix media
+repository like any upload.
+
+**Moves live in Matrix**, by the storage rule: each 4932 is a hidden event
+(`software.haven.nostr.webxdc.update`, carrying the signed event) in a thread
+under the game post, in the post's home room, sent by the player's ghost (or
+the bot, for a local player). Clients don't display custom event types, so the
+thread stays readable as the place to talk about the game. The relay indexes
+`i` tags, serves moves to Nostr apps, and accepts 4932 and 20932 only for
+games that have a post here. While a game has been opened in the last
+`webxdc.active_days`, the bridge subscribes to its `#i` on the game author's
+relays and the fallbacks.
+
+**Playing.** `[play`, sent as a reply to a game post in any room, opens it in
+the user's **Games room**: a room per Matrix user, made on first use, filed in
+their space, re-invited if left. The bot sets that room's widget to the game,
+replacing the previous one (state lives on Nostr, so nothing is lost but a
+live realtime session), centred with `io.element.widgets.layout`. The first
+time, the bot explains that games need a client with widgets (Element Web or
+Desktop). Moves are signed as the user's Active identity; realtime packets go
+only to the bridge's relay and the game author's relays.
+
+**The player** is the widget page on the bridge's origin, signed in with the
+client's Matrix OpenID token like the bridge widget, talking to the bridge
+over a websocket for moves and realtime. It downloads and unzips the `.xdc`
+and runs it in a frame on the **sandbox origin** `webxdc.sandbox_domain`
+(`xdc.<domain>`): a separate origin, so an app can't reach the bridge's or the
+homeserver's storage. That origin serves only a loader and a service worker
+(from poster.place, GPLv3 like this bridge); every file an app asks for
+comes back over `postMessage` from the player, and its CSP names no host, so
+an app has no network access at all. All apps share that one origin, so one
+app can read another's saved data, never the user's keys or session. An app
+origin per game would need a certificate for `*.xdc.<domain>`.
+
+| Setting | Default | |
+|---|---|---|
+| `webxdc.enabled` | `false` | games on or off |
+| `webxdc.sandbox_domain` | `xdc.` + `bridge.domain` | the sandbox origin |
+| `webxdc.active_days` | `14` | how long after a game was last opened its moves are followed |
+| `webxdc.max_update_kb` | `128` | largest move accepted |
+
 ## Bookkeeping tables
 
 Following the siblings' schema style. One SQLite/Postgres schema, one
