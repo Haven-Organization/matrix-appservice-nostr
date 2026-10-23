@@ -616,3 +616,30 @@ def test_repair_gives_old_own_reposts_their_card(client, homeserver, relay_pool)
     assert run(client, repair_repost_cards, client.app) == 1
     assert len(homeserver.messages(q.profile_room_id)) == before + 1
     assert run(client, repair_repost_cards, client.app) == 0
+
+
+def test_reacting_to_a_repost_card_acts_on_the_original(client, homeserver, relay_pool) -> None:
+    q = create_id(client)
+    alice, bob = Stranger(), Stranger()
+    relay_pool.network.append(alice.event(0, json.dumps({"name": "Alice"}), created_at=1000))
+    command(client, f"[follow {alice.pubkey}")
+    original = bob.event(1, "bob's original post")
+    repost = alice.event(6, json.dumps(original), [["e", original["id"], "wss://relay.example"], ["p", bob.pubkey]])
+    assert run(client, ingest, client.app, repost, origin="subscription").stored
+    remote = run(client, client.app.state.repository.get_remote_account, alice.pubkey)
+    card = homeserver.messages(remote.room_id)[-1]
+    assert card["content"]["body"].startswith("🔁 reposted ")
+    for key in ("🔁", "👍"):
+        transact(client, homeserver._store(remote.room_id, "m.reaction", {"m.relates_to": {
+            "rel_type": "m.annotation", "event_id": card["event_id"], "key": key}}, "@q:example.org"))
+    [mine] = [e for e in relay_pool.of_kind(6) if e.pubkey == q.pubkey]
+    assert ["e", original["id"]] == [list(t) for t in mine.tags if t[0] == "e"][0][:2]
+    assert relay_pool.of_kind(16) == []
+    [like] = [e for e in relay_pool.of_kind(7) if e.pubkey == q.pubkey]
+    assert [list(t) for t in like.tags if t[0] == "e"][0][1] == original["id"]
+    # The card describes the original, not the repost.
+    my_card = homeserver.messages(q.profile_room_id)[-1]
+    original_row = run(client, client.app.state.repository.get_event, original["id"])
+    relation = my_card["content"]["org.matrix.msc4501.social.relates_to"]
+    assert relation["event_id"] == original_row.matrix_event_id
+    assert my_card["content"]["org.matrix.msc4501.social.body"] == "bob's original post"

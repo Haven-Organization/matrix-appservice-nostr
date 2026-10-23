@@ -121,6 +121,13 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
     if target is None or target.kind in (4, 5, 7, 1059):
         return False  # not something a reaction can go to (a DM's wrap, say)
     room_id = event.get("room_id", "")
+    # Reacting to a repost reacts to what was reposted, as Nostr apps do.
+    original = await reposted_original(app, target)
+    card_room, card_event = room_id, target_event
+    if original is not None:
+        target = original
+        if original.room_id and original.matrix_event_id:
+            card_room, card_event = original.room_id, original.matrix_event_id
     actor = await acting_id(app, sender, room_id)
     if actor is None:
         return True
@@ -156,8 +163,26 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
     if row is not None:
         await notify_local_author(app, actor, target, reason, reaction=shown)
         if key == REPOST_KEY:
-            await post_repost_card(app, actor, target, room_id=room_id, target_event=target_event, repost=row)
+            await post_repost_card(app, actor, target, room_id=card_room, target_event=card_event, repost=row)
     return True
+
+
+async def reposted_original(app: FastAPI, row: EventRow) -> EventRow | None:
+    """For a repost (kind 6/16), the post it reposts, brought into Matrix
+    if needed; ``None`` for anything else, or if it can't be found."""
+    if row.kind not in (6, 16):
+        return None
+    from bridge.inbound import _ensure_post_in_matrix, _original_of_repost, reaction_target
+
+    raw = await raw_of(app, row)
+    target_id = reaction_target(raw) if raw else None
+    if not target_id:
+        return None
+    existing = await app.state.repository.get_event(target_id)
+    if existing is not None:
+        return existing
+    found = await _original_of_repost(app, raw, target_id)
+    return await _ensure_post_in_matrix(app, found) if found else None
 
 
 async def post_repost_card(app: FastAPI, actor: NostrId, target: EventRow, *, room_id: str, target_event: str,
