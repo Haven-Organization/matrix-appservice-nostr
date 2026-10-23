@@ -603,3 +603,16 @@ def test_repost_card_without_msc4501(repository, homeserver, relay_pool) -> None
     content = card["content"]
     assert "org.matrix.msc4501.social.relates_to" not in content and "com.beeper.per_message_profile" not in content
     assert content["body"].startswith("🔁 reposted Alice's post:\n> alice says hi\nhttps://matrix.to/#/")
+
+
+def test_repair_gives_old_own_reposts_their_card(client, homeserver, relay_pool) -> None:
+    from bridge.inbound import repair_repost_cards
+
+    q, alice, raw, remote, mirrored, reaction, repost, card = _repost_by_reaction(client, homeserver, relay_pool)
+    repo = client.app.state.repository
+    # As before cards existed: no card recorded.
+    client.portal.call(lambda: repo._run(lambda conn: conn.execute("DELETE FROM mirrored_events WHERE nostr_id = ?", (repost.id,))))
+    before = len(homeserver.messages(q.profile_room_id))
+    assert run(client, repair_repost_cards, client.app) == 1
+    assert len(homeserver.messages(q.profile_room_id)) == before + 1
+    assert run(client, repair_repost_cards, client.app) == 0

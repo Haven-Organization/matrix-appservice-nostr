@@ -670,6 +670,12 @@ async def repair_repost_cards(app: FastAPI) -> int:
     for row in await repository.list_events_of_kinds(tuple(REPOST_KINDS)):
         if not row.room_id or not row.matrix_event_id or await repository.list_mirrored_copies(row.id):
             continue
+        local = await repository.get_id_by_pubkey(row.pubkey)
+        if local is not None:
+            # A local user's 🔁 from before reposts left a card.
+            if await _repair_own_repost_card(app, local, row):
+                repaired += 1
+            continue
         remote = await repository.get_remote_account(row.pubkey)
         if remote is None or not remote.room_id or row.room_id == remote.room_id:
             continue
@@ -697,6 +703,25 @@ async def repair_repost_cards(app: FastAPI) -> int:
     if repaired:
         logger.info("Showed %d earlier repost(s) in their reposters' rooms", repaired)
     return repaired
+
+
+async def _repair_own_repost_card(app: FastAPI, local: NostrId, row: EventRow) -> bool:
+    from bridge.interactions import post_repost_card
+
+    if not local.profile_room_id or row.room_id == local.profile_room_id:
+        return False
+    try:
+        reaction = await app.state.homeserver.get_event(row.room_id, row.matrix_event_id, as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        return False
+    relates = ((reaction or {}).get("content") or {}).get("m.relates_to") or {}
+    if (reaction or {}).get("type") != "m.reaction" or not isinstance(relates.get("event_id"), str):
+        return False
+    target = await app.state.repository.get_event_by_matrix_event(relates["event_id"])
+    if target is None:
+        return False
+    await post_repost_card(app, local, target, room_id=row.room_id, target_event=relates["event_id"], repost=row)
+    return bool(await app.state.repository.list_mirrored_copies(row.id))
 
 
 async def _original_of_repost(app: FastAPI, raw: dict[str, Any], target_id: str) -> dict[str, Any] | None:
