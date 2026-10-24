@@ -54,7 +54,7 @@ Each ID also publishes, and keeps up to date:
 - **Captions** become the note's text, with the file's URL on the next line.
 - **Mentions:** a pill of a local user who has a Nostr ID becomes a `nostr:npub…` reference and a `p` tag, pointing at the ID that user had active at the time. A pill of a Nostr account's ghost does the same for that account.
 - **Quotes:** a post that links to a Nostr post (a `nostr:note…`/`nevent…` link, a link on any Nostr website, or a matrix.to link to a bridged post) quotes it (`q` tag), tagging its author.
-- **Replies cross-posted by another bridge** (MSC4501, a reply to a fediverse or Bluesky post shared into your Profile Room) start with the siblings' header, "⤵️ Reply to *name*'s post: *link*", so they make sense on their own. One that answers a post that's on Nostr is a Nostr reply instead.
+- **Replies cross-posted by another bridge** (MSC4501, a reply to a fediverse or Bluesky post shared into your Profile Room) start with the siblings' header, "⤵️ Reply to *name*'s post:", with the link to that post after the reply, so they make sense on their own. One that answers a post that's on Nostr is a Nostr reply instead.
 - **Links** written as Markdown (`[text](url)`, which Element sends as the plain text) go out as `text (url)`, or just the url when that's all the text says, since Nostr notes are plain text and most clients show Markdown as typed.
 - **Hashtags** (`#word`) also become `t` tags (lowercase, NIP-24), so the post shows up when people browse that hashtag on Nostr. Reposts carry the original's hashtags.
 - **Spoilers** add a `content-warning` tag, with the spoiler's reason if it has one.

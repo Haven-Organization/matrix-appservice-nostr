@@ -451,6 +451,17 @@ def note_v7(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[li
     return f"{heading}\n\n{text}" if text else heading, tags
 
 
+def note_v8(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v6 with v7's header, but the link to the post answered at the end,
+    under the reply (clients show it there as a card)."""
+    text, tags = note_v6(event, recipe)
+    reply_to = recipe.get("reply_to")
+    if not reply_to:
+        return text, tags
+    heading = f"⤵️ Reply to {reply_to['name']}'s post:" if reply_to.get("name") else "⤵️ Reply to a post:"
+    return "\n\n".join(part for part in (heading, text, reply_to.get("url") or "") if part), tags
+
+
 def comment_v3(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
     """v2 with Markdown links made plain."""
     text, tags = comment_v2(event, recipe)
@@ -545,7 +556,7 @@ def share_v3(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
 
 SHARE_CONVERTERS = {1: share_v1, 2: share_v2, 3: share_v3}
 SHARE_VERSION = 3
-NOTE_VERSION = 7
+NOTE_VERSION = 8
 COMMENT_VERSION = 3
 
 
@@ -557,6 +568,7 @@ CONVERTERS = {
     ("note", 5): note_v5,
     ("note", 6): note_v6,
     ("note", 7): note_v7,
+    ("note", 8): note_v8,
     ("file", 1): file_v1,
     ("comment", 1): comment_v1,
     ("comment", 2): comment_v2,

@@ -328,7 +328,7 @@ def test_a_cross_posted_reply_says_what_it_answers(client, homeserver, relay_poo
     post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "Tired of winning!", "format": "plain",
                                                  "org.matrix.msc4501.social.relates_to": relation})
     note = notes(relay_pool)[-1]
-    assert note.content == "⤵️ Reply to GaryBussy's post: https://shitpost.example/objects/2cac\n\nTired of winning!"
+    assert note.content == "⤵️ Reply to GaryBussy's post:\n\nTired of winning!\n\nhttps://shitpost.example/objects/2cac"
     row = client.portal.call(client.app.state.repository.get_event, note.id)
     assert rebuilt(client, row).event == note.to_dict()
     # Without a name or link given inline, they come from the post itself.
@@ -339,7 +339,7 @@ def test_a_cross_posted_reply_says_what_it_answers(client, homeserver, relay_poo
                                                  "org.matrix.msc4501.social.relates_to": {
                                                      "rel_type": "org.matrix.msc4501.social.reply",
                                                      "event_id": original["event_id"], "room_id": "!fedi:example.org"}})
-    assert notes(relay_pool)[-1].content == "⤵️ Reply to Gary's post: https://shitpost.example/objects/x\n\nSecond"
+    assert notes(relay_pool)[-1].content == "⤵️ Reply to Gary's post:\n\nSecond\n\nhttps://shitpost.example/objects/x"
 
 
 def test_a_cross_posted_reply_to_a_nostr_post_is_a_nostr_reply(client, homeserver, relay_pool) -> None:
