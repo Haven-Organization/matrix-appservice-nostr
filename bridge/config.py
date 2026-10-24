@@ -253,6 +253,9 @@ class WebxdcSection:
     active_days: int = 14
     # Largest move (sendUpdate payload) accepted, in KB.
     max_update_kb: int = 128
+    # Largest app the bridge fetches for a player whose browser can't fetch
+    # it directly (a host without CORS), in MB. Never stored.
+    max_app_mb: int = 100
 
 
 @dataclass(frozen=True)
@@ -277,7 +280,8 @@ def _webxdc_section(raw: dict[str, Any], domain: str) -> WebxdcSection:
     if active_days < 1 or max_update_kb < 1:
         raise ConfigError("webxdc.active_days and webxdc.max_update_kb must be at least 1")
     return WebxdcSection(enabled=bool(raw.get("enabled", False)), sandbox_domain=sandbox,
-                         active_days=active_days, max_update_kb=max_update_kb)
+                         active_days=active_days, max_update_kb=max_update_kb,
+                         max_app_mb=max(1, int(raw.get("max_app_mb", 100))))
 
 
 def _require(section: dict[str, Any], key: str, section_name: str) -> Any:

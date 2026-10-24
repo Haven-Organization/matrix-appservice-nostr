@@ -98,6 +98,7 @@ def test_send_update_goes_out_before_it_is_stored(games, homeserver, relay_pool)
     webxdc.hub(games.app).add(session)
     sent = run(games, webxdc.send_update, games.app, q, GAME, {"payload": {"move": "d4"}, "info": "q played d4"})
     assert sent["pubkey"] == q.pubkey and ["i", GAME] in sent["tags"] and ["info", "q played d4"] in sent["tags"]
+    assert json.loads(sent["content"]) == {"move": "d4"}
     assert got[0] == {"t": "update", "event": sent}  # delivered at once, here
     from tests.conftest import settle
 
@@ -191,3 +192,67 @@ def test_play_is_off_when_games_are(client, homeserver, relay_pool) -> None:
     send(client, message("[create profile"))
     send(client, message("[play"))
     assert homeserver.sent_to("!dm:example.org")[-1]["body"] == "Games aren't turned on on this bridge."
+
+
+# -- player, websocket and sandbox origin ------------------------------------------------
+
+
+def session_for(client, user="@q:example.org"):
+    from bridge.widget import _new_session
+
+    return _new_session(user)
+
+
+def test_sandbox_host_serves_only_the_loader_and_worker(games) -> None:
+    host = {"host": "xdc.example.org"}
+    loader = games.get("/__sandbox__/", headers=host)
+    assert loader.status_code == 200 and "webxdc sandbox" in loader.text
+    csp = loader.headers["content-security-policy"]
+    assert "connect-src 'self' data: blob:" in csp and "http" not in csp
+    worker = games.get("/sw.js", headers=host)
+    assert worker.headers["service-worker-allowed"] == "/" and "serviceWorker" not in worker.text[:0]
+    # Nothing of the bridge is reachable there: not the relay, not the widget, not handles.
+    for path in ("/", "/widget", "/.well-known/nostr.json?name=q", "/xdc/play"):
+        response = games.get(path, headers=host)
+        assert "xdc-retry" in response.text, path
+    # And the loader isn't served on the bridge's own host.
+    assert games.get("/__sandbox__/").status_code == 404
+
+
+def test_player_page(games) -> None:
+    page = games.get("/xdc/play?game=" + GAME)
+    assert page.status_code == 200 and '"sandboxOrigin": "https://xdc.example.org"' in page.text
+    assert games.get("/xdc/static/player.js").status_code == 200
+    assert games.get("/xdc/static/../server.py").status_code == 404
+
+
+def test_games_off_means_no_player(client) -> None:
+    assert client.get("/xdc/play?game=" + GAME).status_code == 404
+    assert "xdc-retry" not in client.get("/", headers={"host": "xdc.example.org"}).text
+
+
+def test_websocket_play_session(games, homeserver, relay_pool) -> None:
+    q, alice, post, remote, shown = followed_game(games, homeserver, relay_pool)
+    earlier = Stranger().event(webxdc.UPDATE_KIND, json.dumps({"move": "e4"}), [["i", GAME], ["alt", "Webxdc update"]])
+    run(games, ingest, games.app, earlier, origin="relay")
+    session = session_for(games)
+    with games.websocket_connect(f"/xdc/ws?game={GAME}&session={session}") as ws:
+        init = ws.receive_json()
+        assert init["t"] == "init" and init["game"]["name"] == "Chess" and init["self"]["name"] == "q@example.org"
+        assert [e["id"] for e in init["updates"]] == [earlier["id"]]
+        ws.send_json({"t": "send", "id": 1, "update": {"payload": {"move": "e5"}}, "descr": "e5"})
+        first, second = ws.receive_json(), ws.receive_json()
+        update = first if first["t"] == "update" else second
+        ack = second if first["t"] == "update" else first
+        assert ack == {"t": "ack", "id": 1, "ok": True}
+        assert json.loads(update["event"]["content"]) == {"move": "e5"} and update["event"]["pubkey"] == q.pubkey
+        ws.send_json({"t": "rt_join", "id": 2})
+        assert ws.receive_json() == {"t": "ack", "id": 2, "ok": True}
+        assert webxdc.hub(games.app).playing(GAME)
+    assert not webxdc.hub(games.app).playing(GAME)
+
+
+def test_websocket_needs_a_session(games, homeserver, relay_pool) -> None:
+    followed_game(games, homeserver, relay_pool)
+    with games.websocket_connect(f"/xdc/ws?game={GAME}&session=nope") as ws:
+        assert ws.receive_json()["t"] == "error"

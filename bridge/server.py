@@ -329,11 +329,16 @@ def create_app(
 
     app = FastAPI(title="matrix-appservice-nostr", description="Matrix <-> Nostr bridge and relay", lifespan=lifespan)
     app.add_middleware(PublicCors)
+    # Outermost: the webxdc sandbox host never reaches the bridge's routes.
+    from bridge.webxdc_routes import SandboxHost, router as webxdc_router
+
+    app.add_middleware(SandboxHost)
     app.add_exception_handler(HTTPException, _matrix_error_handler)
     app.include_router(nip05_router)
     app.include_router(appservice_router)
     app.include_router(relay_router)
     app.include_router(widget_router)
+    app.include_router(webxdc_router)
     # Last: its "/{blob}" path would otherwise shadow single-segment routes.
     app.include_router(media_router)
     return app

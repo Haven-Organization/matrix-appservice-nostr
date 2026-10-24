@@ -52,6 +52,14 @@ def _new_session(user: str) -> str:
     return session_id
 
 
+def user_of_session(session_id: str) -> str | None:
+    """The Matrix user a widget session belongs to, if it's still valid."""
+    entry = _sessions.get(session_id)
+    if entry is None or time.monotonic() > entry[1]:
+        return None
+    return entry[0]
+
+
 def _session_user(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):

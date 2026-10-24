@@ -1,0 +1,501 @@
+<!doctype html>
+<!-- From PosterChanAI (https://github.com/loblawbob873-svg/posterchanai), GPLv3, as is this bridge. Adapted wording only. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>webxdc sandbox</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#888;
+    font:13px system-ui,-apple-system,"Segoe UI",sans-serif}
+  #f{position:absolute;inset:0;width:100%;height:100%;border:0;display:block;background:#000}
+  #m{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;
+    padding:20px}
+</style>
+<div id="m">starting…</div>
+<script>
+/* THE OUTER FRAME of the webxdc sandbox. It is served from a WILDCARD subdomain — a label derived
+ * per app instance — and its whole job is to be a different origin from the client, so that a game
+ * somebody posted cannot read the localStorage and IndexedDB the client keeps its keys and its
+ * account in. That is the reason this file exists at all; everything below is plumbing for it.
+ *
+ * WHY THERE ARE TWO FRAMES. The service worker serves the app's files, and it gets them by asking a
+ * page for them — but a navigation request has no client yet to ask (`clientId` is empty, the
+ * document does not exist until the response arrives), so a worker cannot serve the very page it
+ * would need to talk to. So the app runs in a NESTED iframe, same origin, and this outer document
+ * stays alive as the client the worker asks. It also owns the one link that crosses origins: the
+ * postMessage channel to the player page that holds the .xdc.
+ *
+ * NOTHING IS FETCHED FROM ANYWHERE. This file and sw.js are the only two things this origin serves;
+ * every byte of the app comes back over postMessage from the parent, which unzipped it. That is what
+ * makes "MUST deny all forms of Internet access" (the webxdc spec's one hard requirement) true by
+ * construction rather than by a promise.
+ */
+(function(){
+  'use strict';
+  var VERSION = 1;
+  var msg = document.getElementById('m');
+  var parentOrigin = null;            // learned from the first message; never assumed
+  var pending = {};                   // rpc id -> resolve, for THIS document's own requests
+  var MINE = 'sbx:';                  // ...which is what marks them as ours; see rpc()
+  var nextId = 1;
+  var started = false;
+  var firstFetch = null;          // set once the app frame exists, to narrate the first loads
+
+  /* ONE RELOAD, MARKED IN THE URL. See boot(): a document is reliably controlled by a service worker
+   * only when it starts its life with one, so an uncontrolled loader reloads itself exactly once.
+   * The marker is the hash and not sessionStorage on purpose — this document is a third-party frame
+   * and may not be allowed to write storage, which is the class of bug that cost the whole evening. */
+  var RELOAD_MARK = 'pcxdc-reloaded';
+  var RELOADED = (location.hash || '').indexOf(RELOAD_MARK) >= 0;
+
+  /* A promise with a ceiling. Everything in the boot chain can HANG rather than fail, and a promise
+   * that never settles never reaches a catch — so the fallback would never run and the reader would
+   * watch "loading…" for ever, which is the failure mode with nothing to report. */
+  function withTimeout(p, ms, what){
+    return new Promise(function(resolve, reject){
+      var done = false;
+      var t = setTimeout(function(){
+        if(done) return;
+        done = true;
+        reject(new Error('the service worker did not ' + what + ' in time'));
+      }, ms);
+      p.then(function(v){ if(done) return; done = true; clearTimeout(t); resolve(v); },
+             function(e){ if(done) return; done = true; clearTimeout(t); reject(e); });
+    });
+  }
+
+  function say(t){ if(msg) msg.textContent = t; }
+  function fail(t){ say(t); try{ post({ jsonrpc:'2.0', method:'sandbox.error', params:{ message:t } }); }catch(_){} }
+
+  function post(m, transfer){
+    if(!parentOrigin) return;
+    try{ parent.postMessage(m, parentOrigin, transfer || []); }catch(_){}
+  }
+
+  /* A request to the parent, which is the only place file bytes can come from.
+   *
+   * THE ID IS PREFIXED, and that is not decoration. This document and the app inside it
+   * both talk JSON-RPC to the same parent over the same channel, and both number their
+   * requests from 1 — so an id alone does not say whose it is. Prefixing ours makes the
+   * two sequences unmistakable in the one place it matters: the reply coming back. */
+  function rpc(method, params){
+    var id = MINE + (nextId++);
+    return new Promise(function(resolve, reject){
+      pending[id] = { resolve: resolve, reject: reject };
+      post({ jsonrpc:'2.0', id:id, method:method, params:params });
+    });
+  }
+
+  window.addEventListener('message', function(ev){
+    var d = ev.data;
+    if(!d || typeof d !== 'object' || d.jsonrpc !== '2.0') return;
+    /* THE FIRST MESSAGE FIXES THE PARENT'S ORIGIN, and everything after it must match.
+     * `ev.source !== parent` is the real check — any page can postMessage into a frame, and a
+     * sandbox that accepted file bytes from an arbitrary sender would let a third party feed a
+     * different app to a reader who thinks they are running the one that was posted. */
+    if(ev.source !== parent) return;
+    if(parentOrigin === null){
+      if(d.method !== 'init') return;                 // the handshake is the only way in
+      parentOrigin = ev.origin;
+    }else if(ev.origin !== parentOrigin) return;
+
+    if(d.method === 'init'){ boot(d.params || {}); return; }
+    if(d.id !== undefined && d.method === undefined){
+      var p = Object.prototype.hasOwnProperty.call(pending, d.id) ? pending[d.id] : null;
+      /* A REPLY TO SOMETHING THE APP ASKED, not to anything this document asked.
+       *
+       * It used to be dropped right here: `pending` holds only our own requests, the
+       * lookup missed, and the message was swallowed on the way to the frame that was
+       * waiting for it. Everything the webxdc bridge does as a REQUEST rather than a
+       * push died at this line — and silently, because a promise that never settles
+       * throws nothing and logs nothing. joinRealtimeChannel() never resolved, so its
+       * send() queued every packet behind a `.then()` that could not run: an app could
+       * send one a frame, for ever, and not a byte left the sandbox. Multiplayer was
+       * dead in every mini app while single-player looked perfect. */
+      if(!p){
+        var rf = document.getElementById('f');
+        if(rf && rf.contentWindow) try{ rf.contentWindow.postMessage(d, location.origin); }catch(_){}
+        return;
+      }
+      delete pending[d.id];
+      if(d.error) p.reject(new Error(d.error.message || 'rpc error'));
+      else p.resolve(d.result);
+      return;
+    }
+    // Anything else is for the app: hand it down untouched (webxdc update pushes, key events…).
+    var f = document.getElementById('f');
+    if(f && f.contentWindow) try{ f.contentWindow.postMessage(d, location.origin); }catch(_){}
+  });
+
+  /* The app's own frame talks to the parent THROUGH here. It is same-origin with this document, so
+   * its messages are trusted; the parent is not, so nothing from the parent is executed here — it is
+   * only ever forwarded, or turned into a Response by the worker. */
+  window.addEventListener('message', function(ev){
+    if(ev.source === parent) return;
+    var f = document.getElementById('f');
+    if(!f || ev.source !== f.contentWindow) return;
+    if(ev.origin !== location.origin && ev.origin !== 'null') return;
+    var d = ev.data;
+    if(!d || typeof d !== 'object' || d.jsonrpc !== '2.0') return;
+    post(d);                                           // straight up to the parent
+  });
+
+  /* The worker asks THIS page for every file the app requests, over a MessageChannel it creates per
+   * request — so there is no connection to keep alive and nothing to re-establish when this document
+   * is replaced. We forward to the parent and answer on the port. */
+  function onWorkerMessage(ev){
+    var d = ev.data, port = ev.ports && ev.ports[0];
+    if(!d || d.t !== 'fetch' || !port) return;
+    // Narrate what the app is fetching while it is still behind the status line — a mini app that
+    // pulls tens of megabytes should say so rather than look hung.
+    if(firstFetch){ try{ firstFetch(new URL(d.request.url).pathname.replace(/^\//, '') || 'the app'); }catch(_){} }
+    rpc('fetch', { request: d.request }).then(function(res){
+      // Hand the buffer ON rather than copying it: at 75MB an extra copy per hop is the difference
+      // between a game that starts and one that sits on a black screen.
+      var t = (res && res.bytes) ? [res.bytes] : [];
+      port.postMessage({ ok:true, res:res }, t);
+    }, function(err){
+      port.postMessage({ ok:false, message:(err && err.message) || 'failed' });
+    });
+  }
+
+  function boot(params){
+    if(started) return;
+    started = true;
+    if(!('serviceWorker' in navigator)){
+      fail('This browser cannot run mini apps here (no service worker).');
+      return;
+    }
+    navigator.serviceWorker.addEventListener('message', onWorkerMessage);
+    say('loading…');
+    /* EVERY STEP GETS A CEILING. Each of these can hang rather than fail — a registration that never
+     * settles, a `ready` that never resolves — and a promise that never settles has no catch, so the
+     * blob fallback below would never run and the reader would sit on "loading…" for ever. */
+    withTimeout(navigator.serviceWorker.register('/sw.js', { scope: '/' }), 15000, 'register')
+    .then(function(){
+      return withTimeout(navigator.serviceWorker.ready, 15000, 'activate');
+    }).then(function(){
+      /* THE WORKER MUST BE CONTROLLING THIS DOCUMENT BEFORE THE APP FRAME EXISTS.
+       *
+       * The frame navigates to `/`, and if nothing is controlling us at that moment the request goes
+       * to the NETWORK — where this origin serves a 404 by design, because the app's files are not on
+       * the server at all. The app then never asks for a single file, which is precisely the symptom
+       * reported ("the sandbox never asked for a single file"), and nothing anywhere says why.
+       *
+       * `clients.claim()` in the worker is supposed to prevent that and in Chromium it lands fast
+       * enough to hide the problem entirely. It is not a guarantee, and Firefox's timing is different
+       * — so the old code waited 4 seconds for a `controllerchange` AND THEN BUILT THE FRAME ANYWAY.
+       * A timeout that proceeds regardless is not a wait, it is a delay.
+       *
+       * A RELOAD is what reliably makes a page controlled: a document that starts its life with an
+       * active worker in scope is controlled from the first byte. So if the controller is still
+       * missing, reload ONCE — the marker is in the URL hash rather than sessionStorage, which a
+       * third-party frame may not be allowed to write — and the parent re-handshakes with us
+       * automatically, because a reloaded iframe keeps the same window and the loader announces
+       * `ready` on every load. Still uncontrolled after that reload and we take the blob path, which
+       * is honest about being second best rather than pretending with a 404. */
+      if(navigator.serviceWorker.controller) return true;
+      return new Promise(function(resolve){
+        var t = setTimeout(function(){ resolve(!!navigator.serviceWorker.controller); }, 3000);
+        navigator.serviceWorker.addEventListener('controllerchange', function(){
+          clearTimeout(t); resolve(!!navigator.serviceWorker.controller);
+        }, { once:true });
+      });
+    }).then(function(controlled){
+      if(!controlled){
+        if(!RELOADED){
+          say('starting the app…');
+          try{ location.hash = RELOAD_MARK; }catch(_){}
+          location.reload();
+          return;                                       // this document is going away
+        }
+        throw new Error('the service worker never took control of the sandbox');
+      }
+      /* THE APP GETS THE ORIGIN ROOT, and this loader lives at a reserved path instead. An app is
+       * allowed to write `/style.css` and `<a href="/">`, and serving it from under a prefix would
+       * break exactly those — silently, as a missing stylesheet. So the worker owns `/` and leaves
+       * `/__sandbox__/` and `/sw.js` alone, which is what keeps this document reachable after the
+       * worker has taken over everything else. */
+      /* THE APP'S FRAME CARRIES THIS INSTANCE'S TOKEN, and it is not decoration: every mini app on
+       * this instance shares one origin and therefore one service worker, which has to decide which
+       * open game a request belongs to. It used to take the first loader it found — so opening Quake
+       * III served Half-Life, whose loader was still alive. The token comes from our own URL (the
+       * client minted it) and rides in the query, because a fragment never reaches a worker and a
+       * navigation has no client id to look anything up by. See sw.js.
+       *
+       * The app can read it, and that is fine: it is its own. It cannot read another app's, which is
+       * why it is a uuid rather than a counter. */
+      var f = document.createElement('iframe');
+      f.id = 'f';
+      /* pointer-lock must be delegated at EVERY level. Permissions Policy is not inherited past a
+       * frame that does not name the feature, so granting it on the OUTER frame (webxdc.js) and not
+       * here would stop the chain right where the app actually is — the grant would look correct in
+       * the client and mouse-look would still be refused. This is the inner half of that pair. */
+      f.setAttribute('allow', 'autoplay; fullscreen; gamepad; pointer-lock');
+      var tok = '';
+      try{ tok = new URLSearchParams(location.search).get('__xdc') || ''; }catch(_){}
+      f.src = '/' + (params && params.entry ? String(params.entry).replace(/^\/+/, '') : '')
+            + (tok ? '?__xdc=' + encodeURIComponent(tok) : '');
+      document.body.appendChild(f);
+      /* …and hand it focus. Pointer lock is refused for an unfocused document even when the policy
+       * allows it, and the app frame starts unfocused because the user clicked a card in the client,
+       * two documents up. Best-effort at every level; none of it may throw into the boot path. */
+      var _focusInner = function(){ try{ f.focus(); }catch(_){}
+                                    try{ f.contentWindow && f.contentWindow.focus(); }catch(_){} };
+      var _armInnerInput = function(){
+        _focusInner();
+        /* Focus in the SAME trusted pointer gesture that the game uses to call requestPointerLock().
+         * Events inside an iframe do not bubble to the iframe ELEMENT, so listening for pointerdown
+         * on `f` in the parent client never ran for an actual game click.  This frame and the app are
+         * same-origin, which lets the loader install a capturing listener in the app document.  It
+         * runs before a canvas/engine handler and preserves the user activation for pointer lock. */
+        try{ f.contentDocument.addEventListener('pointerdown', _focusInner, true); }catch(_){}
+      };
+      f.addEventListener('load', _armInnerInput);
+      window.addEventListener('focus', _focusInner);
+      setTimeout(_focusInner, 250);
+      /* THE STATUS LINE STAYS UNTIL THE APP HAS ACTUALLY ASKED FOR SOMETHING.
+       *
+       * It used to be removed the instant the frame was appended, which meant every failure after
+       * that point — a worker that never took control, a file the parent could not read, an app
+       * still fetching 75 MB — looked identical: a black rectangle with nothing in it and nothing to
+       * say. Reported exactly that way ("i see black window"). The frame is transparent over this
+       * message, so the app covers it as soon as it paints; if it never does, the reason is on
+       * screen instead of the dark. */
+      say('starting the app…');
+      var settled = false;
+      firstFetch = function(what){ if(msg) say('loading ' + what + '…'); };
+      f.addEventListener('load', function(){ settled = true; if(msg) msg.remove(); });
+      setTimeout(function(){
+        if(settled || !msg) return;
+        say('The app has not started. Its files are served by the game player over postMessage — if this '
+          + 'persists, close and reopen it.');
+      }, 25000);
+      post({ jsonrpc:'2.0', method:'sandbox.running' });
+    }).catch(function(e){
+      /* NO WORKER? THEN BLOB URLS — a LAST RESORT, and it is worth knowing exactly how good it is
+       * not, because for one evening it was mistaken for the answer.
+       *
+       * A blob created HERE inherits THIS document's origin, so the app still runs on xdc.<instance>
+       * and still cannot touch the client's storage, and it needs no worker and no permission. What
+       * it cannot do is serve an ES MODULE: `import "./engine.js"` from a blob: URL has no path to
+       * resolve against and throws `Error resolving module specifier`, which kills any app whose
+       * engine is a module (measured on both Quake III and Half-Life). Import maps do not help —
+       * relative specifiers resolve before any map is consulted.
+       *
+       * So this is for the app that is a single HTML file with a couple of scripts, and for the
+       * browser that has no service workers at all (a Firefox private window disables them
+       * everywhere, first-party included). The worker path is the one that must work.
+       *
+       * FOR THE RECORD, since a wrong diagnosis lived here for a whole evening: this was NOT a
+       * Firefox platform limit. It was our own `Service-Worker-Allowed` header, sent by both nginx
+       * and the app, which fetch combines into "/, /" — not a valid scope prefix. Chromium ignores
+       * the header entirely (the script is at the origin root, so `/` is already its maximum scope);
+       * Firefox parses it strictly and refuses with `SecurityError: The operation is insecure`,
+       * an error that names neither headers nor scope. Ditto runs the same design in Firefox from a
+       * CROSS-SITE frame, which is what proved the platform was never the problem. */
+      var m = String((e && (e.name + ': ' + e.message)) || e);
+      try{ console.warn('[sandbox] service worker unavailable:', m, '— falling back to blob URLs'); }catch(_){}
+      bootBlobs();
+    });
+  }
+
+  /* ---- the no-worker path ----------------------------------------------------------------------
+   *
+   * Every file becomes a blob URL on THIS origin, and the app's HTML is rewritten to point at them.
+   * What cannot be rewritten (anything the app fetches at runtime, by a name it computes) is caught
+   * by a shim over fetch and XMLHttpRequest that asks the parent, exactly as the worker did.
+   *
+   * The trade against the worker path: the worker sees every request transparently, while this has to
+   * find the references itself. A game that builds URLs in ways the shim does not recognise will miss
+   * files here and not there — which is why the worker is still preferred wherever it is allowed. */
+  function bootBlobs(){
+    say('preparing the app…');
+    var urls = {};                       // app path -> blob URL, for what has already been fetched
+
+    function bytesOf(path){
+      return rpc('fetch', { request: { url: 'https://sandbox.invalid/' + path.replace(/^\/+/, ''),
+                                       method: 'GET', headers: {}, body: null } })
+        .then(function(res){
+          if(!res || (res.status && res.status >= 400)) throw new Error('missing: ' + path);
+          if(res.bytes) return { bytes: new Uint8Array(res.bytes), type: (res.headers||{})['content-type'] || '' };
+          var bin = atob(res.body || ''), out = new Uint8Array(bin.length);
+          for(var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+          return { bytes: out, type: (res.headers||{})['content-type'] || '' };
+        });
+    }
+    function blobFor(path){
+      var key = path.replace(/^\/+/, '');
+      if(urls[key]) return Promise.resolve(urls[key]);
+      if(firstFetch) firstFetch(key);
+      return bytesOf(key).then(function(f){
+        urls[key] = URL.createObjectURL(new Blob([f.bytes], { type: f.type || 'application/octet-stream' }));
+        return urls[key];
+      });
+    }
+
+    bytesOf('index.html').then(function(f){
+      var html = new TextDecoder().decode(f.bytes);
+      /* Rewrite what the browser loads BY ITSELF — script, link, img, source. Those never reach a
+       * fetch shim: the parser resolves them against the document's own URL, which for a blob is
+       * useless. Anything the app requests later goes through the shim instead. */
+      var refs = [];
+      html = html.replace(/(\s(?:src|href))\s*=\s*(["'])([^"']+)\2/gi, function(all, attr, q, url){
+        if(/^(?:[a-z]+:|\/\/|#|data:)/i.test(url)) return all;      // absolute, anchor, data: — leave it
+        var i = refs.push(url.replace(/^\.?\//, '')) - 1;
+        return attr + '=' + q + '__XDCREF' + i + '__' + q;
+      });
+      return Promise.all(refs.map(function(r){ return blobFor(r).catch(function(){ return ''; }); }))
+        .then(function(got){
+          for(var i = 0; i < got.length; i++) html = html.split('__XDCREF' + i + '__').join(got[i]);
+          // The shim goes in FIRST, before any of the app's own scripts, or the app's boot code runs
+          // against the real fetch and asks the network for files that only exist here.
+          var shim = '<script>' + SHIM_SRC + '<\/script>';
+          html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, function(h){ return h + shim; })
+                                           : shim + html;
+          var page = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+          var f2 = document.createElement('iframe');
+          f2.id = 'f';
+          // Same delegation as the frame above — this is the blob-page variant of the same app frame.
+          f2.setAttribute('allow', 'autoplay; fullscreen; gamepad; pointer-lock');
+          f2.src = page;
+          document.body.appendChild(f2);
+          var _focusF2 = function(){ try{ f2.focus(); }catch(_){}
+                                     try{ f2.contentWindow && f2.contentWindow.focus(); }catch(_){} };
+          var _armF2Input = function(){
+            _focusF2();
+            try{ f2.contentDocument.addEventListener('pointerdown', _focusF2, true); }catch(_){}
+          };
+          f2.addEventListener('load', _armF2Input);
+          window.addEventListener('focus', _focusF2);
+          setTimeout(_focusF2, 250);
+          say('starting the app…');
+          f2.addEventListener('load', function(){ if(msg) msg.remove(); });
+          post({ jsonrpc:'2.0', method:'sandbox.running' });
+        });
+    }).catch(function(e){
+      fail('Could not start the app: ' + ((e && e.message) || e));
+    });
+
+    /* The app frame asks THIS document for a file over postMessage; we answer with a blob URL it can
+     * fetch locally. Same channel the bridge already uses, so there is nothing new crossing origins. */
+    window.addEventListener('message', function(ev){
+      var f2 = document.getElementById('f');
+      if(!f2 || ev.source !== f2.contentWindow) return;
+      var d = ev.data;
+      if(!d || d.__xdcfile === undefined) return;
+      blobFor(String(d.__xdcfile)).then(function(u){
+        ev.source.postMessage({ __xdcfileRes: d.id, url: u }, '*');
+      }, function(err){
+        ev.source.postMessage({ __xdcfileRes: d.id, error: String((err && err.message) || err) }, '*');
+      });
+    });
+  }
+
+  /* Runs INSIDE the app, before its own code. Turns a relative fetch/XHR into "ask the loader for a
+   * blob URL, then fetch that" — which is a local, synchronous-ish read of memory this origin already
+   * holds. */
+  var SHIM_SRC = [
+    '(function(){',
+    '  var n=1, waits={};',
+    '  window.addEventListener("message", function(e){',
+    '    var d=e.data; if(!d||d.__xdcfileRes===undefined) return;',
+    '    var w=waits[d.__xdcfileRes]; if(!w) return; delete waits[d.__xdcfileRes];',
+    '    d.error ? w.rej(new Error(d.error)) : w.res(d.url);',
+    '  });',
+    '  function ask(p){ var id=n++; return new Promise(function(res,rej){ waits[id]={res:res,rej:rej};',
+    '    parent.postMessage({ __xdcfile:p, id:id }, "*"); }); }',
+    '  function local(u){ try{ var s=String(u);',
+    '    if(/^(blob:|data:)/i.test(s)) return null;',
+    '    if(/^https?:/i.test(s)){ var a=new URL(s); if(a.origin===location.origin) return a.pathname.replace(/^\\/+/,""); return null; }',
+    '    return s.replace(/^\\.?\\//,"");',
+    '  }catch(_){ return null; } }',
+    '  var of_=window.fetch ? window.fetch.bind(window) : null;',
+    '  window.fetch = function(input, init){',
+    '    var u = (input && input.url) ? input.url : input;',
+    '    var p = local(u);',
+    '    if(p===null) return of_ ? of_(input, init) : Promise.reject(new Error("no network"));',
+    '    return ask(p).then(function(b){ return of_(b, init); });',
+    '  };',
+    '  var OX = window.XMLHttpRequest;',
+    '  if(OX){ var op = OX.prototype.open;',
+    '    OX.prototype.open = function(m, u){',
+    '      var p = local(u), self_=this, args=[].slice.call(arguments);',
+    '      if(p===null) return op.apply(this, args);',
+    '      this.__xdcOpen = args; this.__xdcPath = p;',
+    '      return op.apply(this, args);',
+    '    };',
+    '    var os = OX.prototype.send;',
+    '    OX.prototype.send = function(body){',
+    '      var self_=this;',
+    '      if(!this.__xdcPath) return os.call(this, body);',
+    '      var args=this.__xdcOpen;',
+    '      ask(this.__xdcPath).then(function(b){ args[1]=b; op.apply(self_, args); os.call(self_, body); },',
+    '        function(){ os.call(self_, body); });',
+    '    };',
+    '  }',
+    '})();'
+  ].join('\n');
+
+  /* ---- ?__reset=1 : throw away everything this ORIGIN remembers, then boot clean ----------------
+   *
+   * The reader asked for this from the client (the Reset button on a mini app's card). It has to
+   * happen HERE because none of it is reachable from there: the app's localStorage and IndexedDB, and
+   * this worker's caches, all live on `xdc.<instance>`, which is a different origin precisely so the
+   * client cannot touch it. Without this the only cure for an app that has saved itself into a state
+   * it cannot start from is the browser's "clear browsing data" — which also signs the reader out of
+   * their instance, and which nobody should have to be told to run.
+   *
+   * IndexedDB is NOT namespaced per app (see docs/WEBXDC.md), so this clears what every mini app on
+   * this instance has saved, not only the one being reset. That is stated in the confirmation the
+   * client shows rather than discovered afterwards.
+   *
+   * It ends in `location.replace` to the SAME url with the flag removed, and that is deliberate:
+   * re-registering a worker in the document that just unregistered it is a race, while a fresh
+   * navigation with no stored anything is simply the ordinary boot below. `ready` is NOT posted on
+   * this pass — the parent must not start handing us files into a document that is going away. */
+  var RESET = false;
+  try{ RESET = new URLSearchParams(location.search).get('__reset') === '1'; }catch(_){}
+  if(RESET){
+    say('resetting…');
+    var wipes = [];
+    try{ localStorage.clear(); }catch(_){}
+    try{ sessionStorage.clear(); }catch(_){}
+    try{ wipes.push(caches.keys().then(function(ks){
+      return Promise.all(ks.map(function(k){ return caches.delete(k); })); })); }catch(_){}
+    try{
+      if(indexedDB.databases){
+        wipes.push(indexedDB.databases().then(function(dbs){
+          return Promise.all((dbs || []).map(function(d){
+            return d && d.name ? new Promise(function(res){
+              var r = indexedDB.deleteDatabase(d.name);
+              // `blocked` fires when another tab still holds it: give up rather than hang for ever.
+              r.onsuccess = r.onerror = r.onblocked = function(){ res(); };
+              setTimeout(res, 3000);
+            }) : null;
+          }));
+        }));
+      }
+    }catch(_){}
+    try{ if(navigator.serviceWorker && navigator.serviceWorker.getRegistrations){
+      wipes.push(navigator.serviceWorker.getRegistrations().then(function(rs){
+        return Promise.all(rs.map(function(r){ return r.unregister(); })); }));
+    } }catch(_){}
+    // Bounded: a wipe that hangs must not leave the reader on "resetting…" for ever.
+    var done = false;
+    var go = function(){
+      if(done) return;
+      done = true;
+      var u = new URL(location.href);
+      u.searchParams.delete('__reset');
+      u.hash = '';                       // and not the reload marker, which belongs to a boot
+      location.replace(u.toString());
+    };
+    setTimeout(go, 6000);
+    Promise.all(wipes).then(go, go);
+  }else{
+    // Announce readiness. The parent answers with `init`, which is also what tells us its origin.
+    try{ parent.postMessage({ jsonrpc:'2.0', method:'ready', params:{ version:VERSION } }, '*'); }
+    catch(_){ say('This page has to be opened by the game player.'); }
+  }
+})();
+</script>

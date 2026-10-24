@@ -66,7 +66,7 @@ def apps_of(raw: dict[str, Any]) -> list[App]:
                 key, _, value = item.partition(" ")
                 fields.setdefault(key, value.strip())
         url, game_id = fields.get("url", ""), fields.get("webxdc", "")
-        if fields.get("m") != MIME or not url.startswith("https://") or not game_id or len(game_id) > 128:
+        if fields.get("m") != MIME or not url.startswith(("https://", "http://")) or not game_id or len(game_id) > 128:
             continue
         name = fields.get("alt", "")
         if name.lower().startswith("webxdc app:"):
@@ -210,7 +210,7 @@ async def updates(app: FastAPI, game_id: str) -> list[dict[str, Any]]:
     return sorted(events, key=lambda e: (e.get("created_at", 0), e.get("id", "")))
 
 
-async def send_update(app: FastAPI, player, game_id: str, payload: Any, descr: str = "") -> dict[str, Any] | None:
+async def send_update(app: FastAPI, player, game_id: str, update: Any, descr: str = "") -> dict[str, Any] | None:
     """``sendUpdate()`` from a player here: a kind 4932 signed as their
     identity. It goes out first (to the others playing here, the relay's
     subscribers and the public relays) and is stored in Matrix after, so a
@@ -222,16 +222,18 @@ async def send_update(app: FastAPI, player, game_id: str, payload: Any, descr: s
     post = await game_post(app, game_id)
     if post is None:
         return None
-    content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    # The content is the update's payload; its info, summary and document
+    # ride in tags, as NIP-DC and the other clients have it.
+    update = update if isinstance(update, dict) else {"payload": update}
+    content = json.dumps(update.get("payload"), ensure_ascii=False, separators=(",", ":"))
     if len(content.encode()) > app.state.config.webxdc.max_update_kb * 1024:
         return None
-    info = str((payload or {}).get("info") or "")[:50] if isinstance(payload, dict) else ""
-    summary = str((payload or {}).get("summary") or "")[:50] if isinstance(payload, dict) else ""
+    info = str(update.get("info") or "")[:50]
     tags = [["i", game_id], ["alt", f"Webxdc update: {(descr or info or 'a move')[:60]}"]]
-    if info:
-        tags.append(["info", info])
-    if summary:
-        tags.append(["summary", summary])
+    for name in ("info", "summary", "document"):
+        value = str(update.get(name) or "")[:50 if name != "document" else 100]
+        if value:
+            tags.append([name, value])
     event = await app.state.signer.sign(player.pubkey, kind=UPDATE_KIND, content=content,
                                         created_at=int(time.time()), tags=tags)
     if event is None:
