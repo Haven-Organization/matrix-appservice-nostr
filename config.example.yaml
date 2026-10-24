@@ -159,5 +159,14 @@ nostr:
 #   duplicate_min_length: 12
 #   spam_patterns: []
 
+# Games: webxdc mini apps over Nostr (NIP-DC). Needs its own hostname for the
+# sandbox games run in; see INSTALL.md.
+# webxdc:
+#   enabled: false
+#   sandbox_domain: xdc.example.org
+#   active_days: 14
+#   max_update_kb: 128
+#   max_app_mb: 100
+
 logging:
   level: INFO

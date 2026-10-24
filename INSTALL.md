@@ -44,6 +44,8 @@ The handle domain needs nothing new beyond a web server you can add a `location`
 
    Don't limit the methods allowed. Pass `X-Forwarded-For`: the relay's rate limits and bans are per client IP, and it believes that header only from `bridge.trusted_proxies` (localhost by default). If nginx runs on another machine or in another container, add its address there. The example also hides `/_matrix/` on the relay host, since only the homeserver needs the AppService API, and reaches it directly.
 
+**Games (optional, `webxdc.enabled`).** Games run on a hostname of their own, `webxdc.sandbox_domain` (`xdc.<your domain>` by default). Give it a DNS record and a certificate (a wildcard certificate for the domain covers it), and proxy it to the bridge exactly like the relay host, passing the `Host` header through: the bridge recognises the sandbox by it, and serves only the game loader there. The example has a server block for it.
+
 Don't add CORS headers yourself, on either host: the bridge sets them, and browsers reject a doubled header.
 
 ## 3. Install and configure

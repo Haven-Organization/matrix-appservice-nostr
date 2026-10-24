@@ -127,6 +127,18 @@ A rate limit is a token bucket: `{burst: <most at once>, tokens: <added back>, p
 | `wave_policy` | `pow` | Policy while the shields are up (`open`, `pow` or `web_of_trust`). Only ever tightens `inbound_policy`. |
 | `wave_cooldown_seconds` | `3600` | The shields come down after this long without a wave. |
 
+## `webxdc`
+
+Games: webxdc mini apps over Nostr (NIP-DC). See [FEATURES.md](FEATURES.md#games).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Turn games on: game posts get a "🎮 … reply `[play`" line, `[play` works, and the relay takes moves for games it knows. |
+| `sandbox_domain` | `xdc.` + `bridge.domain` | The hostname games run on. It must be its own hostname, never the relay's or the homeserver's, so an app can't reach either's storage. Route it to the bridge like the relay host (see INSTALL.md); a wildcard certificate for the domain covers it. |
+| `active_days` | `14` | How long after a game was last opened the bridge keeps following its moves on other relays. |
+| `max_update_kb` | `128` | The largest move accepted, in KB (the webxdc default for `sendUpdateMaxSize`). |
+| `max_app_mb` | `100` | The largest game the bridge downloads for a player whose browser can't download it from where it was posted (a host without CORS). It's passed through, never stored. |
+
 ## `logging`
 
 | Setting | Default | Meaning |
