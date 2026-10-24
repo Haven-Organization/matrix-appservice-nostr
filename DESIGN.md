@@ -919,9 +919,13 @@ origin per game would need a certificate for `*.xdc.<domain>`.
 ## The Nostr Games widget
 
 `bridge.games_hub` serves `/xdc/hub` (widget id `nostr-games`) and its API,
-all behind a widget session. Games rooms get it when made. The layout
-(`io.element.widgets.layout`) puts the game widget in the centre and the
-hub on top, or the hub in the centre when no game is open.
+all behind a widget session. Games rooms get it when made, in the centre
+(`io.element.widgets.layout`). Games play inside it: the player page in a
+frame, given the hub's session in its URL fragment (never sent to a
+server), with a bar to go back. `[play` and a card's 🎮 set the widget's
+URL to `…&game=<id>`, so it opens straight into that game; a game picked
+in the hub plays without changing the widget. (Games used to get a widget
+of their own, `nostr-game`; it's removed when the hub is next set.)
 
 - **Catalog**: `{"kinds":[1063],"#m":[the three webxdc types]}` and
   `{"kinds":[1,1068,1111,1621],"#t":["webxdc"]}` (poster.place's two

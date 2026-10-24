@@ -139,11 +139,30 @@
   }
   function open(what, button){
     if (button) button.style.opacity = '.6';
-    return api('/xdc/api/open', Object.assign({ room_id: roomId }, what))
-      .then(function(r){ toast(r.message || 'Opened.', true); if (games.room !== null) fetchTab('room'); })
+    return api('/xdc/api/open', Object.assign({ room_id: roomId, in_hub: true }, what))
+      .then(function(r){ games.room = null; play(r.game, r.name); })
       .catch(function(e){ toast(e.message, false); })
       .then(function(){ if (button) button.style.opacity = ''; });
   }
+
+  /* -- playing, right here: the player in a frame, signed in with this session -- */
+  var playing = document.getElementById('playing'), player = document.getElementById('player');
+  function play(gameId, name){
+    document.getElementById('title').textContent = name || '';
+    player.src = '/xdc/play?game=' + encodeURIComponent(gameId) + '&theme=' + encodeURIComponent(theme) +
+                 '&embedded=1#session=' + encodeURIComponent(session);
+    playing.hidden = false;
+  }
+  document.getElementById('back').addEventListener('click', function(){
+    playing.hidden = true;
+    player.src = 'about:blank';
+    if (games[tab] === null) fetchTab(tab); else show();
+  });
+  window.addEventListener('message', function(ev){
+    // The player says what it's playing.
+    if (ev.source === player.contentWindow && ev.data && typeof ev.data.hubTitle === 'string')
+      document.getElementById('title').textContent = ev.data.hubTitle;
+  });
 
   document.querySelectorAll('nav button[data-tab]').forEach(function(b){
     b.addEventListener('click', function(){
@@ -171,6 +190,7 @@
       var creds = await openId();
       var data = await api('/widget/api/session', { access_token: creds.access_token, matrix_server_name: creds.matrix_server_name });
       session = data.session_id;
+      if (params.get('game')) play(params.get('game'), '');  // opened into a game ([play, or a card's 🎮)
       fetchTab('nostr');
     }catch(e){ list.className = 'note'; list.textContent = e.message; }
   })();

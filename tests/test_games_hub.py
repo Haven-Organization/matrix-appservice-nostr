@@ -65,9 +65,15 @@ def test_games_room_starts_with_the_hub_and_play_brings_it_back(games, homeserve
     hub = homeserver._room(room)["state"][("im.vector.modular.widgets", HUB)]["content"]
     assert hub["name"] == "🎮 Nostr Games" and "/xdc/hub?" in hub["url"] and "$matrix_room_id" in hub["url"]
     assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
-    # A game goes in the middle; the hub moves to the top.
+    # A game plays in it: the widget opens straight into the game. An old
+    # separate game widget goes.
+    for state_type in games_room.WIDGET_STATE_TYPES:
+        homeserver._store(room, state_type, {"url": "https://old.example/xdc/play"}, "@nostrbot:example.org", GAME_W)
     play(games, homeserver, remote.room_id, shown["event_id"])
-    assert layout(homeserver, room)[GAME_W]["container"] == "center" and layout(homeserver, room)[HUB]["container"] == "top"
+    hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
+    assert hub["url"].endswith(f"&game={GAME}") and hub["data"] == {"title": "Chess", "game": GAME}
+    assert homeserver._room(room)["state"][("m.widget", GAME_W)]["content"] == {}
+    assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
     # Removed, it comes back with "[play" on its own.
     for state_type in games_room.WIDGET_STATE_TYPES:
         homeserver._room(room)["state"][(state_type, HUB)]["content"] = {}
@@ -115,7 +121,7 @@ def test_opening_from_the_hub_puts_the_game_and_its_card_in_the_room(games, home
     relay_pool.network.append(post)
     opened = games.post("/xdc/api/open", headers=headers, json={"room_id": room, "link": link})
     assert opened.status_code == 200 and opened.json()["message"] == "Opened Chess."
-    widget = homeserver._room(room)["state"][("m.widget", GAME_W)]["content"]
+    widget = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
     assert widget["data"]["game"] == GAME
     card = homeserver.messages(room)[-1]["content"]
     assert card["msgtype"] == "m.image" and card[webxdc.GAME_FIELD]["id"] == GAME
@@ -123,6 +129,12 @@ def test_opening_from_the_hub_puts_the_game_and_its_card_in_the_room(games, home
     count = len(homeserver.messages(room))
     assert games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": GAME}).status_code == 200
     assert len(homeserver.messages(room)) == count
+    # Picked in the widget itself, it plays there: the card, but the widget isn't changed.
+    for state_type in games_room.WIDGET_STATE_TYPES:
+        homeserver._room(room)["state"].pop((state_type, HUB))
+    in_hub = games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": GAME, "in_hub": True})
+    assert in_hub.json() == {"message": "Opened Chess.", "game": GAME, "name": "Chess"}
+    assert ("m.widget", HUB) not in homeserver._room(room)["state"] and len(homeserver.messages(room)) == count
     # Someone who can't change the room's widgets can't.
     other = {"Authorization": "Bearer " + session_for(games, "@admin:example.org")}
     assert games.post("/xdc/api/open", headers=other, json={"room_id": room, "game": GAME}).status_code == 403
@@ -145,7 +157,7 @@ def test_a_rooms_own_games(games, homeserver, relay_pool) -> None:
     assert tetris_id == webxdc.local_game_id(room, upload["event_id"])
     # It opens like any game, with a card; its picture is its own icon.
     assert games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": tetris_id}).status_code == 200
-    assert homeserver._room(room)["state"][("m.widget", GAME_W)]["content"]["data"]["game"] == tetris_id
+    assert homeserver._room(room)["state"][("m.widget", HUB)]["content"]["data"]["game"] == tetris_id
     card = homeserver.messages(room)[-1]["content"]
     pixel = Image.open(io.BytesIO(homeserver.media[card["url"]][0])).convert("RGB").getpixel((240, 254))
     assert card[webxdc.GAME_FIELD]["id"] == tetris_id and pixel == (0, 120, 240)

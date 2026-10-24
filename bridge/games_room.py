@@ -33,7 +33,7 @@ GAMES_ROOM_NAME = "Nostr Games"
 _ROOM_KEY = "webxdc:room:{}"
 _EXPLANATION = (
     "Find games in the Nostr Games widget: open one from a link, browse the games on Nostr, or the ones in "
-    "this room. Games open here, one at a time, as a widget. Games need a Matrix client that supports widgets "
+    "this room. Games play in the widget, one at a time. Games need a Matrix client that supports widgets "
     "well, such as Element Web or Element Desktop; most mobile clients don't. You can also reply "
     "\"{prefix}play\" to a game post anywhere to open it here, and \"{prefix}play\" on its own brings the "
     "Nostr Games widget back. Moves are posted on Nostr as your Active identity."
@@ -70,45 +70,48 @@ async def ensure_games_room(app: FastAPI, matrix_user_id: str) -> tuple[str | No
     return room_id, True
 
 
-def player_url(app: FastAPI, game: webxdc.App) -> str:
-    base = app.state.config.nostr.relay_http_base
-    return (f"{base}/xdc/play?game={quote(game.id, safe='')}"
-            "&matrix_user_id=$matrix_user_id&matrix_room_id=$matrix_room_id&theme=$theme"
-            f"&widgetId={GAME_WIDGET_ID}")
-
-
 async def show_game(app: FastAPI, room_id: str, game: webxdc.App) -> None:
-    """The room's game widget, now ``game``, centred."""
-    config = app.state.config
-    bot = bot_mxid(config)
-    content: dict[str, Any] = {
-        "type": "m.custom", "url": player_url(app, game), "name": f"🎮 {game.name}",
-        "data": {"title": game.name, "game": game.id},
-    }
-    if config.appservice.bot_avatar_mxc:
-        content["avatar_url"] = config.appservice.bot_avatar_mxc
-    homeserver = app.state.homeserver
-    for state_type in WIDGET_STATE_TYPES:
-        await homeserver.send_state_event(room_id, state_type, content, state_key=GAME_WIDGET_ID, as_user_id=bot)
-    await _lay_out(app, room_id)
+    """The room's Nostr Games widget, now playing ``game`` (it opens
+    straight into it, with a way back to the list)."""
+    await _set_hub(app, room_id, game)
 
 
-def hub_url(app: FastAPI) -> str:
+def hub_url(app: FastAPI, game: webxdc.App | None = None) -> str:
     base = app.state.config.nostr.relay_http_base
-    return f"{base}/xdc/hub?matrix_user_id=$matrix_user_id&matrix_room_id=$matrix_room_id&theme=$theme&widgetId={HUB_WIDGET_ID}"
+    playing = f"&game={quote(game.id, safe='')}" if game is not None else ""
+    return (f"{base}/xdc/hub?matrix_user_id=$matrix_user_id&matrix_room_id=$matrix_room_id&theme=$theme"
+            f"&widgetId={HUB_WIDGET_ID}{playing}")
 
 
 async def ensure_hub(app: FastAPI, room_id: str) -> None:
-    """The Nostr Games widget in ``room_id``."""
+    """The Nostr Games widget in ``room_id``, showing its list."""
+    await _set_hub(app, room_id, None)
+
+
+async def _set_hub(app: FastAPI, room_id: str, game: webxdc.App | None) -> None:
     config = app.state.config
     bot = bot_mxid(config)
-    content: dict[str, Any] = {"type": "m.custom", "url": hub_url(app), "name": "🎮 Nostr Games",
-                               "data": {"title": "Nostr Games"}}
+    homeserver = app.state.homeserver
+    content: dict[str, Any] = {
+        "type": "m.custom", "url": hub_url(app, game),
+        "name": f"🎮 {game.name}" if game is not None else "🎮 Nostr Games",
+        "data": {"title": game.name, "game": game.id} if game is not None else {"title": "Nostr Games"},
+    }
     if config.appservice.bot_avatar_mxc:
         content["avatar_url"] = config.appservice.bot_avatar_mxc
     for state_type in WIDGET_STATE_TYPES:
-        await app.state.homeserver.send_state_event(room_id, state_type, content, state_key=HUB_WIDGET_ID, as_user_id=bot)
-    await _lay_out(app, room_id)
+        await homeserver.send_state_event(room_id, state_type, content, state_key=HUB_WIDGET_ID, as_user_id=bot)
+    # Games used to have a widget of their own: gone now that they play in this one.
+    if await _has_widget(app, room_id, GAME_WIDGET_ID):
+        for state_type in WIDGET_STATE_TYPES:
+            await homeserver.send_state_event(room_id, state_type, {}, state_key=GAME_WIDGET_ID, as_user_id=bot)
+    try:
+        await homeserver.send_state_event(
+            room_id, LAYOUT_STATE_TYPE,
+            {"widgets": {HUB_WIDGET_ID: {"container": "center", "index": 0, "width": 100, "height": 100}}},
+            state_key="", as_user_id=bot)
+    except HomeserverError:
+        logger.info("Could not lay out the widgets in %s", room_id, exc_info=True)
 
 
 async def _has_widget(app: FastAPI, room_id: str, widget_id: str) -> bool:
@@ -120,23 +123,6 @@ async def _has_widget(app: FastAPI, room_id: str, widget_id: str) -> bool:
         except HomeserverError:
             pass
     return False
-
-
-async def _lay_out(app: FastAPI, room_id: str) -> None:
-    """A game in the middle, the Nostr Games widget above it (or in the
-    middle, with no game)."""
-    game, games = await _has_widget(app, room_id, GAME_WIDGET_ID), await _has_widget(app, room_id, HUB_WIDGET_ID)
-    widgets: dict[str, Any] = {}
-    if game:
-        widgets[GAME_WIDGET_ID] = {"container": "center", "index": 0, "width": 100, "height": 100}
-    if games:
-        widgets[HUB_WIDGET_ID] = ({"container": "top", "index": 0, "width": 100, "height": 40} if game
-                                  else {"container": "center", "index": 0, "width": 100, "height": 100})
-    try:
-        await app.state.homeserver.send_state_event(room_id, LAYOUT_STATE_TYPE, {"widgets": widgets}, state_key="",
-                                                    as_user_id=bot_mxid(app.state.config))
-    except HomeserverError:
-        logger.info("Could not lay out the widgets in %s", room_id, exc_info=True)
 
 
 async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str, Any], argument: str = "") -> None:
@@ -225,20 +211,25 @@ async def open_game(app: FastAPI, user: str, game: webxdc.App, row, local=None) 
 
 
 async def open_in_room(app: FastAPI, room_id: str, game: webxdc.App, row, local=None) -> bool:
-    """``game`` as the game widget of ``room_id``, with its card there."""
-    if row is not None and await webxdc.game_post(app, game.id) is None:
-        await webxdc.register_games(app, (await _raw(app, row)) or {})
+    """``game`` playing in the Nostr Games widget of ``room_id``, with its card there."""
     try:
         await show_game(app, room_id, game)
     except HomeserverError:
         logger.warning("Could not set the game widget in %s", room_id, exc_info=True)
         return False
+    await game_opened(app, room_id, game, row, local)
+    return True
+
+
+async def game_opened(app: FastAPI, room_id: str, game: webxdc.App, row, local=None) -> None:
+    """A game is being played in ``room_id``: known, followed, and its card there."""
+    if row is not None and await webxdc.game_post(app, game.id) is None:
+        await webxdc.register_games(app, (await _raw(app, row)) or {})
     await webxdc.touch(app, game.id)
     try:
         await ensure_card(app, room_id, game, row, local)
     except Exception:
         logger.warning("Could not post the card of %s", game.id, exc_info=True)
-    return True
 
 
 async def _raw(app: FastAPI, row) -> dict[str, Any] | None:

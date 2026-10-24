@@ -153,17 +153,19 @@ def play(client, homeserver, room, target):
 
 
 def test_play_opens_the_game_in_the_games_room(games, homeserver, relay_pool) -> None:
-    from bridge.games_room import GAME_WIDGET_ID, LAYOUT_STATE_TYPE
+    from bridge.games_room import HUB_WIDGET_ID, LAYOUT_STATE_TYPE
 
     q, alice, post, remote, shown = followed_game(games, homeserver, relay_pool)
     play(games, homeserver, remote.room_id, shown["event_id"])
     reply = homeserver.sent_to(remote.room_id)[-1]["body"]
     assert reply.startswith("Opened Chess in your Games room: ") and "widgets" in reply
     games_room = run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org")
-    widget = homeserver._room(games_room)["state"][("im.vector.modular.widgets", GAME_WIDGET_ID)]["content"]
-    assert widget["name"] == "🎮 Chess" and f"/xdc/play?game={GAME}" in widget["url"]
+    # It plays in the room's Nostr Games widget, which opens straight into it.
+    widget = homeserver._room(games_room)["state"][("im.vector.modular.widgets", HUB_WIDGET_ID)]["content"]
+    assert widget["name"] == "🎮 Chess" and "/xdc/hub?" in widget["url"] and widget["url"].endswith(f"&game={GAME}")
     assert "$matrix_user_id" in widget["url"]
-    assert homeserver.state_of(games_room, LAYOUT_STATE_TYPE)["widgets"][GAME_WIDGET_ID]["container"] == "center"
+    assert homeserver.state_of(games_room, LAYOUT_STATE_TYPE)["widgets"] == {
+        HUB_WIDGET_ID: {"container": "center", "index": 0, "width": 100, "height": 100}}
     assert (games_room, "@q:example.org") in homeserver.invites
     assert "need a Matrix client that supports widgets" in homeserver.sent_to(games_room)[0]["body"]
     assert GAME in run(games, webxdc.active_games, games.app)
@@ -175,7 +177,7 @@ def test_play_opens_the_game_in_the_games_room(games, homeserver, relay_pool) ->
     assert run(games, ingest, games.app, other, origin="subscription").stored
     second = homeserver.messages(remote.room_id)[-1]
     play(games, homeserver, remote.room_id, second["event_id"])
-    widget = homeserver._room(games_room)["state"][("m.widget", GAME_WIDGET_ID)]["content"]
+    widget = homeserver._room(games_room)["state"][("m.widget", HUB_WIDGET_ID)]["content"]
     assert widget["name"] == "🎮 Tetris"
     assert run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org") == games_room
 
@@ -318,7 +320,7 @@ def test_play_posts_a_cartridge_card_that_reloads_the_game(games, homeserver, re
 
     from PIL import Image
 
-    from bridge.games_room import GAME_WIDGET_ID
+    from bridge.games_room import HUB_WIDGET_ID as GAME_WIDGET_ID
     from bridge.safe_fetch import Fetched
 
     icon = io.BytesIO()

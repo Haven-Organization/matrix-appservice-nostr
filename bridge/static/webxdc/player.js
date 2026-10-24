@@ -91,6 +91,7 @@
         var m; try{ m = JSON.parse(e.data); }catch(_){ return; }
         if (m.t === 'init'){
           game = m.game; self = m.self || self;
+          if (window.parent !== window) window.parent.postMessage({ hubTitle: game.name || '' }, location.origin);
           (m.updates || []).forEach(absorb);
           resolve();
         } else if (m.t === 'update'){ if (absorb(m.event)) deliver(); }
@@ -227,15 +228,23 @@
   (async function(){
     try{
       if (!gameId) throw new Error('No game was given.');
-      if (window.parent === window)
-        throw new Error('Open this game from its room in your Matrix client: it signs in through the client, so it can\'t run in a window of its own.');
-      say('Signing in…');
-      var creds = await openId();
-      var res = await fetch('/widget/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: creds.access_token, matrix_server_name: creds.matrix_server_name }) });
-      var data = await res.json().catch(function(){ return {}; });
-      if (!res.ok) throw new Error(data.detail || 'Could not sign in.');
-      cfg.session = data.session_id;
+      // In the Nostr Games widget, which hands over its own session (in the
+      // fragment, so it never reaches a server or a log).
+      var handed = new URLSearchParams(location.hash.slice(1)).get('session');
+      if (handed){
+        cfg.session = handed;
+        history.replaceState(null, '', location.pathname + location.search);
+      } else {
+        if (window.parent === window)
+          throw new Error('Open this game from its room in your Matrix client: it signs in through the client, so it can\'t run in a window of its own.');
+        say('Signing in…');
+        var creds = await openId();
+        var res = await fetch('/widget/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: creds.access_token, matrix_server_name: creds.matrix_server_name }) });
+        var data = await res.json().catch(function(){ return {}; });
+        if (!res.ok) throw new Error(data.detail || 'Could not sign in.');
+        cfg.session = data.session_id;
+      }
       shimSrc = await (await fetch('/xdc/static/shim.js')).text();
       say('Connecting…');
       await connect(cfg.session);

@@ -16,8 +16,10 @@ token, traded for a bridge session) and offers:
   its pinned events and widgets, and .xdc files uploaded to it (a room's
   own games, played by its members without Nostr).
 
-Opening a game makes it the room's game widget, with its card in the room
-(bridge.games_room), for anyone who may change the room's widgets.
+A game picked in the widget plays right there (the player in a frame of
+its own, signed in with the widget's session), with a way back to the
+list; its card goes in the room (bridge.games_room). Opening is for anyone
+who may change the room's widgets.
 """
 
 from __future__ import annotations
@@ -281,9 +283,12 @@ async def open_route(request: Request) -> dict[str, Any]:
         game, row, local = await _resolve(app, game_id)
         if game is None:
             raise HTTPException(404, "That game couldn't be found.")
-    if not await games_room.open_in_room(app, room_id, game, row, local):
+    if body.get("in_hub"):
+        # Picked in the widget, which plays it itself: only its card here.
+        await games_room.game_opened(app, room_id, game, row, local)
+    elif not await games_room.open_in_room(app, room_id, game, row, local):
         raise HTTPException(502, "The game couldn't be opened just now; try again in a minute.")
-    return {"message": f"Opened {game.name}.", "game": game.id}
+    return {"message": f"Opened {game.name}.", "game": game.id, "name": game.name}
 
 
 @router.get("/xdc/api/cartridge")
@@ -340,6 +345,12 @@ _PAGE = """<!doctype html>
   .tile .desc { -webkit-line-clamp:2; }
   .badge { display:inline-block; font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 7px; margin-right:4px; }
   .note { color:var(--muted); padding:24px 4px; text-align:center; }
+  #playing { position:fixed; inset:0; display:flex; flex-direction:column; background:#000; z-index:5; }
+  #playing[hidden] { display:none; }
+  #playing .bar { display:flex; align-items:center; gap:10px; padding:6px 10px; background:var(--bg); border-bottom:1px solid var(--line); }
+  #playing .bar button { padding:4px 10px; }
+  #title { font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #player { flex:1; width:100%; border:0; background:#000; }
   .toast { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); background:var(--card); border:1px solid var(--line); padding:8px 14px; border-radius:10px; display:none; box-shadow:0 4px 18px rgba(0,0,0,.18); }
   .toast.show { display:block; }
   .toast.err { color:var(--err); }
@@ -358,6 +369,10 @@ _PAGE = """<!doctype html>
   </nav>
 </header>
 <main><div id="list" class="note">Signing in&hellip;</div></main>
+<div id="playing" hidden>
+  <div class="bar"><button id="back" class="ghost">← All games</button><span id="title"></span></div>
+  <iframe id="player" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+</div>
 <div id="toast" class="toast"></div>
 <script src="/xdc/static/hub.js"></script>
 </body>
