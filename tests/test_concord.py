@@ -420,3 +420,23 @@ def test_disappearing_messages_and_timer_notices(client, homeserver, relay_pool)
     real, _ = community.say(community.owner, concord.TIMER_KIND, "", [["timer", "2592000"]])
     run(client, concord.receive, client.app, real)
     assert homeserver.messages(room)[-1]["content"]["body"].endswith("set disappearing messages to 30 days.")
+
+
+def test_a_declined_room_isnt_invited_to_again(client, homeserver, relay_pool) -> None:
+    """Rooms someone left or declined stay that way when the community
+    changes; "[join" again invites them back."""
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+
+    def invites():
+        return homeserver.invites.count((room, "@q:example.org"))
+
+    assert invites() == 1  # q never accepts: as if declined
+    git = secrets.token_hex(32)
+    run(client, concord.receive, client.app, community.edition("2", git, {"name": "Git", "private": False}))
+    state = run(client, concord.load, client.app, community.id)
+    assert invites() == 1  # not again for #general
+    assert (state.channels[git]["room"], "@q:example.org") in homeserver.invites  # but the new #Git, once
+    run(client, concord.receive, client.app, community.edition("0", community.id, {"name": "PosterChan 2"}, version=2))
+    assert homeserver.invites.count((state.channels[git]["room"], "@q:example.org")) == 1
+    send(client, message(f"[join {community.link()}"))
+    assert invites() == 2

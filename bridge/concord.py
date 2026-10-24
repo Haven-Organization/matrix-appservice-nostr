@@ -220,6 +220,9 @@ class Community:
     # Rotations seen but not yet complete (CORD-06): "rotator:epoch:commit" -> chunk numbers.
     pending: dict[str, list[int]] = field(default_factory=dict)
     removed: bool = False
+    # Room -> the Matrix users invited to it once already: nobody is invited
+    # again (someone who declined, or left, stays out) until they "[join" again.
+    invited: dict[str, list[str]] = field(default_factory=dict)
 
     # -- the roster (CORD-04 §3) --
     def rank(self, pubkey: str) -> int:
@@ -482,19 +485,23 @@ async def read_control(app: FastAPI, community: Community) -> None:
 # -- Matrix rooms -------------------------------------------------------------------------
 
 
-async def _ensure_rooms(app: FastAPI, community: Community, users: list[str]) -> None:
-    """The community's Space and a room for every channel the bridge can read."""
+async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], again: str | None = None) -> None:
+    """The community's Space and a room for every channel the bridge can read,
+    each user invited to each once. ``again``: a user who asked ("[join"),
+    invited again wherever they aren't."""
     homeserver = app.state.homeserver
     config = app.state.config
     bot = bot_mxid(config)
     server = config.homeserver.server_name
     topic = (community.description + "\n\n" if community.description else "") + (
         "A Concord community, bridged from Nostr. " + WARNING.lstrip("⚠️ "))
+    made: set[str] = set()  # rooms made now, everyone invited with them
     if community.space is None:
         community.space = await homeserver.create_room(
             as_user_id=bot, name=community.name, topic=topic, invite=users, room_type="m.space",
             preset="private_chat", history_visibility="shared",
         )
+        made.add(community.space)
         await _set_avatar(app, community.space, community.picture)
     for channel_id in community.readable():
         info = community.channels[channel_id]
@@ -507,6 +514,7 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str]) ->
             )
             await homeserver.send_state_event(community.space, "m.space.child", {"via": [server], "suggested": True},
                                               as_user_id=bot, state_key=info["room"])
+            made.add(info["room"])
             await app.state.repository.set_state(_ROOM.format(info["room"]), f"{community.id}|{channel_id}")
             await _set_avatar(app, info["room"], community.picture)
         else:
@@ -516,11 +524,21 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str]) ->
     from bridge.messages import invite_to_room
     from bridge.spaces import add_room_to_space
 
+    rooms = [community.space, *(community.channels[c]["room"] for c in community.readable())]
+    for room in rooms:
+        if room not in community.invited:
+            # Made just now (everyone was invited with it), or from before
+            # invites were remembered (everyone here had theirs).
+            community.invited[room] = list(users)
     for user in users:
-        await invite_to_room(app, community.space, user)
+        for room in rooms:
+            done = community.invited.setdefault(room, [])
+            if user in done and (user != again or room in made):
+                continue
+            await invite_to_room(app, room, user)
+            if user not in done:
+                done.append(user)
         await add_room_to_space(app, user, community.space)
-        for channel_id in community.readable():
-            await invite_to_room(app, community.channels[channel_id]["room"], user)
 
 
 async def _set_avatar(app: FastAPI, room_id: str, url: str) -> None:
@@ -586,7 +604,7 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
         community.members.append(member.id)
     users = sorted({m.matrix_user_id for i in community.members if (m := await app.state.repository.get_id(i))})
     try:
-        await _ensure_rooms(app, community, users)
+        await _ensure_rooms(app, community, users, again=sender)
         await read_guestbook(app, community)
         await _power_levels(app, community)
     except HomeserverError:
