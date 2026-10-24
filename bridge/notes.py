@@ -438,6 +438,19 @@ def note_v6(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[li
     return plain_links(text, event.get("content") or {}), tags
 
 
+def note_v7(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v6; a reply to a post that isn't on Nostr (cross-posted by another
+    bridge, MSC4501) starts with "⤵️ Reply to <name>'s post: <link>", the
+    header the sibling bridges give replies in Matrix (``recipe["reply_to"]``)."""
+    text, tags = note_v6(event, recipe)
+    reply_to = recipe.get("reply_to")
+    if not reply_to:
+        return text, tags
+    heading = f"⤵️ Reply to {reply_to['name']}'s post" if reply_to.get("name") else "⤵️ Reply to a post"
+    heading = f"{heading}: {reply_to['url']}" if reply_to.get("url") else f"{heading}:"
+    return f"{heading}\n\n{text}" if text else heading, tags
+
+
 def comment_v3(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
     """v2 with Markdown links made plain."""
     text, tags = comment_v2(event, recipe)
@@ -532,7 +545,7 @@ def share_v3(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
 
 SHARE_CONVERTERS = {1: share_v1, 2: share_v2, 3: share_v3}
 SHARE_VERSION = 3
-NOTE_VERSION = 6
+NOTE_VERSION = 7
 COMMENT_VERSION = 3
 
 
@@ -543,6 +556,7 @@ CONVERTERS = {
     ("note", 4): note_v4,
     ("note", 5): note_v5,
     ("note", 6): note_v6,
+    ("note", 7): note_v7,
     ("file", 1): file_v1,
     ("comment", 1): comment_v1,
     ("comment", 2): comment_v2,

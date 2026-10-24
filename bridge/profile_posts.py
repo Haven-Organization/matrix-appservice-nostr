@@ -138,6 +138,39 @@ async def _app_file_of(app: FastAPI, matrix_event_id: str) -> EventRow | None:
     return await app.state.repository.get_event(file_id) if file_id else None
 
 
+SOCIAL_RELATES_TO = "org.matrix.msc4501.social.relates_to"
+
+
+def _social_reply(content: dict[str, Any]) -> dict[str, Any] | None:
+    """MSC4501's reply relation, as another bridge cross-posting a reply sets it."""
+    relation = content.get(SOCIAL_RELATES_TO)
+    if (isinstance(relation, dict) and relation.get("rel_type") == "org.matrix.msc4501.social.reply"
+            and isinstance(relation.get("event_id"), str)):
+        return relation
+    return None
+
+
+async def _reply_heading(app: FastAPI, relation: dict[str, Any]) -> dict[str, str]:
+    """Who the reply answers, and where their post is on the web."""
+    inline = relation.get("content") if isinstance(relation.get("content"), dict) else {}
+    url = inline.get("external_url")
+    name = relation.get("displayname")
+    if not isinstance(url, str) or not isinstance(name, str):
+        try:
+            original = await app.state.homeserver.get_event(str(relation.get("room_id") or ""), relation["event_id"],
+                                                            as_user_id=bot_mxid(app.state.config)) or {}
+        except HomeserverError:
+            original = {}
+        url = url if isinstance(url, str) else (original.get("content") or {}).get("external_url")
+        if not isinstance(name, str) and original.get("sender"):
+            try:
+                name = (await app.state.homeserver.get_profile(original["sender"])).get("displayname")
+            except HomeserverError:
+                name = None
+    return {"name": str(name or "").strip()[:100],
+            "url": url if isinstance(url, str) and url.startswith(("https://", "http://")) else ""}
+
+
 async def _replies_to_own_message(app: FastAPI, room_id: str, content: dict[str, Any], sender: str) -> bool:
     """True for a message that isn't a reply, or answers ``sender``'s own
     message. False if it answers anyone else's, or what it answers can't be
@@ -227,6 +260,13 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
         return profile_id is not None
 
     parent = await _replied_post(app, content)
+    social = _social_reply(content)
+    if parent is None and social is not None:
+        # A reply cross-posted by another bridge (MSC4501): to a post that's
+        # on Nostr, it's a Nostr reply; otherwise it gets an "In reply to" line.
+        row = await app.state.repository.get_event_by_matrix_event(social["event_id"])
+        if row is not None and row.kind in REPLYABLE_KINDS:
+            parent = row
     if profile_id is not None and sender == profile_id.matrix_user_id:
         author: NostrId | None = profile_id
     elif parent is not None:
@@ -311,6 +351,8 @@ async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, pa
 
     if recipe["kind"] == "note":
         recipe["v"] = NOTE_VERSION
+        if parent is None and _social_reply(content) is not None:
+            recipe["reply_to"] = await _reply_heading(app, _social_reply(content))
         quote = await find_quote(app, message_body(content))
         if quote is not None:
             recipe["quote"] = quote

@@ -315,3 +315,39 @@ def test_markdown_links_go_out_plain(client, homeserver, relay_pool) -> None:
                             "matrix-appservice-activitypub), see https://ditto.pub. Not a link: [x](y)")
     row = client.portal.call(client.app.state.repository.get_event, note.id)
     assert rebuilt(client, row).event == note.to_dict()
+
+
+def test_a_cross_posted_reply_says_what_it_answers(client, homeserver, relay_pool) -> None:
+    """A reply another bridge cross-posts (MSC4501) to a post that isn't on
+    Nostr gets the siblings' "⤵️ Reply to X's post" header, with the link."""
+    q = create_id(client)
+    relation = {"rel_type": "org.matrix.msc4501.social.reply", "event_id": "$fedi", "room_id": "!fedi:example.org",
+                "displayname": "GaryBussy", "sender": "@fedi_garybussy:example.org",
+                "content": {"body": "Doin it Trump style", "external_url": "https://shitpost.example/objects/2cac",
+                            "msgtype": "m.text"}}
+    post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "Tired of winning!", "format": "plain",
+                                                 "org.matrix.msc4501.social.relates_to": relation})
+    note = notes(relay_pool)[-1]
+    assert note.content == "⤵️ Reply to GaryBussy's post: https://shitpost.example/objects/2cac\n\nTired of winning!"
+    row = client.portal.call(client.app.state.repository.get_event, note.id)
+    assert rebuilt(client, row).event == note.to_dict()
+    # Without a name or link given inline, they come from the post itself.
+    homeserver.profiles["@fedi_garybussy:example.org"] = {"displayname": "Gary"}
+    original = homeserver._store("!fedi:example.org", "m.room.message", {"msgtype": "m.text", "body": "hi",
+                                 "external_url": "https://shitpost.example/objects/x"}, "@fedi_garybussy:example.org")
+    post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "Second",
+                                                 "org.matrix.msc4501.social.relates_to": {
+                                                     "rel_type": "org.matrix.msc4501.social.reply",
+                                                     "event_id": original["event_id"], "room_id": "!fedi:example.org"}})
+    assert notes(relay_pool)[-1].content == "⤵️ Reply to Gary's post: https://shitpost.example/objects/x\n\nSecond"
+
+
+def test_a_cross_posted_reply_to_a_nostr_post_is_a_nostr_reply(client, homeserver, relay_pool) -> None:
+    from tests.test_federation import _followed_post
+
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "agreed", "org.matrix.msc4501.social.relates_to": {
+        "rel_type": "org.matrix.msc4501.social.reply", "event_id": mirrored["event_id"], "room_id": remote.room_id,
+        "displayname": "Alice"}})
+    reply = notes(relay_pool)[-1]
+    assert reply.content == "agreed" and ("e", raw["id"]) in [tuple(t[:2]) for t in reply.tags]
