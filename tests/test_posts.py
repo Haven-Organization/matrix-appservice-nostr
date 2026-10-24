@@ -298,3 +298,20 @@ def test_policy_refusal_told_once_and_skipped(client, homeserver, relay_pool) ->
     assert relay_pool.published[-1][1] == [RELAY_ONE]  # skipped
     assert len(homeserver.sent_to(room)) == sent_before + 1  # not told again
     assert run(client, client.app.state.repository.list_due_publishes, "9999") == []  # not retried either
+
+
+def test_markdown_links_go_out_plain(client, homeserver, relay_pool) -> None:
+    """Element's plain text is the Markdown it was typed as; Nostr notes are
+    plain text, so links become "text (url)" (or the url alone)."""
+    q = create_id(client)
+    body = ("Enhancing the widget for [matrix-appservice-activitypub](https://github.com/Haven-Organization/"
+            "matrix-appservice-activitypub), see [ditto.pub](https://ditto.pub). Not a link: [x](y)")
+    html_body = ('<p>Enhancing the widget for <a href="https://github.com/Haven-Organization/matrix-appservice-activitypub">'
+                 'matrix-appservice-activitypub</a>, see <a href="https://ditto.pub">ditto.pub</a>. Not a link: [x](y)</p>')
+    post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": body, "format": "org.matrix.custom.html",
+                                                 "formatted_body": html_body})
+    note = notes(relay_pool)[-1]
+    assert note.content == ("Enhancing the widget for matrix-appservice-activitypub (https://github.com/Haven-Organization/"
+                            "matrix-appservice-activitypub), see https://ditto.pub. Not a link: [x](y)")
+    row = client.portal.call(client.app.state.repository.get_event, note.id)
+    assert rebuilt(client, row).event == note.to_dict()

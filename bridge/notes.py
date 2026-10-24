@@ -46,6 +46,8 @@ _PILL_RE = re.compile(
     r"""<a\s[^>]*?href\s*=\s*["']https://matrix\.to/#/([^"'?]+)[^"']*["'][^>]*>(.*?)</a>""", re.DOTALL | re.IGNORECASE
 )
 _TAG_RE = re.compile(r"<[^>]+>")
+_LINK_RE = re.compile(r"""<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>""", re.DOTALL | re.IGNORECASE)
+_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 _SPOILER_RE = re.compile(r"""data-mx-spoiler(?:\s*=\s*["']([^"']*)["'])?""", re.IGNORECASE)
 
 
@@ -409,6 +411,39 @@ def comment_v2(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list
     return text, [*tags, *hashtag_tags(text)]
 
 
+def plain_links(text: str, content: dict[str, Any]) -> str:
+    """Markdown links as Nostr clients can show them: "text (url)", or the
+    url alone when that's all the text says. Only links the message's HTML
+    has too are rewritten (Element sends the Markdown it was typed as for
+    its plain text), so other brackets stay as written."""
+    links = set()
+    for href, inner in _LINK_RE.findall(_formatted(content)):
+        url = html.unescape(href)
+        if not url.startswith("https://matrix.to/"):
+            links.add((html.unescape(_TAG_RE.sub("", inner)).strip(), url))
+
+    def plain(match: re.Match[str]) -> str:
+        label, url = match.group(1).strip(), match.group(2)
+        if (label, url) not in links:
+            return match.group(0)
+        return url if label in (url, url.split("://", 1)[-1]) else f"{label} ({url})"
+
+    return _MD_LINK_RE.sub(plain, text) if links else text
+
+
+def note_v6(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v5 with Markdown links made plain (``plain_links``): Nostr notes are
+    plain text, and most clients show "[a](b)" as typed."""
+    text, tags = note_v5(event, recipe)
+    return plain_links(text, event.get("content") or {}), tags
+
+
+def comment_v3(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v2 with Markdown links made plain."""
+    text, tags = comment_v2(event, recipe)
+    return plain_links(text, event.get("content") or {}), tags
+
+
 # -- kind 1 "share": reposting something that isn't on Nostr ----------------------
 # A repost made in Matrix (MSC4501 ``social.relates_to`` with rel_type repost)
 # of a post from another network (the fediverse or Bluesky, through their
@@ -497,8 +532,8 @@ def share_v3(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
 
 SHARE_CONVERTERS = {1: share_v1, 2: share_v2, 3: share_v3}
 SHARE_VERSION = 3
-NOTE_VERSION = 5
-COMMENT_VERSION = 2
+NOTE_VERSION = 6
+COMMENT_VERSION = 3
 
 
 CONVERTERS = {
@@ -507,9 +542,11 @@ CONVERTERS = {
     ("note", 3): note_v3,
     ("note", 4): note_v4,
     ("note", 5): note_v5,
+    ("note", 6): note_v6,
     ("file", 1): file_v1,
     ("comment", 1): comment_v1,
     ("comment", 2): comment_v2,
+    ("comment", 3): comment_v3,
     ("reaction", 1): reaction_v1,
     ("repost", 1): repost_v1,
     ("deletion", 1): deletion_v1,
