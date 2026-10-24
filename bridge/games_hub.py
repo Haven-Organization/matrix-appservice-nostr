@@ -297,6 +297,20 @@ async def open_route(request: Request) -> dict[str, Any]:
     return {"message": f"Opened {game.name}.", "game": game.id, "name": game.name}
 
 
+@router.post("/xdc/api/close")
+async def close_route(request: Request) -> dict[str, Any]:
+    """Back to the list from a game the widget was opened into ([play, a
+    card's 🎮): the widget points at the list again, so it doesn't reopen
+    that game the next time the client loads it."""
+    app = request.app
+    user = _user(request)
+    room_id = str((await request.json()).get("room_id") or "")
+    if not await games_room.can_set_widgets(app, room_id, user):
+        raise HTTPException(403, "Only those who can change this room's widgets can do that.")
+    await games_room.ensure_hub(app, room_id)
+    return {"ok": True}
+
+
 @router.get("/xdc/api/cartridge")
 async def cartridge_route(request: Request, game: str) -> Response:
     """A game's cartridge picture (made once, kept in Matrix)."""

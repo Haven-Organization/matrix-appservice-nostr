@@ -127,10 +127,10 @@
       tile.appendChild(img);
       tile.appendChild(el('div', 'name', g.name));
       if (g.author) tile.appendChild(el('div', 'by', 'by ' + g.author.name));
-      if (g.local || (g.sources || []).some(function(s){ return s !== 'timeline'; })){
+      if (g.local || (g.sources || []).indexOf('pinned') !== -1){
         var badges = el('div', 'by');
         if (g.local) badges.appendChild(el('span', 'badge', 'this room only'));
-        var labels = { widget: 'open now', pinned: '📌 pinned' };
+        var labels = { pinned: '📌 pinned' };
         (g.sources || []).forEach(function(s){ if (labels[s]) badges.appendChild(el('span', 'badge', labels[s])); });
         tile.appendChild(badges);
       }
@@ -170,9 +170,15 @@
                  '&embedded=1#session=' + encodeURIComponent(session);
     playing.hidden = false;
   }
+  var openedInto = params.get('game');  // the widget was pointed at a game ([play, a card's 🎮)
   document.getElementById('back').addEventListener('click', function(){
     playing.hidden = true;
     player.src = 'about:blank';
+    if (openedInto){
+      // Point the widget back at the list, or the client would reopen the game next time.
+      openedInto = null;
+      api('/xdc/api/close', { room_id: roomId }).catch(function(){});
+    }
     if (games[tab] === null) fetchTab(tab); else show();
   });
   window.addEventListener('message', function(ev){

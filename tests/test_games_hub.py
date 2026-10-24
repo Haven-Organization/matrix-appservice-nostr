@@ -274,3 +274,14 @@ def test_widget_sessions_last_while_used_and_through_a_restart(repository, homes
     user, expires = widget._sessions[digest]
     widget._sessions[digest] = (user, time.time() - 1)
     assert widget.user_of_session(session) is None
+
+
+def test_going_back_points_the_widget_at_the_list_again(games, homeserver, relay_pool) -> None:
+    q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
+    play(games, homeserver, remote.room_id, shown["event_id"])
+    assert homeserver._room(room)["state"][("m.widget", HUB)]["content"]["url"].endswith(f"&game={GAME}")
+    assert games.post("/xdc/api/close", headers=auth(games), json={"room_id": room}).json() == {"ok": True}
+    hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
+    assert "&game=" not in hub["url"] and hub["data"] == {"title": "Nostr Games"}
+    other = {"Authorization": "Bearer " + session_for(games, "@admin:example.org")}
+    assert games.post("/xdc/api/close", headers=other, json={"room_id": room}).status_code == 403
