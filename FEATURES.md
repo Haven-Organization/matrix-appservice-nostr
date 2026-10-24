@@ -263,7 +263,12 @@ Concord is the end-to-end encrypted, Discord-style community protocol of Armada,
 - **`[join <invite link>`** joins one as your Active identity: a Matrix Space for the community, and a room for each channel you can read (#general, #git, …). The rooms' names follow the community's own, and new channels appear as they're made.
 - **Messages both ways**: messages, threaded replies, reactions, edits and deletes. Members' messages are shown by their ghosts, the same Nostr users as everywhere else. Attachments are encrypted for the community both ways, as Armada does.
 - **Readable on this homeserver.** The bridge decrypts messages into Matrix rooms, which it can't encrypt, so they're stored readable like any bridged room. The community's keys are kept in the bridge's database, encrypted like Nostr keys.
-- **Not yet:** rekeys and refoundings (a community that re-founds after removing someone stops updating here until it's re-joined), roles and moderation from Matrix, voice and video, disappearing messages. Identities on a remote signer can't join.
+- **Members and roles.** The Guestbook's joins and leaves bring members' ghosts into the rooms and take them out. Roles show as power levels: the owner 90, those who can ban or manage roles 75, other staff 50. Display only: nothing is enforced from Matrix.
+- **Moderation from the community.** A kick by staff who outrank the target is honoured; if it's you, you're told and taken out of the rooms. Banned members are silenced: nothing of theirs is shown.
+- **Rekeys and refoundings** (CORD-06): when a community re-founds or a channel's key changes, the bridge picks up the new keys, checked against the key it holds and against the rotator's authority. If every part of a rotation is in and none has a key for you, you've been removed, and you're told.
+- **Disappearing messages** (CORD-08): expired messages aren't brought in, and messages with an expiry are redacted in Matrix when it passes. Messages sent from Matrix carry the community's timer. Timer changes are shown when they come from staff.
+- **Custom emoji reactions** (NIP-30) both ways, as image reactions with `bridge.msc4027_custom_reactions` on, as on posts.
+- **Not yet:** moderation from Matrix, voice and video. Identities on a remote signer can't join.
 
 ## Not supported
 

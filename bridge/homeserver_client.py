@@ -239,6 +239,12 @@ class HomeserverClient:
     async def leave_room(self, room_id: str, *, as_user_id: str) -> None:
         await self._request("POST", f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/leave", as_user_id=as_user_id)
 
+    async def kick_user(self, room_id: str, user_id: str, *, as_user_id: str, reason: str | None = None) -> None:
+        body: dict[str, Any] = {"user_id": user_id}
+        if reason:
+            body["reason"] = reason
+        await self._request("POST", f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/kick", as_user_id=as_user_id, json_body=body)
+
     async def get_joined_members(self, room_id: str, *, as_user_id: str) -> list[str]:
         result = await self._request(
             "GET", f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/joined_members", as_user_id=as_user_id

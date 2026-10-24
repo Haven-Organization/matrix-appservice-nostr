@@ -942,9 +942,31 @@ a member needs:
   bridge_state entry; rumor ids and Matrix events map to each other in
   bridge_state. Messages live in Matrix, as plain text: the rooms can't be
   encrypted by the bridge, and `[join` warns of it.
-- **Later:** rekeys and refoundings (CORD-06), the full roster and
-  moderation, the Guestbook member list, voice (CORD-07), disappearing
-  messages (CORD-08).
+- **Planes.** Each community is followed at every address it uses: the
+  Control Plane, the Guestbook, each readable channel, and the next
+  epoch's rekey addresses (the base one, and one per channel).
+  `addresses()` maps an incoming wrap's author to its community and plane.
+- **The roster** (CORD-04) is folded outward from the owner until it
+  settles: roles (position, permissions), grants and the banlist (at its
+  one coordinate), each honoured only from someone allowed to set it.
+  Roles show as power levels (90/75/50), for display only.
+- **The Guestbook**: joins and leaves, latest per member, give `present`,
+  and ghosts join or leave the rooms. Kicks count only from someone with
+  KICK who outranks the target. A kick read from history only updates
+  `present` (a rejoin follows an old kick). A live one removes a member
+  here.
+- **Rekeys** (CORD-06): a 3303 at a rekey address is accepted only from
+  BAN (base) or MANAGE_CHANNELS (channel) holders, at the next epoch, with
+  `prevcommit` matching the key held (the root, for a public channel). Our
+  members' locators find their blob; its scope and epoch are checked
+  before the key is adopted. If all chunks are in and none is ours, that's
+  a removal. After a move, `catch_up` follows further rotations, then the
+  Control Plane and Guestbook are read again.
+- **Disappearing messages** (CORD-08): rumors past their `expiration` are
+  refused. Others get a `concord:exp:<ts>:<event>` entry, and
+  `expiry_loop` redacts them when due. Outgoing rumors carry the folded
+  timer. A 1740 notice is shown only from MANAGE_METADATA holders.
+- **Later:** moderation from Matrix, channel-scoped roles, voice (CORD-07).
 
 ## Bookkeeping tables
 

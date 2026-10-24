@@ -49,6 +49,9 @@ SEAL_ENCRYPTED = 20013
 SEAL_PLAINTEXT = 20014
 EDITION_KIND = 3308
 JOIN_KIND = 3306
+KICK_KIND = 3309
+REKEY_KIND = 3303
+TIMER_KIND = 1740
 EDIT_KIND = 3302
 _N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 _ZERO = b"\0" * 32
@@ -285,20 +288,34 @@ async def all_communities(app: FastAPI) -> list[Community]:
     return out
 
 
-def _index(app: FastAPI) -> dict[str, tuple[str, str | None, GroupKey]]:
-    """Stream address -> (community id, channel id or None for Control, key)."""
+def _index(app: FastAPI) -> dict[str, tuple[str, str, GroupKey]]:
+    """Stream address -> (community id, plane, key). Planes: "control",
+    "guestbook", "chat:<channel_id>", "rekey:<scope_id hex>"."""
     return app.state.__dict__.setdefault("concord_index", {})
 
 
-async def addresses(app: FastAPI) -> dict[str, tuple[str, str | None, GroupKey]]:
+def planes(community: Community) -> dict[str, tuple[str, GroupKey]]:
+    """Every address the bridge follows for a community."""
+    out: dict[str, tuple[str, GroupKey]] = {}
+    if community.removed:
+        return out
+    out[community.control_address()] = ("control", community.control())
+    guestbook = community.guestbook()
+    out[guestbook.pk] = ("guestbook", guestbook)
+    for channel_id in community.readable():
+        key = community.channel_key(channel_id)
+        out[key.pk] = (f"chat:{channel_id}", key)
+    for scope, key in rekey_addresses(community).items():
+        out[key.pk] = (f"rekey:{scope}", key)
+    return out
+
+
+async def addresses(app: FastAPI) -> dict[str, tuple[str, str, GroupKey]]:
     index = _index(app)
     if not index:
         for community in await all_communities(app):
-            control = community.control()
-            index[community.control_address()] = (community.id, None, control)
-            for channel_id in community.readable():
-                key = community.channel_key(channel_id)
-                index[key.pk] = (community.id, channel_id, key)
+            for address, (plane, key) in planes(community).items():
+                index[address] = (community.id, plane, key)
     return index
 
 
@@ -326,18 +343,26 @@ def open_wrap(wrap: dict[str, Any], key: GroupKey) -> dict[str, Any] | None:
     return rumor
 
 
-def make_wrap(key: GroupKey, author_secret: bytes, kind: int, content: str, tags: list[list[str]]) -> tuple[nostr_event.Event, str]:
-    """(the kind 1059 stream event, the rumor's id) for a chat rumor."""
+def make_wrap(key: GroupKey, author_secret: bytes, kind: int, content: str, tags: list[list[str]],
+              *, expire_after: int = 0) -> tuple[nostr_event.Event, str]:
+    """(the kind 1059 stream event, the rumor's id) for a rumor. With
+    ``expire_after`` (CORD-08), the rumor and its wrap carry the NIP-40
+    expiration, except deletes and timer notices."""
     now = time.time()
     created_at = int(now)
     tags = [*tags, ["ms", str(int(now * 1000) % 1000)]]
+    wrap_tags: list[list[str]] = []
+    if expire_after and kind not in (5, 1740):
+        expiration = ["expiration", str(created_at + expire_after)]
+        tags.append(expiration)
+        wrap_tags.append(expiration)
     author = secp256k1.public_key(author_secret).hex()
     rumor_id = nostr_event.compute_id(author, created_at, kind, tags, content)
     rumor = {"id": rumor_id, "pubkey": author, "created_at": created_at, "kind": kind, "tags": tags, "content": content}
     seal = nostr_event.build(author_secret, kind=SEAL_ENCRYPTED, created_at=created_at, tags=[],
                              content=nip44.encrypt(json.dumps(rumor, ensure_ascii=False, separators=(",", ":")), key.conv))
     ephemeral = secp256k1.public_key(secp256k1.generate_secret_key()).hex()
-    wrap = nostr_event.build(key.sk, kind=WRAP_KIND, created_at=created_at, tags=[["p", ephemeral]],
+    wrap = nostr_event.build(key.sk, kind=WRAP_KIND, created_at=created_at, tags=[["p", ephemeral], *wrap_tags],
                              content=nip44.encrypt(json.dumps(seal.to_dict(), ensure_ascii=False, separators=(",", ":")), key.conv))
     return wrap, rumor_id
 
@@ -382,6 +407,7 @@ def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
     """The Control Plane folded (CORD-04): the roster first, outward from the
     owner until it settles, then metadata and channels by permission."""
     editions = _editions(rumors)
+    banlist = hkdf(bytes.fromhex(community.id), "concord/banlist").hex()  # its one coordinate (CORD-02 A.6)
     community.roles, community.grants, community.banned = {}, {}, []
     for _round in range(8):
         before = (json.dumps(community.roles, sort_keys=True), json.dumps(community.grants, sort_keys=True), list(community.banned))
@@ -410,11 +436,11 @@ def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
 
         grants = {}
         for _eid, head in _heads(community, editions, "3", grant_ok).items():
-            content = head["content"]
+            content = head["content"] if isinstance(head["content"], dict) else {}
             member = content.get("member")
             if isinstance(member, str) and len(member) == 64 and member != community.owner:
                 grants[member] = [r for r in content.get("role_ids") or [] if r in roles][:64]
-        banned = _heads(community, editions, "4", lambda e: community.can(e["actor"], BAN))
+        banned = _heads(community, editions, "4", lambda e: e["eid"] == banlist and community.can(e["actor"], BAN))
         community.roles, community.grants = roles, grants
         heads = list(banned.values())
         community.banned = sorted({p for p in (heads[0]["content"] if heads and isinstance(heads[0]["content"], list) else [])
@@ -549,8 +575,10 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
         if isinstance(channel, dict) and len(str(channel.get("id", ""))) == 64:
             community.channels[channel["id"]] = {"name": str(channel.get("name") or "channel")[:64], "private": True,
                                                  "key": channel.get("key"), "epoch": int(channel.get("epoch") or 0)}
+    community.removed = False
     await read_control(app, community)
-    if not community.readable():
+    await catch_up(app, community)
+    if community.removed or not community.readable():
         await notice(app, room_id, "I opened the invite, but couldn't read any of the community's channels.")
         return
     new_member = member.id not in community.members
@@ -559,6 +587,8 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     users = sorted({m.matrix_user_id for i in community.members if (m := await app.state.repository.get_id(i))})
     try:
         await _ensure_rooms(app, community, users)
+        await read_guestbook(app, community)
+        await _power_levels(app, community)
     except HomeserverError:
         logger.warning("Could not make the rooms of %s", community.id, exc_info=True)
         await notice(app, room_id, "I couldn't make the community's rooms just now; try again in a minute.")
@@ -609,28 +639,361 @@ async def receive(app: FastAPI, wrap: dict[str, Any]) -> None:
     entry = (await addresses(app)).get(wrap.get("pubkey", ""))
     if entry is None:
         return
-    cid, channel_id, key = entry
+    cid, plane, key = entry
     community = await load(app, cid)
-    if community is None:
+    if community is None or community.removed:
         return
-    if channel_id is None:
-        rumor = open_wrap(wrap, key)
-        if rumor is not None:
+    if plane == "control":
+        if open_wrap(wrap, key) is not None:
             await _refresh(app, community)
-        return
-    await _receive_chat(app, community, channel_id, key, wrap)
+    elif plane == "guestbook":
+        rumor = open_wrap(wrap, key)
+        if rumor is not None and await apply_guestbook(app, community, [rumor]):
+            await save(app, community)
+    elif plane.startswith("rekey:"):
+        rumor = open_wrap(wrap, key)
+        if rumor is not None and await apply_rekey(app, community, plane[6:], rumor):
+            await _after_rotation(app, community)
+    elif plane.startswith("chat:") and plane[5:] in community.channels:
+        await _receive_chat(app, community, plane[5:], key, wrap)
 
 
 async def _refresh(app: FastAPI, community: Community) -> None:
-    """The Control Plane changed: channels and metadata again."""
+    """The Control Plane changed: the roster, channels and metadata again."""
     await read_control(app, community)
     users = sorted({m.matrix_user_id for i in community.members if (m := await app.state.repository.get_id(i))})
     try:
         await _ensure_rooms(app, community, users)
+        await _power_levels(app, community)
+        for pubkey in community.banned:
+            await _leave_rooms(app, community, pubkey)
+            await _drop_member(app, community, pubkey, "was banned from the community")
     except HomeserverError:
         logger.info("Could not update the rooms of %s", community.id, exc_info=True)
     await save(app, community)
     app.state.feeds.changed()
+
+
+# -- roles as power levels ------------------------------------------------------------------
+
+
+async def _local_mxids(app: FastAPI, community: Community) -> dict[str, str]:
+    out = {}
+    for id_ref in community.members:
+        member = await app.state.repository.get_id(id_ref)
+        if member is not None:
+            out[member.pubkey] = member.matrix_user_id
+    return out
+
+
+def _power_for(community: Community, pubkey: str) -> int:
+    """A member's rank as a Matrix power level, for display: nothing is
+    enforced from Matrix."""
+    if pubkey == community.owner:
+        return 90
+    bits = community.permissions(pubkey)
+    if bits & (BAN | MANAGE_ROLES):
+        return 75
+    if bits & (KICK | MANAGE_MESSAGES | MANAGE_CHANNELS | MANAGE_METADATA):
+        return 50
+    return 0
+
+
+async def _power_levels(app: FastAPI, community: Community) -> None:
+    from bridge.remote import ghost_user_id
+
+    homeserver = app.state.homeserver
+    bot = bot_mxid(app.state.config)
+    locals_ = await _local_mxids(app, community)
+    wanted = {locals_.get(pk) or ghost_user_id(app, pk): level
+              for pk in {community.owner, *community.grants} if (level := _power_for(community, pk))}
+    for channel_id in community.readable():
+        room = community.channels[channel_id].get("room")
+        if not room:
+            continue
+        levels = await homeserver.get_room_state(room, "m.room.power_levels", as_user_id=bot) or {}
+        users = dict(levels.get("users") or {})
+        changed = False
+        for user, level in wanted.items():
+            if users.get(user, 0) != level:
+                users[user] = level
+                changed = True
+        for user in [u for u, level in users.items() if u not in wanted and u != bot and 0 < level < 100]:
+            del users[user]
+            changed = True
+        if changed:
+            await homeserver.send_state_event(room, "m.room.power_levels", {**levels, "users": users}, as_user_id=bot)
+
+
+async def _leave_rooms(app: FastAPI, community: Community, pubkey: str) -> None:
+    """A member's ghost out of the community's rooms."""
+    from bridge.remote import ghost_user_id
+
+    if await app.state.repository.get_id_by_pubkey(pubkey) is not None:
+        return
+    ghost = ghost_user_id(app, pubkey)
+    for channel_id in community.readable():
+        room = community.channels[channel_id].get("room")
+        if room:
+            try:
+                await app.state.homeserver.leave_room(room, as_user_id=ghost)
+            except HomeserverError:
+                pass
+
+
+# -- the Guestbook (CORD-02 §5) -----------------------------------------------------------------
+
+
+def _ms_time(rumor: dict[str, Any]) -> int:
+    ms = next((t[1] for t in rumor.get("tags") or [] if len(t) >= 2 and t[0] == "ms"), "0")
+    return int(rumor.get("created_at", 0)) * 1000 + (int(ms) if ms.isdigit() and int(ms) < 1000 else 0)
+
+
+async def apply_guestbook(app: FastAPI, community: Community, rumors: list[dict[str, Any]], *, live: bool = True) -> bool:
+    """Joins, Leaves and authorized Kicks, coalesced per member (latest
+    wins, ties to the lower rumor id): who's present, with their ghosts in
+    the rooms. A member here who's kicked live leaves (history only says
+    who's present: a rejoin follows an old kick). True if anything changed."""
+    from bridge import remote as remotes
+
+    horizon = (time.time() + 3600) * 1000
+    latest: dict[str, tuple[int, str, str]] = {}
+    for rumor in rumors:
+        at, kind, actor = _ms_time(rumor), rumor.get("kind"), rumor.get("pubkey", "")
+        if at > horizon:
+            continue
+        if kind == JOIN_KIND and rumor.get("content") in ("join", "leave"):
+            target, verb = actor, rumor["content"]
+        elif kind == KICK_KIND:
+            target = next((t[1] for t in rumor.get("tags") or [] if len(t) >= 2 and t[0] == "p"), "")
+            if not target or not community.can(actor, KICK, over=target):
+                continue
+            verb = "kick"
+        else:
+            continue
+        current = latest.get(target)
+        if current is None or at > current[0] or (at == current[0] and rumor["id"] < current[2]):
+            latest[target] = (at, verb, rumor["id"])
+    before = set(community.present)
+    present = set(before)
+    for pubkey, (_at, verb, _id) in latest.items():
+        (present.add if verb == "join" else present.discard)(pubkey)
+    present -= set(community.banned)
+    community.present = sorted(present)[:5000]
+    for pubkey in sorted(present - before):
+        if await app.state.repository.get_id_by_pubkey(pubkey) is not None:
+            continue
+        ghost = await remotes.get_or_create_remote(app, pubkey)
+        for channel_id in community.readable():
+            room = community.channels[channel_id].get("room")
+            if room:
+                try:
+                    await remotes.ensure_ghost_in_room(app, ghost.ghost_user_id, room)
+                except HomeserverError:
+                    pass
+    for pubkey in before - present:
+        await _leave_rooms(app, community, pubkey)
+    kicked = [pk for pk, (_at, verb, _id) in latest.items() if verb == "kick"] if live else []
+    for pubkey in kicked:
+        await _drop_member(app, community, pubkey, "was removed from the community by its staff")
+    return present != before or bool(kicked)
+
+
+async def _drop_member(app: FastAPI, community: Community, pubkey: str, why: str) -> None:
+    """A member here who's no longer in the community: told, and out of its rooms."""
+    member = await app.state.repository.get_id_by_pubkey(pubkey)
+    if member is None or member.id not in community.members:
+        return
+    community.members.remove(member.id)
+    handle = f"{member.name}@{app.state.config.bridge.domain}"
+    bot = bot_mxid(app.state.config)
+    rooms = [community.space, *(community.channels[c].get("room") for c in community.readable())]
+    for room in [r for r in rooms if r]:
+        try:
+            await notice(app, room, f"{handle} {why}.")
+            await app.state.homeserver.kick_user(room, member.matrix_user_id, as_user_id=bot, reason=why)
+        except HomeserverError:
+            pass
+    if not community.members:
+        community.removed = True
+
+
+async def read_guestbook(app: FastAPI, community: Community) -> None:
+    key = community.guestbook()
+    wraps = await app.state.relay_pool.query(community.relays, [{"kinds": [WRAP_KIND], "authors": [key.pk]}], timeout=12.0)
+    await apply_guestbook(app, community, [r for w in wraps if (r := open_wrap(w, key)) is not None], live=False)
+
+
+# -- rekeys and refoundings (CORD-06) ---------------------------------------------------------------
+
+
+_BASE_SCOPE = "00" * 32
+
+
+def rekey_addresses(community: Community) -> dict[str, GroupKey]:
+    """Scope id (hex) -> where the next rotation of that scope lands: the
+    base, and every channel (a public one's first rotation makes it private)."""
+    root, cid = bytes.fromhex(community.root), bytes.fromhex(community.id)
+    out = {_BASE_SCOPE: group_key("concord/base-rekey-pseudonym", root, cid, community.epoch + 1)}
+    for channel_id, info in community.channels.items():
+        if not info.get("deleted") and not info.get("lost"):
+            out[channel_id] = group_key("concord/rekey-pseudonym", root, bytes.fromhex(channel_id),
+                                        int(info.get("epoch") or 0) + 1)
+    return out
+
+
+def _commitment(epoch: int, key: bytes) -> str:
+    return hashlib.sha256(b"concord/epoch-key-commitment" + epoch.to_bytes(8, "big") + key).hexdigest()
+
+
+async def apply_rekey(app: FastAPI, community: Community, scope: str, rumor: dict[str, Any]) -> bool:
+    """A kind 3303 rotation: the new key, if one of our members' blobs is in
+    it; or, once every chunk is in and none is, the news that we were
+    removed. True if the community changed."""
+    if rumor.get("kind") != REKEY_KIND:
+        return False
+    tags = {t[0]: t[1:] for t in rumor.get("tags") or [] if t}
+    rotator = rumor.get("pubkey", "")
+    try:
+        if tags["scope"][0] != scope:
+            return False
+        new_epoch, prev_epoch, prevcommit = int(tags["newepoch"][0]), int(tags["prevepoch"][0]), tags["prevcommit"][0]
+        chunk, chunks = int(tags["chunk"][0]), int(tags["chunk"][1])
+        blobs = json.loads(rumor.get("content") or "[]")
+    except (KeyError, IndexError, ValueError):
+        return False
+    base = scope == _BASE_SCOPE
+    info = None if base else community.channels.get(scope)
+    if not base and info is None:
+        return False
+    if not community.can(rotator, BAN if base else MANAGE_CHANNELS):
+        logger.info("Ignoring a rotation in %s by %s, who may not", community.id, rotator)
+        return False
+    current = community.epoch if base else int(info.get("epoch") or 0)
+    if prev_epoch != current or new_epoch != current + 1:
+        return False
+    # A public Channel's key is the community root (CORD-02 A.6).
+    held = bytes.fromhex(community.root if base or not info.get("key") else info["key"])
+    if _commitment(prev_epoch, held) != prevcommit:
+        logger.info("Ignoring a rotation in %s that doesn't continue the key held", community.id)
+        return False
+    wrapped_by_locator = {b.get("locator"): b.get("wrapped") for b in blobs if isinstance(b, dict)}
+    scope_bytes = bytes.fromhex(scope)
+    adopted = False
+    for id_ref in list(community.members):
+        member = await app.state.repository.get_id(id_ref)
+        secret = await app.state.signer.secret_key(member.pubkey) if member else None
+        if secret is None:
+            continue
+        locator = hkdf(bytes.fromhex(rotator) + bytes.fromhex(member.pubkey), "concord/recipient-pseudonym",
+                       scope_bytes, new_epoch).hex()
+        wrapped = wrapped_by_locator.get(locator)
+        if not wrapped:
+            continue
+        try:
+            plain = nip44.decrypt_bytes(wrapped, nip44.get_conversation_key(secret, rotator))
+        except Exception:
+            continue
+        if plain[:32] != scope_bytes or int.from_bytes(plain[32:40], "big") != new_epoch:
+            continue
+        if base and len(plain) in (72, 104, 136):
+            community.root, community.epoch = plain[40:72].hex(), new_epoch
+            community.control_pk = plain[72:104].hex() if len(plain) >= 104 else None
+        elif not base and len(plain) == 72:
+            info.update({"key": plain[40:72].hex(), "epoch": new_epoch, "private": True})
+        else:
+            continue
+        adopted = True
+        break
+    rotation = f"{scope}:{rotator}:{new_epoch}:{prevcommit}"
+    if adopted:
+        community.pending.pop(rotation, None)
+        logger.info("Moved %s (%s) to epoch %d", community.id, "base" if base else scope[:8], new_epoch)
+        return True
+    seen = sorted(set(community.pending.get(rotation, [])) | {chunk})
+    community.pending[rotation] = seen
+    if len(seen) < chunks:
+        await save(app, community)
+        return False
+    # Every chunk is in and none has a key for us: removed.
+    community.pending.pop(rotation, None)
+    if base:
+        for id_ref in list(community.members):
+            member = await app.state.repository.get_id(id_ref)
+            if member is not None:
+                await _drop_member(app, community, member.pubkey, "was removed from the community (it was re-founded without them)")
+        community.removed = True
+    else:
+        info.update({"key": None, "lost": True, "private": True})
+        room = info.get("room")
+        if room:
+            await notice(app, room, "This channel's key was changed without us, so nothing new will arrive here.")
+    return True
+
+
+async def _after_rotation(app: FastAPI, community: Community) -> None:
+    """New keys: catch up on any further rotations, then the new epoch's planes."""
+    await save(app, community)
+    if not community.removed:
+        await catch_up(app, community)
+        await _refresh(app, community)
+        await read_guestbook(app, community)
+        await save(app, community)
+    app.state.feeds.changed()
+
+
+async def catch_up(app: FastAPI, community: Community) -> None:
+    """Rotations missed while away, or before joining, in order."""
+    for _round in range(16):
+        moved = False
+        for scope, key in rekey_addresses(community).items():
+            wraps = await app.state.relay_pool.query(community.relays, [{"kinds": [WRAP_KIND], "authors": [key.pk]}], timeout=10.0)
+            for wrap in wraps:
+                rumor = open_wrap(wrap, key)
+                if rumor is not None and await apply_rekey(app, community, scope, rumor):
+                    moved = True
+                    break
+            if moved:
+                break
+        if not moved or community.removed:
+            return
+        await read_control(app, community)
+
+
+# -- disappearing messages (CORD-08) -----------------------------------------------------------------
+
+
+_EXPIRY = "concord:exp:{:012d}:{}"
+
+
+async def expire_due(app: FastAPI) -> int:
+    """Redact the community messages whose time is up. Returns how many."""
+    repository = app.state.repository
+    now = int(time.time())
+    done = 0
+    for key, room in await repository.list_state("concord:exp:"):
+        when, event_id = key.split(":", 3)[2:]
+        if int(when) > now:
+            continue
+        try:
+            await app.state.homeserver.redact_event(room, event_id, as_user_id=bot_mxid(app.state.config),
+                                                    reason="Disappearing message")
+        except HomeserverError:
+            pass
+        await repository.delete_state(key)
+        done += 1
+    return done
+
+
+async def expiry_loop(app: FastAPI) -> None:
+    import asyncio
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await expire_due(app)
+        except Exception:
+            logger.exception("Expiring community messages failed")
 
 
 async def _receive_chat(app: FastAPI, community: Community, channel_id: str, key: GroupKey, wrap: dict[str, Any]) -> bool:
@@ -651,6 +1014,18 @@ async def _receive_chat(app: FastAPI, community: Community, channel_id: str, key
     if not room:
         return False
     author = rumor["pubkey"]
+    if author in community.banned:
+        return False
+    expiration = (first.get("expiration") or [None, ""])[1]
+    expires = int(expiration) if str(expiration).isdigit() else 0
+    if expires and expires <= time.time():
+        return False  # CORD-08: never stored once expired
+    if author not in community.present and len(community.present) < 5000:
+        community.present.append(author)
+        await save(app, community)
+    kind = rumor.get("kind")
+    if kind == TIMER_KIND:
+        return await _timer_notice(app, community, room, rumor, first)
     local = await repository.get_id_by_pubkey(author)
     if local is not None:
         sender, extra = bot_mxid(app.state.config), {"com.beeper.per_message_profile": await _per_message_profile(app, local)}
@@ -658,7 +1033,6 @@ async def _receive_chat(app: FastAPI, community: Community, channel_id: str, key
         ghost = await remotes.get_or_create_remote(app, author)
         await remotes.ensure_ghost_in_room(app, ghost.ghost_user_id, room)
         sender, extra = ghost.ghost_user_id, {}
-    kind = rumor.get("kind")
     ts = int(rumor.get("created_at", 0)) * 1000 + int((first.get("ms") or [0, "0"])[1] or 0) % 1000
     homeserver = app.state.homeserver
     try:
@@ -677,10 +1051,20 @@ async def _receive_chat(app: FastAPI, community: Community, channel_id: str, key
             target = await _lookup(app, (first.get("e") or [None, None])[1])
             if target is None:
                 return False
-            reaction = (rumor.get("content") or "+").strip()
-            reaction = "👍" if reaction in ("", "+") else reaction[:64]
+            from bridge.inbound import _emoji_mxc, reaction_key
+
+            found = reaction_key(rumor)
+            if found is None:
+                return False
+            reaction, fields = found
+            emoji_url = fields.pop("_emoji_url", None)
+            mxc = await _emoji_mxc(app, emoji_url, sender) if emoji_url and app.state.config.bridge.msc4027_custom_reactions else None
+            if mxc is None:
+                fields = {}  # no image: the ":name:" text
+            else:
+                reaction = mxc
             event_id = await homeserver.send_message_event(
-                room, {"m.relates_to": {"rel_type": "m.annotation", "event_id": target[1], "key": reaction}},
+                room, {"m.relates_to": {"rel_type": "m.annotation", "event_id": target[1], "key": reaction}, **fields, **extra},
                 as_user_id=sender, ts=ts, event_type="m.reaction")
         elif kind == 5:
             for tag in tags:
@@ -705,7 +1089,38 @@ async def _receive_chat(app: FastAPI, community: Community, channel_id: str, key
         return False
     await repository.set_state(_MSG.format(rumor["id"]), json.dumps([room, event_id, author]))
     await repository.set_state(_MX.format(event_id), json.dumps([rumor["id"], author, kind]))
+    if expires and kind != 5:
+        await repository.set_state(_EXPIRY.format(expires, event_id), room)
     return True
+
+
+async def _display_name(app: FastAPI, pubkey: str) -> str:
+    from bridge import remote as remotes
+    from bridge.inbound import _ghost_label
+
+    local = await app.state.repository.get_id_by_pubkey(pubkey)
+    if local is not None:
+        return f"{local.name}@{app.state.config.bridge.domain}"
+    return await _ghost_label(app, await remotes.get_or_create_remote(app, pubkey))
+
+
+async def _timer_notice(app: FastAPI, community: Community, room: str, rumor: dict[str, Any], first: dict) -> bool:
+    """CORD-08 §4: shown only from someone who may set the policy."""
+    seconds = (first.get("timer") or [None, ""])[1]
+    if not str(seconds).isdigit() or not community.can(rumor["pubkey"], MANAGE_METADATA):
+        return False
+    repository = app.state.repository
+    who = await _display_name(app, rumor["pubkey"])
+    seconds = int(seconds)
+    if seconds == 0:
+        text = f"{who} turned off disappearing messages."
+    else:
+        days, hours = divmod(seconds // 3600, 24)
+        span = f"{days} day{'s' * (days != 1)}" if days and not hours else f"{seconds // 3600 or 1} hour{'s' * (seconds >= 7200)}"
+        text = f"{who} set disappearing messages to {span}."
+    event_id = await notice(app, room, text)
+    await repository.set_state(_MSG.format(rumor["id"]), json.dumps([room, "", rumor["pubkey"]]))
+    return bool(event_id)
 
 
 async def _lookup(app: FastAPI, rumor_id: str | None) -> tuple[str, str, str] | None:
@@ -818,7 +1233,7 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
         return True
     kind, text, tags = built
     key = community.channel_key(channel_id)
-    wrap, rumor_id = make_wrap(key, secret, kind, text, tags)
+    wrap, rumor_id = make_wrap(key, secret, kind, text, tags, expire_after=community.timer)
     # Recorded before it goes out: the relays echo it straight back, and an
     # unrecorded message by a member here would be mirrored in a second time.
     app.state.seen.add("concord:" + wrap.id)
@@ -845,7 +1260,20 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
         key = relates.get("key")
         if target is None or not isinstance(key, str):
             return None
-        return 7, ("+" if key == "👍" else key), [*tags, ["e", target[0]], ["p", target[1]], ["k", str(target[2])]]
+        refs = [*tags, ["e", target[0]], ["p", target[1]], ["k", str(target[2])]]
+        if key.startswith("mxc://"):
+            # A custom emoji (MSC4027): published, and sent as NIP-30 ":name:".
+            import re
+
+            from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
+
+            shortcode = content.get("shortcode") or content.get("com.beeper.reaction.shortcode")
+            name = re.sub(r"[^a-zA-Z0-9_-]", "", str(shortcode or "").strip(":")) or "emoji"
+            published = await publish_matrix_image(app, key, max_bytes=PROFILE_IMAGE_MAX_BYTES)
+            if published is None:
+                return None
+            return 7, f":{name}:", [*refs, ["emoji", name, published.url]]
+        return 7, ("+" if key == "👍" else key), refs
     if kind_type == "m.room.redaction":
         target = await rumor_of(event.get("redacts") or content.get("redacts"))
         if target is None:
@@ -900,7 +1328,9 @@ async def desired(app: FastAPI) -> dict[tuple[str, str], list[dict[str, Any]]]:
     from bridge.nostr.relay_pool import normalize_relay_url
 
     for community in await all_communities(app):
-        authors = [community.control_address(), *(community.channel_key(c).pk for c in community.readable())]
+        authors = list(planes(community))
+        if not authors:
+            continue
         for relay in community.relays[:_MAX_RELAYS]:
             out[(normalize_relay_url(relay), f"concord:{community.id[:16]}")] = [
                 {"kinds": [WRAP_KIND], "authors": sorted(set(authors))}]

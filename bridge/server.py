@@ -295,6 +295,9 @@ def create_app(
                 tasks.append(asyncio.create_task(retry_loop(app), name="publish retries"))
                 tasks.append(asyncio.create_task(_housekeeping_loop(app), name="housekeeping"))
                 tasks.append(asyncio.create_task(_spam_tick_loop(app), name="spam tick"))
+                from bridge.concord import expiry_loop
+
+                tasks.append(asyncio.create_task(expiry_loop(app), name="community message expiry"))
                 app.state.feeds.start()
                 from bridge.room_widget import add_missing_widgets
 

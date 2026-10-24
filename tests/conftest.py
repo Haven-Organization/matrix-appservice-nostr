@@ -61,6 +61,7 @@ class FakeHomeserver(HomeserverClient):
         self.invites: list[tuple[str, str]] = []
         self.created: list[dict[str, Any]] = []
         self.redactions: list[tuple[str, str, str]] = []
+        self.kicked: list[tuple[str, str]] = []
         self.openid_tokens: dict[str, str] = {}
         # Overrides for get_room_state: (room, type) -> content.
         self.room_state: dict[tuple[str, str], dict[str, Any]] = {}
@@ -177,6 +178,10 @@ class FakeHomeserver(HomeserverClient):
 
     async def leave_room(self, room_id, *, as_user_id):
         self._room(room_id)["members"].discard(as_user_id)
+
+    async def kick_user(self, room_id, user_id, *, as_user_id, reason=None):
+        self._room(room_id)["members"].discard(user_id)
+        self.kicked.append((room_id, user_id))
 
     async def verify_openid_token(self, access_token):
         return self.openid_tokens.get(access_token)

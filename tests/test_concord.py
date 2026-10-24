@@ -26,6 +26,7 @@ class FakeCommunity:
         self.id = concord.community_id(self.owner.pubkey, self.salt)
         self.root = secrets.token_hex(32)
         self.general = secrets.token_hex(32)
+        self.epoch = 0
         self.pool = relay_pool
         self.link_secret = secp256k1.generate_secret_key()
         self.token = secrets.token_bytes(16)
@@ -44,7 +45,7 @@ class FakeCommunity:
         return f"https://armada.buzz/invite/{naddr}#{fragment}"
 
     def control(self) -> concord.GroupKey:
-        return concord.group_key("concord/control", bytes.fromhex(self.root), bytes.fromhex(self.id), 0)
+        return concord.group_key("concord/control", bytes.fromhex(self.root), bytes.fromhex(self.id), self.epoch)
 
     def edition(self, vsk, eid, content, version=1, actor=None):
         actor = actor or self.owner
@@ -58,12 +59,45 @@ class FakeCommunity:
         return wrap.to_dict()
 
     def channel(self, channel_id=None) -> concord.GroupKey:
-        return concord.group_key("concord/channel", bytes.fromhex(self.root), bytes.fromhex(channel_id or self.general), 0)
+        return concord.group_key("concord/channel", bytes.fromhex(self.root), bytes.fromhex(channel_id or self.general), self.epoch)
 
     def say(self, who, kind, text, extra_tags=(), channel_id=None):
         wrap, rumor_id = concord.make_wrap(self.channel(channel_id), who.secret, kind, text,
-                                           [["channel", channel_id or self.general], ["epoch", "0"], *extra_tags])
+                                           [["channel", channel_id or self.general], ["epoch", str(self.epoch)], *extra_tags])
         return wrap.to_dict(), rumor_id
+
+    def guestbook(self) -> concord.GroupKey:
+        return concord.group_key("concord/guestbook", bytes.fromhex(self.root), bytes.fromhex(self.id), self.epoch)
+
+    def sign_in(self, who, kind=concord.JOIN_KIND, text="join", tags=()):
+        wrap, _ = concord.make_wrap(self.guestbook(), who.secret, kind, text, list(tags))
+        return wrap.to_dict()
+
+    def refound(self, recipients, rotator=None, chunks=1):
+        """A base rotation (CORD-06) to a new root, keyed to ``recipients``;
+        returns the rekey wraps (one per chunk) and moves this fake along."""
+        rotator = rotator or self.owner
+        new_root = secrets.token_hex(32)
+        cid = bytes.fromhex(self.id)
+        address = concord.group_key("concord/base-rekey-pseudonym", bytes.fromhex(self.root), cid, self.epoch + 1)
+        new_control = concord.group_key("concord/control", bytes.fromhex(new_root), cid, self.epoch + 1)
+        scope = bytes(32)
+        plain = scope + (self.epoch + 1).to_bytes(8, "big") + bytes.fromhex(new_root) + bytes.fromhex(new_control.pk)
+        blobs = []
+        for pubkey in recipients:
+            locator = concord.hkdf(bytes.fromhex(rotator.pubkey) + bytes.fromhex(pubkey), "concord/recipient-pseudonym",
+                                   scope, self.epoch + 1).hex()
+            blobs.append({"locator": locator,
+                          "wrapped": nip44.encrypt(plain, nip44.get_conversation_key(rotator.secret, pubkey))})
+        commit = concord._commitment(self.epoch, bytes.fromhex(self.root))
+        wraps = []
+        for i in range(chunks):
+            tags = [["scope", scope.hex()], ["newepoch", str(self.epoch + 1)], ["prevepoch", str(self.epoch)],
+                    ["prevcommit", commit], ["chunk", str(i), str(chunks)]]
+            wrap, _ = concord.make_wrap(address, rotator.secret, concord.REKEY_KIND, json.dumps(blobs if i == 0 else []), tags)
+            wraps.append(wrap.to_dict())
+        self.root, self.epoch = new_root, self.epoch + 1
+        return wraps
 
 
 def joined(client, homeserver, relay_pool):
@@ -187,7 +221,12 @@ def test_feeds_subscribe_to_the_communitys_streams(client, homeserver, relay_poo
     q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
     desired = run(client, client.app.state.feeds._desired)
     filters = [f for (relay, name), fs in desired.items() if name.startswith("concord:") for f in fs]
-    assert filters and set(filters[0]["authors"]) == {community.control().pk, community.channel().pk}
+    root, cid = bytes.fromhex(community.root), bytes.fromhex(community.id)
+    assert filters and set(filters[0]["authors"]) == {
+        community.control().pk, community.channel().pk,
+        concord.group_key("concord/guestbook", root, cid, 0).pk,
+        concord.group_key("concord/base-rekey-pseudonym", root, cid, 1).pk,
+        concord.group_key("concord/rekey-pseudonym", root, bytes.fromhex(community.general), 1).pk}
 
 
 def test_attachments_are_encrypted_both_ways(client, homeserver, relay_pool) -> None:
@@ -256,3 +295,128 @@ def test_an_echo_arriving_while_publishing_isnt_shown(client, homeserver, relay_
     before = len(homeserver.messages(room))
     post(client, homeserver, room, {"msgtype": "m.text", "body": "from Matrix"})
     assert echoed and len(homeserver.messages(room)) == before + 1  # only the user's own message
+
+
+def test_custom_emoji_reactions_both_ways(client, homeserver, relay_pool) -> None:
+    """NIP-30 emoji in a community: an MSC4027 image reaction in Matrix,
+    and a Matrix image reaction goes out as ":name:" with its emoji tag."""
+    import io
+
+    from PIL import Image
+
+    from bridge.safe_fetch import Fetched
+    object.__setattr__(client.app.state.config.bridge, "msc4027_custom_reactions", True)
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), (250, 200, 0)).save(buffer, format="PNG")
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            return Fetched(url, 200, buffer.getvalue(), "image/png")
+
+        async def aclose(self):
+            pass
+
+    client.app.state.fetcher = Fetcher()
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    original = homeserver.messages(room)[-1]
+    reaction, _ = community.say(alice, 7, ":frierenspin:", [["e", earlier_id], ["p", alice.pubkey], ["k", "9"],
+                                                            ["emoji", "frierenspin", "https://img.example/spin.png"]])
+    run(client, concord.receive, client.app, reaction)
+    [shown] = homeserver.messages(room, "m.reaction")
+    relates = shown["content"]["m.relates_to"]
+    assert relates["key"].startswith("mxc://") and relates["event_id"] == original["event_id"]
+    assert shown["content"]["shortcode"] == ":frierenspin:"
+    homeserver.media["mxc://example.org/blob"] = (buffer.getvalue(), "image/png")
+    transact(client, homeserver._store(room, "m.reaction", {"m.relates_to": {
+        "rel_type": "m.annotation", "event_id": original["event_id"], "key": "mxc://example.org/blob"},
+        "shortcode": ":blobcat:"}, "@q:example.org"))
+    wrap = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1]
+    rumor = concord.open_wrap(wrap.to_dict(), community.channel())
+    assert rumor["kind"] == 7 and rumor["content"] == ":blobcat:"
+    [emoji] = [t for t in rumor["tags"] if t[0] == "emoji"]
+    assert emoji[1] == "blobcat" and emoji[2].startswith("http")
+
+
+def test_the_guestbook_brings_members_and_honours_only_staff_kicks(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    bob = Stranger()
+    run(client, concord.receive, client.app, community.sign_in(bob))
+    ghost = next(m for m in homeserver._room(room)["members"] if m.endswith(bob.pubkey + ":example.org"))
+    state = run(client, concord.load, client.app, community.id)
+    assert bob.pubkey in state.present
+    # Alice isn't staff: her kick of Bob is ignored. The owner's isn't.
+    run(client, concord.receive, client.app, community.sign_in(alice, concord.KICK_KIND, "", [["p", bob.pubkey]]))
+    assert ghost in homeserver._room(room)["members"]
+    run(client, concord.receive, client.app, community.sign_in(community.owner, concord.KICK_KIND, "", [["p", bob.pubkey]]))
+    assert ghost not in homeserver._room(room)["members"]
+    # A live kick of q takes q out of the community's rooms.
+    run(client, concord.receive, client.app, community.sign_in(community.owner, concord.KICK_KIND, "", [["p", q.pubkey]]))
+    state = run(client, concord.load, client.app, community.id)
+    assert state.removed and (room, "@q:example.org") in homeserver.kicked
+
+
+def test_a_refounding_moves_to_the_new_root_or_removes_us(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    [rekey] = community.refound([alice.pubkey, q.pubkey])
+    # The new epoch's Control Plane, rewrapped as a refounding does.
+    community.edition("0", community.id, {"name": "PosterChan", "description": "A test", "relays": [RELAY]})
+    community.edition("2", community.general, {"name": "general", "private": False})
+    run(client, concord.receive, client.app, rekey)
+    state = run(client, concord.load, client.app, community.id)
+    assert state.epoch == 1 and state.root == community.root and not state.removed
+    new_message, _ = community.say(alice, 9, "after the refounding")
+    run(client, concord.receive, client.app, new_message)
+    assert homeserver.messages(room)[-1]["content"]["body"] == "after the refounding"
+    # A rotation by someone without BAN is ignored; one that leaves q out, in two chunks, removes q once both are in.
+    forged = community.refound([q.pubkey], rotator=alice)
+    community.root, community.epoch = state.root, 1
+    run(client, concord.receive, client.app, forged[0])
+    assert run(client, concord.load, client.app, community.id).epoch == 1
+    first, second = community.refound([alice.pubkey], chunks=2)
+    run(client, concord.receive, client.app, first)
+    assert not run(client, concord.load, client.app, community.id).removed  # a missing chunk is never a removal
+    run(client, concord.receive, client.app, second)
+    state = run(client, concord.load, client.app, community.id)
+    assert state.removed and (room, "@q:example.org") in homeserver.kicked
+
+
+def test_roles_become_power_levels_and_bans_silence(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    mod = secrets.token_hex(32)
+    community.edition("1", mod, {"name": "Mods", "position": 5, "permissions": concord.KICK | concord.MANAGE_MESSAGES})
+    community.edition("3", secrets.token_hex(32), {"member": alice.pubkey, "role_ids": [mod]})
+    bob = Stranger()
+    community.edition("4", concord.hkdf(bytes.fromhex(community.id), "concord/banlist").hex(), [bob.pubkey])
+    run(client, concord.receive, client.app, community.edition("0", community.id, {"name": "PosterChan", "relays": [RELAY]}, version=2))
+    users = homeserver.state_of(room, "m.room.power_levels")["users"]
+    from bridge.remote import ghost_user_id
+
+    assert users[ghost_user_id(client.app, community.owner.pubkey)] == 90
+    assert users[ghost_user_id(client.app, alice.pubkey)] == 50
+    said, _ = community.say(bob, 9, "spam")
+    count = len(homeserver.messages(room))
+    run(client, concord.receive, client.app, said)
+    assert len(homeserver.messages(room)) == count
+
+
+def test_disappearing_messages_and_timer_notices(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    gone, _ = community.say(alice, 9, "already gone", [["expiration", str(int(time.time()) - 5)]])
+    count = len(homeserver.messages(room))
+    run(client, concord.receive, client.app, gone)
+    assert len(homeserver.messages(room)) == count
+    soon, _ = community.say(alice, 9, "soon gone", [["expiration", str(int(time.time()) + 2)]])
+    run(client, concord.receive, client.app, soon)
+    shown = homeserver.messages(room)[-1]
+    assert shown["content"]["body"] == "soon gone"
+    assert run(client, concord.expire_due, client.app) == 0
+    time.sleep(2.1)
+    assert run(client, concord.expire_due, client.app) == 1
+    assert shown["event_id"] in {e for _, e, _ in homeserver.redactions}
+    # Only staff are believed about the timer.
+    forged, _ = community.say(alice, concord.TIMER_KIND, "", [["timer", "86400"]])
+    run(client, concord.receive, client.app, forged)
+    assert "disappearing" not in homeserver.messages(room)[-1]["content"].get("body", "")
+    real, _ = community.say(community.owner, concord.TIMER_KIND, "", [["timer", "2592000"]])
+    run(client, concord.receive, client.app, real)
+    assert homeserver.messages(room)[-1]["content"]["body"].endswith("set disappearing messages to 30 days.")
