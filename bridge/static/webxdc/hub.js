@@ -189,13 +189,42 @@
     if (ev.data.hubSessionWanted) signIn().then(function(s){ player.contentWindow.postMessage({ hubSession: s }, location.origin); }, function(){});
   });
 
+  function setTab(which){
+    if (which !== 'nostr' && which !== 'room') return;
+    document.querySelectorAll('nav button[data-tab]').forEach(function(x){ x.classList.toggle('on', x.dataset.tab === which); });
+    tab = which;
+    if (games[tab] === null && session) fetchTab(tab); else show();
+  }
   document.querySelectorAll('nav button[data-tab]').forEach(function(b){
-    b.addEventListener('click', function(){
-      document.querySelectorAll('nav button[data-tab]').forEach(function(x){ x.classList.toggle('on', x === b); });
-      tab = b.dataset.tab;
-      if (games[tab] === null && session) fetchTab(tab); else show();
-    });
+    b.addEventListener('click', function(){ setTab(b.dataset.tab); });
   });
+
+  /* -- told what to play: a 🎮 on a card, or "[play", while this is open --
+   * (or just before it opened). The widget itself never changes for it. */
+  var liveDelay = 1000;
+  function listen(){
+    var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/xdc/hub/ws?room_id=' +
+              encodeURIComponent(roomId) + '&session=' + encodeURIComponent(session);
+    var socket = new WebSocket(url), refused = false;
+    socket.onopen = function(){ liveDelay = 1000; };
+    socket.onmessage = function(e){
+      var m; try{ m = JSON.parse(e.data); }catch(_){ return; }
+      if (m.t === 'error'){ refused = true; return; }
+      if (m.t === 'play' && m.game){
+        try{ socket.send('got:' + m.game); }catch(_){}   // so it isn't played again next time
+        games.room = null;            // its card is new, maybe
+        setTab(m.tab);                // where "← All games" comes back to
+        play(m.game, m.name);
+      }
+    };
+    socket.onclose = function(){
+      var again = refused ? signIn() : Promise.resolve();
+      again.catch(function(){}).then(function(){ setTimeout(listen, liveDelay); });
+      liveDelay = Math.min(liveDelay * 2, 30000);
+    };
+    clearInterval(listen.ping);
+    listen.ping = setInterval(function(){ try{ socket.send('ping'); }catch(_){} }, 25000);
+  }
   filterInput.addEventListener('input', show);
   document.getElementById('refresh').addEventListener('click', function(){ if (session) fetchTab(tab, true); });
   document.getElementById('open').addEventListener('submit', function(ev){
@@ -213,8 +242,9 @@
       if (window.parent === window)
         throw new Error('Open this from its room in your Matrix client: it signs in through the client, so it can\'t work in a window of its own.');
       await signIn();
-      if (params.get('game')) play(params.get('game'), '');  // opened into a game ([play, or a card's 🎮)
+      if (params.get('game')) play(params.get('game'), '');  // a widget still pointed at a game (as they once were)
       fetchTab('nostr');
+      listen();
     }catch(e){ list.className = 'note'; list.textContent = e.message; }
   })();
 })();

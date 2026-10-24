@@ -948,10 +948,15 @@ resends a save it couldn't deliver.
 all behind a widget session. Games rooms get it when made, in the centre
 (`io.element.widgets.layout`). Games play inside it: the player page in a
 frame, given the hub's session in its URL fragment (never sent to a
-server), with a bar to go back. `[play` and a card's 🎮 set the widget's
-URL to `…&game=<id>`, so it opens straight into that game; a game picked
-in the hub plays without changing the widget. (Games used to get a widget
-of their own, `nostr-game`; it's removed when the hub is next set.)
+server), with a bar to go back. The widget's state never changes for a
+game (clients don't all reload a widget whose URL changes). Instead an open
+hub keeps a socket (`/xdc/hub/ws`) and `[play` or a card's 🎮 tells the
+user's hubs in that room to play it (`games_hub.announce`), with the tab
+to come back to (a card in the room: "In this room"). The request is also
+kept for ten minutes, until a hub answers `got:<game>`, so a widget opened
+just after plays it too. (Games used to get a widget of their own,
+`nostr-game`, and later the hub's URL got `&game=`; both are undone when a
+game is next opened.)
 
 - **Catalog**: `{"kinds":[1063],"#m":[the three webxdc types]}` and
   `{"kinds":[1,1068,1111,1621],"#t":["webxdc"]}` (poster.place's two

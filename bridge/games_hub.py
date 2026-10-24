@@ -31,7 +31,7 @@ import re
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, Response
 
 from bridge import games_room, webxdc
@@ -292,9 +292,82 @@ async def open_route(request: Request) -> dict[str, Any]:
     if body.get("in_hub"):
         # Picked in the widget, which plays it itself: only its card here.
         await games_room.game_opened(app, room_id, game, row, local)
-    elif not await games_room.open_in_room(app, room_id, game, row, local):
+    elif not await games_room.open_in_room(app, room_id, game, row, local, user=user):
         raise HTTPException(502, "The game couldn't be opened just now; try again in a minute.")
     return {"message": f"Opened {game.name}.", "game": game.id, "name": game.name}
+
+
+# -- open widgets, told what to play ---------------------------------------------------------
+
+_PENDING_SECONDS = 600
+
+
+def _live(app) -> dict[str, list[tuple[str, Any]]]:
+    return app.state.__dict__.setdefault("games_hub_live", {})  # room -> [(user, send)]
+
+
+def _pending(app) -> dict[tuple[str, str], tuple[dict[str, Any], float]]:
+    return app.state.__dict__.setdefault("games_hub_pending", {})  # (room, user) -> (message, when)
+
+
+def announce(app, room_id: str, user: str | None, game: webxdc.App, tab: str) -> None:
+    """Tell ``user``'s open Nostr Games widgets in ``room_id`` to play
+    ``game`` (anyone's, with no user). It's also kept until a widget says it
+    has it, so a widget opened in the next few minutes plays it if none was
+    open (or the one that was was closing)."""
+    message = {"t": "play", "game": game.id, "name": game.name, "tab": tab if tab in ("nostr", "room") else "nostr"}
+    if user is not None:
+        _pending(app)[(room_id, user)] = (message, time.time())
+    for who, send in list(_live(app).get(room_id, [])):
+        if user is None or who == user:
+            asyncio.ensure_future(send(message))
+
+
+@router.websocket("/xdc/hub/ws")
+async def hub_socket(websocket: WebSocket) -> None:
+    from fastapi import WebSocketDisconnect
+
+    from bridge.widget import user_of_session
+
+    app = websocket.app
+    await websocket.accept()
+    user = user_of_session(websocket.query_params.get("session", ""))
+    room_id = websocket.query_params.get("room_id", "")
+    if not app.state.config.webxdc.enabled or user is None:
+        await websocket.send_json({"t": "error", "error": "Session expired."})
+        await websocket.close()
+        return
+    if not await webxdc.in_room(app, room_id, user):
+        await websocket.send_json({"t": "error", "error": "Not in that room."})
+        await websocket.close()
+        return
+
+    async def send(message: dict[str, Any]) -> None:
+        try:
+            await websocket.send_json(message)
+        except Exception:
+            pass
+
+    entry = (user, send)
+    _live(app).setdefault(room_id, []).append(entry)
+    waiting = _pending(app).pop((room_id, user), None)
+    if waiting is not None and time.time() - waiting[1] < _PENDING_SECONDS:
+        await send(waiting[0])
+    try:
+        while True:
+            text = await websocket.receive_text()  # pings, and "got it" for a game it was told to play
+            if text.startswith("got:"):
+                waiting = _pending(app).get((room_id, user))
+                if waiting is not None and waiting[0]["game"] == text[4:]:
+                    _pending(app).pop((room_id, user), None)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        listeners = _live(app).get(room_id, [])
+        if entry in listeners:
+            listeners.remove(entry)
+        if not listeners:
+            _live(app).pop(room_id, None)
 
 
 @router.post("/xdc/api/close")

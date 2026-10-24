@@ -159,10 +159,12 @@ def test_play_opens_the_game_in_the_games_room(games, homeserver, relay_pool) ->
     reply = homeserver.sent_to(remote.room_id)[-1]["body"]
     assert reply.startswith("Opened Chess in your Games room: ") and "widgets" in reply
     games_room = run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org")
-    # It plays in the room's Nostr Games widget, which opens straight into it.
+    # It plays in the room's Nostr Games widget, which is told to (the widget itself isn't changed).
     widget = homeserver._room(games_room)["state"][("im.vector.modular.widgets", HUB_WIDGET_ID)]["content"]
-    assert widget["name"] == "🎮 Chess" and "/xdc/hub?" in widget["url"] and widget["url"].endswith(f"&game={GAME}")
+    assert widget["name"] == "🎮 Nostr Games" and "/xdc/hub?" in widget["url"] and "&game=" not in widget["url"]
     assert "$matrix_user_id" in widget["url"]
+    told, _ = games.app.state.games_hub_pending[(games_room, "@q:example.org")]
+    assert told == {"t": "play", "game": GAME, "name": "Chess", "tab": "nostr"}
     assert homeserver.state_of(games_room, LAYOUT_STATE_TYPE)["widgets"] == {
         HUB_WIDGET_ID: {"container": "center", "index": 0, "width": 100, "height": 100}}
     assert (games_room, "@q:example.org") in homeserver.invites
@@ -176,8 +178,8 @@ def test_play_opens_the_game_in_the_games_room(games, homeserver, relay_pool) ->
     assert run(games, ingest, games.app, other, origin="subscription").stored
     second = homeserver.messages(remote.room_id)[-1]
     play(games, homeserver, remote.room_id, second["event_id"])
-    widget = homeserver._room(games_room)["state"][("m.widget", HUB_WIDGET_ID)]["content"]
-    assert widget["name"] == "🎮 Tetris"
+    told, _ = games.app.state.games_hub_pending[(games_room, "@q:example.org")]
+    assert told["name"] == "Tetris"
     assert run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org") == games_room
 
 

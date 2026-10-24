@@ -44,6 +44,11 @@ class Fetcher:
         pass
 
 
+def told(client, room, user="@q:example.org"):
+    """What the bridge has waiting to tell user's next Nostr Games widget in room."""
+    return client.app.state.games_hub_pending[(room, user)][0]
+
+
 def layout(homeserver, room):
     return homeserver.state_of(room, games_room.LAYOUT_STATE_TYPE)["widgets"]
 
@@ -66,13 +71,14 @@ def test_games_room_starts_with_the_hub_and_play_brings_it_back(games, homeserve
     hub = homeserver._room(room)["state"][("im.vector.modular.widgets", HUB)]["content"]
     assert hub["name"] == "🎮 Nostr Games" and "/xdc/hub?" in hub["url"] and "$matrix_room_id" in hub["url"]
     assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
-    # A game plays in it: the widget opens straight into the game. An old
+    # A game plays in it: the widget is told to, and isn't changed. An old
     # separate game widget goes.
     for state_type in games_room.WIDGET_STATE_TYPES:
         homeserver._store(room, state_type, {"url": "https://old.example/xdc/play"}, "@nostrbot:example.org", GAME_W)
     play(games, homeserver, remote.room_id, shown["event_id"])
     hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
-    assert hub["url"].endswith(f"&game={GAME}") and hub["data"] == {"game": GAME} and hub["name"] == "🎮 Chess"
+    assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "🎮 Nostr Games"
+    assert told(games, room)["game"] == GAME
     assert homeserver._room(room)["state"][("m.widget", GAME_W)]["content"] == {}
     assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
     # Removed, it comes back with "[play" on its own.
@@ -122,8 +128,7 @@ def test_opening_from_the_hub_puts_the_game_and_its_card_in_the_room(games, home
     relay_pool.network.append(post)
     opened = games.post("/xdc/api/open", headers=headers, json={"room_id": room, "link": link})
     assert opened.status_code == 200 and opened.json()["message"] == "Opened Chess."
-    widget = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
-    assert widget["data"]["game"] == GAME
+    assert told(games, room)["game"] == GAME
     card = homeserver.messages(room)[-1]["content"]
     assert card["msgtype"] == "m.image" and card[webxdc.GAME_FIELD]["id"] == GAME
     # Again by id: the same card, not a second one.
@@ -158,7 +163,7 @@ def test_a_rooms_own_games(games, homeserver, relay_pool) -> None:
     assert tetris_id == webxdc.local_game_id(room, upload["event_id"])
     # It opens like any game, with a card; its picture is its own icon.
     assert games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": tetris_id}).status_code == 200
-    assert homeserver._room(room)["state"][("m.widget", HUB)]["content"]["data"]["game"] == tetris_id
+    assert told(games, room)["game"] == tetris_id
     card = homeserver.messages(room)[-1]["content"]
     pixel = Image.open(io.BytesIO(homeserver.media[card["url"]][0])).convert("RGB").getpixel((240, 254))
     assert card[webxdc.GAME_FIELD]["id"] == tetris_id and pixel == (0, 120, 240)
@@ -277,11 +282,36 @@ def test_widget_sessions_last_while_used_and_through_a_restart(repository, homes
 
 
 def test_going_back_points_the_widget_at_the_list_again(games, homeserver, relay_pool) -> None:
+    """A widget still pointed at a game (as [play once left them)."""
     q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
-    play(games, homeserver, remote.room_id, shown["event_id"])
-    assert homeserver._room(room)["state"][("m.widget", HUB)]["content"]["url"].endswith(f"&game={GAME}")
+    for state_type in games_room.WIDGET_STATE_TYPES:
+        homeserver._store(room, state_type, {"url": games_room.hub_url(games.app) + f"&game={GAME}", "name": "🎮 Chess",
+                                             "data": {"title": "Chess", "game": GAME}}, "@nostrbot:example.org", HUB)
     assert games.post("/xdc/api/close", headers=auth(games), json={"room_id": room}).json() == {"ok": True}
     hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
     assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "🎮 Nostr Games"
     other = {"Authorization": "Bearer " + session_for(games, "@admin:example.org")}
     assert games.post("/xdc/api/close", headers=other, json={"room_id": room}).status_code == 403
+
+
+def test_an_open_widget_is_told_to_play_and_where_to_come_back_to(games, homeserver, relay_pool) -> None:
+    q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
+    session = session_for(games)
+    with games.websocket_connect(f"/xdc/hub/ws?room_id={room}&session={session}") as ws:
+        # A 🎮 on a card in the room: plays it, and "← All games" comes back to the room's tab.
+        play(games, homeserver, remote.room_id, shown["event_id"])  # its card in the Games room
+        assert ws.receive_json() == {"t": "play", "game": GAME, "name": "Chess", "tab": "nostr"}
+        card = next(m for m in homeserver.messages(room) if (m["content"].get(webxdc.GAME_FIELD) or {}).get("id") == GAME)
+        transact(games, homeserver._store(room, "m.reaction", {"m.relates_to": {
+            "rel_type": "m.annotation", "event_id": card["event_id"], "key": "🎮"}}, "@q:example.org"))
+        assert ws.receive_json() == {"t": "play", "game": GAME, "name": "Chess", "tab": "room"}
+        ws.send_text("got:" + GAME)
+    # Nobody else's widget is told.
+    with games.websocket_connect(f"/xdc/hub/ws?room_id={room}&session={session_for(games, '@admin:example.org')}") as ws:
+        assert ws.receive_json()["t"] == "error"  # and they aren't in the room anyway
+    # Told while closed: the next widget opened there plays it.
+    transact(games, {"type": "m.room.message", "event_id": "$play-again", "room_id": remote.room_id,
+                     "sender": "@q:example.org", "content": {"msgtype": "m.text", "body": "[play",
+                                                             "m.relates_to": {"m.in_reply_to": {"event_id": shown["event_id"]}}}})
+    with games.websocket_connect(f"/xdc/hub/ws?room_id={room}&session={session}") as ws:
+        assert ws.receive_json()["game"] == GAME

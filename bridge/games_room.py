@@ -70,12 +70,6 @@ async def ensure_games_room(app: FastAPI, matrix_user_id: str) -> tuple[str | No
     return room_id, True
 
 
-async def show_game(app: FastAPI, room_id: str, game: webxdc.App) -> None:
-    """The room's Nostr Games widget, now playing ``game`` (it opens
-    straight into it, with a way back to the list)."""
-    await _set_hub(app, room_id, game)
-
-
 def hub_url(app: FastAPI, game: webxdc.App | None = None) -> str:
     base = app.state.config.nostr.relay_http_base
     playing = f"&game={quote(game.id, safe='')}" if game is not None else ""
@@ -162,7 +156,7 @@ async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str
         await notice(app, room_id, f'Reply "{prefix}play" to a game post (one with "🎮" on it), or send '
                                    f'"{prefix}play <link to the game post>", to open that game.')
         return
-    opened = await open_game(app, sender, game, row)
+    opened = await open_game(app, sender, game, row, from_room=room_id)
     if opened is None:
         await notice(app, room_id, "I couldn't open the game in your Games room just now; try again in a minute.")
         return
@@ -198,28 +192,51 @@ async def _bring_back_hub(app: FastAPI, room_id: str, user: str) -> None:
                      "find games there, or open one from a link.")
 
 
-async def open_game(app: FastAPI, user: str, game: webxdc.App, row, local=None) -> tuple[str, bool] | None:
-    """``game`` as the widget of ``user``'s Games room, with its card there
-    (posted the first time only). (The room, whether it was just made), or
-    None if it couldn't be done."""
+async def open_game(app: FastAPI, user: str, game: webxdc.App, row, local=None,
+                    from_room: str | None = None) -> tuple[str, bool] | None:
+    """``game`` playing in the Nostr Games widget of ``user``'s Games room,
+    with its card there (posted the first time only). (The room, whether it
+    was just made), or None if it couldn't be done."""
     games_room, new = await ensure_games_room(app, user)
     if games_room is None:
         return None
-    if not await open_in_room(app, games_room, game, row, local):
+    tab = "room" if from_room == games_room else "nostr"
+    if not await open_in_room(app, games_room, game, row, local, user=user, tab=tab):
         return None
     await invite_to_room(app, games_room, user)
     return games_room, new
 
 
-async def open_in_room(app: FastAPI, room_id: str, game: webxdc.App, row, local=None) -> bool:
-    """``game`` playing in the Nostr Games widget of ``room_id``, with its card there."""
+async def open_in_room(app: FastAPI, room_id: str, game: webxdc.App, row, local=None, *,
+                       user: str | None = None, tab: str = "nostr") -> bool:
+    """``game`` playing in the Nostr Games widget of ``room_id``, with its
+    card there. The widget isn't changed (clients don't all reload a widget
+    whose address changes): the bridge tells ``user``'s open widget there to
+    play it, or the next one they open (``games_hub.announce``). ``tab`` is
+    where they land coming back from the game."""
+    from bridge import games_hub
+
     try:
-        await show_game(app, room_id, game)
+        await _hub_ready(app, room_id)
     except HomeserverError:
-        logger.warning("Could not set the game widget in %s", room_id, exc_info=True)
+        logger.warning("Could not set the Nostr Games widget in %s", room_id, exc_info=True)
         return False
+    games_hub.announce(app, room_id, user, game, tab)
     await game_opened(app, room_id, game, row, local)
     return True
+
+
+async def _hub_ready(app: FastAPI, room_id: str) -> None:
+    """The room's Nostr Games widget there, showing its list (set only if
+    it's missing, or still points at a game, as it did before)."""
+    bot = bot_mxid(app.state.config)
+    for state_type in WIDGET_STATE_TYPES:
+        current = await app.state.homeserver.get_room_state(room_id, state_type, HUB_WIDGET_ID, as_user_id=bot) or {}
+        if not current.get("url") or "&game=" in current["url"] or (current.get("data") or {}).get("title"):
+            await ensure_hub(app, room_id)
+            return
+    if await _has_widget(app, room_id, GAME_WIDGET_ID):
+        await ensure_hub(app, room_id)  # takes the old game widget away
 
 
 async def game_opened(app: FastAPI, room_id: str, game: webxdc.App, row, local=None) -> None:
@@ -385,7 +402,7 @@ async def maybe_handle_card_reaction(request, event: dict[str, Any]) -> bool:
         return True
     if not await can_set_widgets(app, room_id, sender):
         await notice(app, room_id, "Only those who can change this room's widgets can load games here.")
-    elif not await open_in_room(app, room_id, game, row, local):
+    elif not await open_in_room(app, room_id, game, row, local, user=sender, tab="room"):
         await notice(app, room_id, "I couldn't open the game just now; try again in a minute.")
     return True
 
