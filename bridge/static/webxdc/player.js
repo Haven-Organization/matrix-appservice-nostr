@@ -31,7 +31,8 @@
       var r = waiting[m.requestId]; delete waiting[m.requestId]; r(m.response); return;
     }
     if (m.api === 'toWidget' && m.action === 'capabilities'){
-      window.parent.postMessage(Object.assign({}, m, { response: { capabilities: [] } }), '*'); return;
+      // Signing in needs the client around it, so no pop-out button.
+      window.parent.postMessage(Object.assign({}, m, { response: { capabilities: ['io.element.requires_client'] } }), '*'); return;
     }
     if (m.api === 'toWidget' && m.action === 'openid_credentials'){
       window.parent.postMessage(Object.assign({}, m, { response: {} }), '*');
@@ -226,6 +227,8 @@
   (async function(){
     try{
       if (!gameId) throw new Error('No game was given.');
+      if (window.parent === window)
+        throw new Error('Open this game from its room in your Matrix client: it signs in through the client, so it can\'t run in a window of its own.');
       say('Signing in…');
       var creds = await openId();
       var res = await fetch('/widget/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' },

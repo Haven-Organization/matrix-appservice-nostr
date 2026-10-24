@@ -416,7 +416,8 @@ _PAGE = r"""<!doctype html>
       const resolve = pending[msg.requestId]; delete pending[msg.requestId]; resolve(msg.response); return;
     }
     if (msg.api === "toWidget" && msg.action === "capabilities") {
-      window.parent.postMessage(Object.assign({}, msg, { response: { capabilities: [] } }), "*"); return;
+      // Signing in needs the client around it, so no pop-out button.
+      window.parent.postMessage(Object.assign({}, msg, { response: { capabilities: ["io.element.requires_client"] } }), "*"); return;
     }
     if (msg.api === "toWidget" && msg.action === "openid_credentials") {
       window.parent.postMessage(Object.assign({}, msg, { response: {} }), "*");
@@ -573,6 +574,7 @@ _PAGE = r"""<!doctype html>
 
   (async () => {
     try {
+      if (window.parent === window) throw new Error("Open this from its room in your Matrix client: it signs in through the client, so it can't work in a window of its own.");
       const creds = await openId();
       const s = await api("/widget/api/session", { access_token: creds.access_token, matrix_server_name: creds.matrix_server_name });
       session = s.session_id;
