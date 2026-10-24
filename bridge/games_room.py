@@ -262,7 +262,9 @@ async def _raw(app: FastAPI, row) -> dict[str, Any] | None:
 _CARD_KEY = "webxdc:card:{}"  # game -> its cartridge picture
 _CARD_IN_ROOM = "webxdc:cardmsg:{}:{}"  # (room, game) -> its card there
 _CARD_OF = "webxdc:cardof:{}"  # card -> the game post
-_CARD_NAME = "webxdc:cardname:{}"  # card -> the game name it shows
+_CARD_NAME = "webxdc:cardname:{}"  # card -> the game name it shows (before _CARD_SHOWN)
+_CARD_SHOWN = "webxdc:cardshown:{}"  # card -> a hash of the text it shows
+_DESCRIPTION_MAX = 20_000
 _PLAY_REACTION = "webxdc:playreact:{}"  # a user's 🎮 on a card -> the game post
 PLAY_KEY = "🎮"
 _ICON_MAX_BYTES = 20 * 1024 * 1024
@@ -279,10 +281,12 @@ async def ensure_card(app: FastAPI, room_id: str, game: webxdc.App, row, local=N
         except HomeserverError:
             event = None
         if event and (event.get("content") or {}) and "redacted_because" not in (event.get("unsigned") or {}):
-            shown = await repository.get_state(_CARD_NAME.format(existing)) or \
-                ((event["content"].get(webxdc.GAME_FIELD) or {}).get("name"))
-            if shown != game.name:
-                await _rename_card(app, room_id, existing, game, row)
+            # The card follows the game: its name (read from inside it, say)
+            # or its description changed, and the card is edited to match.
+            fresh = await _card_content(app, game, row)
+            shown = await repository.get_state(_CARD_SHOWN.format(existing)) or _digest(event["content"])
+            if shown != _digest(fresh):
+                await _rename_card(app, room_id, existing, fresh)
             return existing
     card = await post_card(app, room_id, game, row, local)
     if card is not None:
@@ -307,7 +311,7 @@ async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row, local=Non
     if row is not None:
         await repository.put_mirrored_event(card, row.id, room_id)
     await repository.set_state(_CARD_OF.format(card), row.id if row is not None else f"local:{game.id}")
-    await repository.set_state(_CARD_NAME.format(card), game.name)
+    await repository.set_state(_CARD_SHOWN.format(card), _digest(content))
     try:
         await homeserver.send_message_event(
             room_id, {"m.relates_to": {"rel_type": "m.annotation", "event_id": card, "key": PLAY_KEY}},
@@ -317,20 +321,25 @@ async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row, local=Non
     return card
 
 
-async def _rename_card(app: FastAPI, room_id: str, card: str, game: webxdc.App, row) -> None:
-    """The game's name changed (read from inside it, say): the card, edited to match."""
+def _digest(content: dict[str, Any]) -> str:
+    import hashlib
+
+    return hashlib.sha256(str(content.get("body") or "").encode()).hexdigest()
+
+
+async def _rename_card(app: FastAPI, room_id: str, card: str, new: dict[str, Any]) -> None:
+    """The card, edited to show the game as it is now."""
     from bridge.inbound import _post_event_type
 
-    new = await _card_content(app, game, row)
     edit = {**new, "body": "* " + new["body"], "formatted_body": "* " + new["formatted_body"],
             "m.new_content": new, "m.relates_to": {"rel_type": "m.replace", "event_id": card}}
     try:
         await app.state.homeserver.send_message_event(room_id, edit, as_user_id=bot_mxid(app.state.config),
                                                       event_type=_post_event_type(app))
     except HomeserverError:
-        logger.info("Could not rename the card %s", card, exc_info=True)
+        logger.info("Could not update the card %s", card, exc_info=True)
         return
-    await app.state.repository.set_state(_CARD_NAME.format(card), game.name)
+    await app.state.repository.set_state(_CARD_SHOWN.format(card), _digest(new))
 
 
 async def _card_content(app: FastAPI, game: webxdc.App, row) -> dict[str, Any]:
@@ -441,7 +450,9 @@ async def _ghost_profile(app: FastAPI, pubkey: str) -> dict[str, Any]:
 def _description(raw: dict[str, Any], game: webxdc.App) -> str:
     text = str(raw.get("content") or "")
     text = "\n".join(line for line in text.splitlines() if game.url not in line and not line.strip().endswith(".xdc"))
-    return text.strip()[:500]
+    # As long as Ditto shows it; the cap only keeps the card under Matrix's
+    # 64 KB event limit (the text goes in twice, plain and formatted).
+    return text.strip()[:_DESCRIPTION_MAX]
 
 
 def _slug(name: str) -> str:

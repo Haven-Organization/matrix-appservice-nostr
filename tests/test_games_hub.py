@@ -315,3 +315,25 @@ def test_an_open_widget_is_told_to_play_and_where_to_come_back_to(games, homeser
                                                              "m.relates_to": {"m.in_reply_to": {"event_id": shown["event_id"]}}}})
     with games.websocket_connect(f"/xdc/hub/ws?room_id={room}&session={session}") as ws:
         assert ws.receive_json()["game"] == GAME
+
+
+def test_cards_show_the_whole_description_and_follow_it(games, homeserver, relay_pool) -> None:
+    q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
+    long_text = "My Half-Life 1 XDC port based on webXash. " * 40  # about 1,700 characters
+    game = alice.event(1063, long_text, [["url", "https://b.example/hl.xdc"], ["m", webxdc.MIME], ["alt", "Webxdc app: Half-Life"],
+                                         ["webxdc", "hl"]])
+    from bridge.inbound import ingest
+
+    assert run(games, ingest, games.app, game, origin="subscription").stored
+    headers = auth(games)
+    assert games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": "hl", "in_hub": True}).status_code == 200
+    card = homeserver.messages(room)[-1]
+    assert long_text.strip() in card["content"]["body"]
+    # A card made when descriptions were cut short is edited to the whole text, once.
+    run(games, games.app.state.repository.set_state, f"webxdc:cardshown:{card['event_id']}", "an older text")
+    count = len(homeserver.messages(room))
+    games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": "hl", "in_hub": True})
+    edit = homeserver.messages(room)[-1]["content"]
+    assert edit["m.relates_to"] == {"rel_type": "m.replace", "event_id": card["event_id"]} and long_text.strip() in edit["m.new_content"]["body"]
+    games.post("/xdc/api/open", headers=headers, json={"room_id": room, "game": "hl", "in_hub": True})
+    assert len(homeserver.messages(room)) == count + 1
