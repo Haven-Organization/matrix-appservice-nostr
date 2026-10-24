@@ -343,7 +343,6 @@ _PAGE = """<!doctype html>
   * { box-sizing:border-box; }
   html, body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
   header { position:sticky; top:0; z-index:2; background:var(--bg); padding:12px 16px 8px; border-bottom:1px solid var(--line); }
-  h1 { margin:0 0 10px; font-size:17px; display:flex; align-items:center; gap:8px; }
   form { display:flex; gap:8px; }
   input { flex:1; min-width:0; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font:inherit; }
   button { padding:8px 14px; border-radius:8px; border:0; background:var(--accent); color:var(--accent-text); font:inherit; font-weight:600; cursor:pointer; }
@@ -378,7 +377,6 @@ _PAGE = """<!doctype html>
 </head>
 <body>
 <header>
-  <h1>🎮 Nostr Games</h1>
   <form id="open"><input id="link" placeholder="Paste a link, nevent or naddr to a game post" autocomplete="off"><button>Open</button></form>
   <nav>
     <button data-tab="nostr" class="on">On Nostr</button>

@@ -95,7 +95,8 @@ async def _set_hub(app: FastAPI, room_id: str, game: webxdc.App | None) -> None:
     content: dict[str, Any] = {
         "type": "m.custom", "url": hub_url(app, game),
         "name": f"🎮 {game.name}" if game is not None else "🎮 Nostr Games",
-        "data": {"title": game.name, "game": game.id} if game is not None else {"title": "Nostr Games"},
+        # No "title": clients show it after the name ("Nostr Games - Nostr Games").
+        "data": {"game": game.id} if game is not None else {},
     }
     if config.appservice.bot_avatar_mxc:
         content["avatar_url"] = config.appservice.bot_avatar_mxc

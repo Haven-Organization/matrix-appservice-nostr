@@ -72,7 +72,7 @@ def test_games_room_starts_with_the_hub_and_play_brings_it_back(games, homeserve
         homeserver._store(room, state_type, {"url": "https://old.example/xdc/play"}, "@nostrbot:example.org", GAME_W)
     play(games, homeserver, remote.room_id, shown["event_id"])
     hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
-    assert hub["url"].endswith(f"&game={GAME}") and hub["data"] == {"title": "Chess", "game": GAME}
+    assert hub["url"].endswith(f"&game={GAME}") and hub["data"] == {"game": GAME} and hub["name"] == "🎮 Chess"
     assert homeserver._room(room)["state"][("m.widget", GAME_W)]["content"] == {}
     assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
     # Removed, it comes back with "[play" on its own.
@@ -282,6 +282,6 @@ def test_going_back_points_the_widget_at_the_list_again(games, homeserver, relay
     assert homeserver._room(room)["state"][("m.widget", HUB)]["content"]["url"].endswith(f"&game={GAME}")
     assert games.post("/xdc/api/close", headers=auth(games), json={"room_id": room}).json() == {"ok": True}
     hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
-    assert "&game=" not in hub["url"] and hub["data"] == {"title": "Nostr Games"}
+    assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "🎮 Nostr Games"
     other = {"Authorization": "Bearer " + session_for(games, "@admin:example.org")}
     assert games.post("/xdc/api/close", headers=other, json={"room_id": room}).status_code == 403
