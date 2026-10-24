@@ -58,10 +58,11 @@ Each ID also publishes, and keeps up to date:
 - **Polls** become Nostr polls. See [Polls](#polls).
 - **Replies and threads:** a rich reply or thread message answering a Nostr post becomes a reply to it, so threads stay threads on Nostr. A reply to anything else is an ordinary post.
 - **Redacting** a published message publishes a deletion (kind 5) for it, with the redaction's reason as the deletion's text.
+- **Editing** a published post or reply replaces it on Nostr, where notes can't change: a deletion (kind 5) of the old note, then a new note with the edited text, still answering what it answered. Its reactions and replies stay with the old note. Edit again as often as you like.
 
 **Not published:**
 
-- edits (Nostr notes can't be edited)
+- edits of messages that weren't published
 - commands, and anything else addressed to the bot
 - notices
 - empty messages
@@ -272,7 +273,7 @@ Concord is the end-to-end encrypted, Discord-style community protocol of Armada,
 
 ## Not supported
 
-- **Edits**, either way: Nostr notes can't be edited.
+- **Edits from Nostr:** Nostr notes can't be edited.
 - **Hashtag and full-text search** on the bridge's relay.
 - **Sending zaps.** Zaps you receive are shown.
 - **Encrypted Matrix rooms:** the bridge doesn't do end-to-end encryption.

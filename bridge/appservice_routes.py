@@ -35,7 +35,7 @@ from bridge.dms import maybe_send_dm
 from bridge.interactions import maybe_handle_reaction
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave, maybe_handle_profile_state
 from bridge.messages import notice
-from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
+from bridge.profile_posts import maybe_handle_edit, maybe_handle_redaction, maybe_publish_message
 from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.shares import maybe_publish_share, repost_relation
@@ -120,6 +120,8 @@ _HANDLERS = (
     maybe_handle_profile_state,
     # Before anything that could act on (or publish) the message.
     maybe_catch_secret,
+    # An edit of a published note: republished (after the secret check).
+    maybe_handle_edit,
     # Before commands: a bare "confirm" is recognized by what it replies
     # to, not by a prefix or a tag.
     maybe_handle_confirmation,

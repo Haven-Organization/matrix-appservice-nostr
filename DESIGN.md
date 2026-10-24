@@ -656,7 +656,7 @@ The ID used for each action follows [Which ID an action uses](#which-id-an-actio
 | Custom emoji reaction (MSC4027 shortcode) | kind 7 `:shortcode:` plus an `emoji` tag (NIP-30), reusing the AP bridge's custom emoji handling |
 | Reaction 🔁 | kind 6 repost (kind 16 for non-kind-1 targets) |
 | Redaction | kind 5 deletion (NIP-09), signed by the ID that made the original |
-| Edit | Not published: Nostr notes are immutable (same as the atproto bridge) |
+| Edit (`m.replace`) of a published note or comment | Nostr notes are immutable: a kind 5 deletion of the old note, then a new note or comment from the edit's `m.new_content`, answering what the original answered. The new note's recipe names the edit (`edit`), so it rebuilds from the edit event; it keeps the original Matrix event, so later edits and redactions find it. |
 | Spoiler (`data-mx-spoiler`) | `content-warning` tag (NIP-36) |
 | Profile Room name/topic/avatar/banner | kind 0 `name`/`about`/`picture`/`banner`, plus `nip05` |
 | Pin | kind 10001 pin list (NIP-51) |
@@ -669,7 +669,7 @@ is ignored, a kind 9735 zap receipt is a notification ("⚡ X zapped your post
 1,000 sats"), and NIP-04 legacy DMs are received and shown but never sent.
 
 Not supported: sending zaps (needs a Lightning wallet, NIP-47/57),
-communities (NIP-72), groups (NIP-29), and outbound edits. Long-form
+communities (NIP-72) and groups (NIP-29). Long-form
 articles (kind 30023) are shown as a title, summary and link; polls (NIP-88)
 work both ways.
 
@@ -832,8 +832,8 @@ the ID's handle. Public relays are then tried in the background:
 
 As in the atproto bridge, only the owner's messages publish as the ID.
 Messages from anyone else in the Profile Room aren't published, unless they
-reply to a post, which publishes a reply from *their* acting ID. Edits aren't
-published. When creating an ID, the bot reminds the user that everything
+reply to a post, which publishes a reply from *their* acting ID. An edit
+republishes the note it edits, as the identity that published it. When creating an ID, the bot reminds the user that everything
 posted in the Profile Room is public on Nostr, even if the Matrix room is
 private.
 

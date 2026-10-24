@@ -123,8 +123,10 @@ def test_what_is_not_published(client, homeserver, relay_pool) -> None:
     q = create_id(client)
     room = q.profile_room_id
     original = post(client, homeserver, room, {"msgtype": "m.text", "body": "first"})
+    # An edit of something that was never published (here, a notice) isn't posted.
+    notice_event = post(client, homeserver, room, {"msgtype": "m.notice", "body": "n"})
     post(client, homeserver, room, {"msgtype": "m.text", "body": "* edited", "m.new_content": {"msgtype": "m.text", "body": "edited"},
-                                    "m.relates_to": {"rel_type": "m.replace", "event_id": original["event_id"]}})
+                                    "m.relates_to": {"rel_type": "m.replace", "event_id": notice_event["event_id"]}})
     post(client, homeserver, room, {"msgtype": "m.notice", "body": "a notice"})
     post(client, homeserver, room, {"msgtype": "m.text", "body": "[status"})
     post(client, homeserver, room, {"msgtype": "m.text", "body": "   "})

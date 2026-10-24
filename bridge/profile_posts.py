@@ -36,7 +36,9 @@ from bridge.notes import (
     MEDIA_MSGTYPES,
     POSTABLE_MSGTYPES,
     deletion_v1,
+    edited_view,
     event_kind_of,
+    is_redacted,
     message_body,
     pills,
     COMMENT_VERSION,
@@ -195,7 +197,18 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
         # another bridge's post or bot (a room shared with other bridges), or
         # someone in the room. That's conversation, not a Nostr post.
         return True
+    await _publish_post(app, event, author, parent)
+    return True
 
+
+async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, parent: EventRow | None,
+                        *, edit: str | None = None) -> EventRow | None:
+    """A Matrix post or reply as a Nostr note or comment. ``edit``: the
+    Matrix edit this republishes ``event`` after (``event`` is then the
+    edited view, ``notes.edited_view``)."""
+    config = app.state.config
+    room_id = event.get("room_id", "")
+    content = event.get("content") or {}
     event_id = event.get("event_id", "")
     mentions = await _mentions(app, content)
     recipe: dict[str, Any] = {
@@ -209,6 +222,8 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
         "relay_hint": config.nostr.relay_url,
         "media": None,
     }
+    if edit:
+        recipe["edit"] = edit
     p_tags: list[str] = []
     if parent is not None:
         context = await reply_context(app, parent, author.pubkey)
@@ -232,7 +247,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
                 f"That wasn't published on Nostr: {exc}.",
                 extra={"m.relates_to": {"m.in_reply_to": {"event_id": event_id}}},
             )
-            return True
+            return None
         recipe["media"] = {
             "url": media.url,
             "m": media.mime_type,
@@ -259,7 +274,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
     converter = CONVERTERS[(recipe["kind"], recipe["v"])]
     text, tags = converter(event, recipe)
     if not text:
-        return True
+        return None
     created_at = int(event.get("origin_server_ts", 0)) // 1000
     row = await _store_and_send(
         app, author, kind=event_kind_of(recipe), content=text, tags=tags, created_at=created_at, recipe=recipe,
@@ -269,9 +284,9 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
     )
     if row is not None:
         logger.info("Published %s from %s as %s@%s", row.id, event_id, author.name, config.bridge.domain)
-        if parent is not None:
+        if parent is not None and not edit:
             await notify_local_author(app, author, parent, "reply", theirs=(room_id, event_id))
-    return True
+    return row
 
 
 async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> bool:
@@ -323,6 +338,13 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
         if guard is not None and row.room_id and await repository.get_id_for_profile_room(row.room_id) is not None:
             await guard.record_report(row.pubkey, 1)
         return True
+    await _send_deletion(app, author, row, event)
+    return True
+
+
+async def _send_deletion(app: FastAPI, author: NostrId, row: EventRow, event: dict[str, Any]) -> None:
+    """A NIP-09 deletion of ``row``, made from ``event`` (a redaction, or
+    the edit that replaces the note)."""
     room_id = event.get("room_id", "")
     recipe = {
         "kind": "deletion",
@@ -338,5 +360,55 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
         matrix_event_id=event.get("event_id", ""), notify=None,
     )
     if deletion is not None:
-        logger.info("Deleted %s (redaction %s)", row.id, event.get("event_id"))
+        logger.info("Deleted %s (Matrix event %s)", row.id, event.get("event_id"))
+
+
+async def maybe_handle_edit(request: Request, event: dict[str, Any]) -> bool:
+    """Returns True if this was an edit (m.replace) of a local user's own
+    published note or comment. Nostr notes can't change, so the edit
+    replaces it: a NIP-09 deletion of the old one, then a new one with the
+    edited text, as the same identity, still answering what it answered.
+    Edits of anything else fall through (and are never posted themselves)."""
+    content = event.get("content") or {}
+    relates = _relates_to(content)
+    if event.get("type") != "m.room.message" or relates.get("rel_type") != "m.replace":
+        return False
+    target = relates.get("event_id")
+    app = request.app
+    config = app.state.config
+    sender = event.get("sender", "")
+    if not isinstance(target, str) or is_bridge_user(config, sender) or not is_local_user(config, sender):
+        return False
+    repository = app.state.repository
+    row = await repository.get_event_by_matrix_event(target, include_copies=False)
+    if row is None or (json.loads(row.source).get("kind") not in ("note", "comment")):
+        return False
+    author = await repository.get_id_by_pubkey(row.pubkey)
+    if author is None or author.matrix_user_id != sender:
+        return False
+    room_id = event.get("room_id", "")
+    try:
+        original = await app.state.homeserver.get_event(row.room_id or room_id, target, as_user_id=bot_mxid(config))
+    except HomeserverError:
+        logger.info("Could not fetch %s to edit it", target, exc_info=True)
+        return True
+    edited = edited_view(event, target)
+    if original is None or edited is None or is_redacted(original):
+        return True
+    new = edited["content"]
+    if new.get("msgtype") not in POSTABLE_MSGTYPES or message_for_a_bot(new, config):
+        return True
+    if (message_body(new).strip(), new.get("url")) == (message_body(original.get("content") or {}).strip(),
+                                                        (original.get("content") or {}).get("url")):
+        return True  # nothing a note shows has changed
+    # What it answered comes from the original: an edit doesn't restate it.
+    parent = await _replied_post(app, original.get("content") or {})
+    await repository.delete_event(row.id)
+    hub = getattr(app.state, "relay_hub", None)
+    if hub is not None:
+        hub.cache.drop(row.id)
+    await _send_deletion(app, author, row, event)
+    republished = await _publish_post(app, edited, author, parent, edit=event.get("event_id", ""))
+    if republished is not None:
+        logger.info("Edited %s: now %s", row.id, republished.id)
     return True

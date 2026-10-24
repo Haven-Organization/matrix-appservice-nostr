@@ -16,7 +16,9 @@ Source kinds:
   tags are references (relay URLs, pubkeys) and their content is empty.
 - ``note`` (kind 1) and ``deletion`` (kind 5), version 1: rebuilt from the
   Matrix message or redaction they were made from (``bridge.notes``). If
-  that event has been redacted, the event is gone.
+  that event has been redacted, the event is gone. A note or comment
+  republished after a Matrix edit has ``edit``: the edit event, whose
+  ``m.new_content`` it is converted from (``notes.edited_view``).
 - ``profile`` (kind 0), version 1: rebuilt from the Profile Room's
   ``m.room.name`` and ``m.room.topic`` state events, by event ID (an old
   state event can still be fetched after a newer one replaces it). The
@@ -52,7 +54,7 @@ from fastapi import FastAPI
 
 from bridge.homeserver_client import HomeserverError
 from bridge.nostr.event import compute_id
-from bridge.notes import CONVERTERS, event_kind_of, is_redacted, matrix_event_id_of, SHARE_CONVERTERS
+from bridge.notes import CONVERTERS, edited_view, event_kind_of, is_redacted, matrix_event_id_of, SHARE_CONVERTERS
 from bridge.repository import EventRow
 from bridge.users import bot_mxid
 
@@ -208,7 +210,12 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
             content, tags = SHARE_CONVERTERS[source["v"]](record, original, source)
             event_kind = event_kind_of(source)
         elif (kind, source.get("v")) in CONVERTERS:
-            matrix_event = await _fetch(app, source["room_id"], matrix_event_id_of(source))
+            if source.get("edit"):
+                # Republished after an edit: from the edit's new content.
+                edit = await _fetch(app, source["room_id"], source["edit"])
+                matrix_event = None if edit is None or is_redacted(edit) else edited_view(edit, source["event_id"])
+            else:
+                matrix_event = await _fetch(app, source["room_id"], matrix_event_id_of(source))
             # A redaction with no reason has empty content in older room
             # versions; it is only gone if it no longer exists.
             if matrix_event is None or (kind != "deletion" and is_redacted(matrix_event)):

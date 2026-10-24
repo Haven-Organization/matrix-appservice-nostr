@@ -489,6 +489,17 @@ def event_kind_of(recipe: dict[str, Any]) -> int:
     return EVENT_KINDS[recipe["kind"]]
 
 
+def edited_view(edit: dict[str, Any], original_event_id: str) -> dict[str, Any] | None:
+    """What a Matrix edit (m.replace) makes of the post it edits: the
+    original's id with the edit's ``m.new_content``. A note republished
+    after an edit is converted from this, both when sent and when rebuilt
+    (its recipe's ``edit`` names the edit event); ``None`` if it isn't one."""
+    new = (edit.get("content") or {}).get("m.new_content")
+    if not isinstance(new, dict) or not new:
+        return None
+    return {**edit, "event_id": original_event_id, "content": new}
+
+
 def matrix_event_id_of(recipe: dict[str, Any]) -> str:
     """The Matrix event a recipe rebuilds from."""
     return recipe["redaction_event"] if recipe.get("kind") == "deletion" else recipe["event_id"]
