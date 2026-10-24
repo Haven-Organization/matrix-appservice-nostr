@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from bridge.event_sources import rebuild
-from bridge.notes import comment_v1, comment_v2, hashtag_tags, note_v1, note_v2, note_v3
+from bridge.notes import NOTE_VERSION, comment_v1, comment_v2, hashtag_tags, note_v1, note_v2, note_v3
 from tests.test_federation import _followed_post, post, run
 from tests.test_ids import ids_of, message, send
 
@@ -53,7 +53,7 @@ def test_posts_carry_hashtags_and_rebuild(client, homeserver, relay_pool) -> Non
     note = relay_pool.of_kind(1)[-1]
     assert [list(t) for t in note.tags if t[0] == "t"] == [["t", "foss"], ["t", "freedom"]]
     row = run(client, client.app.state.repository.get_event, note.id)
-    assert '"v":4' in row.source
+    assert f'"v":{NOTE_VERSION}' in row.source
     assert run(client, rebuild, client.app, row).event == note.to_dict()
 
 

@@ -384,3 +384,45 @@ def test_play_posts_a_cartridge_card_that_reloads_the_game(games, homeserver, re
         "rel_type": "m.annotation", "event_id": card["event_id"], "key": "🔥"}}, "@q:example.org"))
     [fire] = relay_pool.of_kind(7)
     assert fire.content == "🔥" and ("e", post["id"]) in [tuple(t[:2]) for t in fire.tags]
+
+
+def test_an_app_posted_from_matrix_goes_out_as_ditto_posts_them(games, homeserver, relay_pool) -> None:
+    """Forwarded as-is (no filename field, no type): a note and a NIP-94 file
+    under one identifier, named by its manifest, with its icon as picture."""
+    import io
+    import zipfile
+
+    from PIL import Image
+
+    icon = io.BytesIO()
+    Image.new("RGB", (20, 20), (90, 10, 10)).save(icon, format="PNG")
+    xdc = io.BytesIO()
+    with zipfile.ZipFile(xdc, "w") as archive:
+        archive.writestr("index.html", "<p>crash</p>")
+        archive.writestr("manifest.toml", 'name = "Katawa Crash"\n')
+        archive.writestr("icon.png", icon.getvalue())
+    send(games, message("[create profile"))
+    [q] = ids_of(games)
+    homeserver.media["mxc://example.org/kc"] = (xdc.getvalue(), "application/octet-stream")
+    from tests.test_federation import post as post_message
+
+    posted = post_message(games, homeserver, q.profile_room_id, {"msgtype": "m.file", "body": "katawa_crash.xdc",
+                                                                  "url": "mxc://example.org/kc", "info": {"size": 999}})
+    note, [file_post] = relay_pool.of_kind(1)[-1], relay_pool.of_kind(1063)
+    [game] = webxdc.apps_of(note.to_dict())
+    [same] = webxdc.apps_of(file_post.to_dict())
+    assert game.name == same.name == "Katawa Crash" and game.id == same.id and game.image and game.image == same.image
+    assert note.content.startswith("Katawa Crash\n") and ("t", "webxdc") in note.tags
+    tags = {t[0]: t[1] for t in file_post.tags}
+    assert tags["m"] == webxdc.MIME and tags["alt"] == "Webxdc app: Katawa Crash" and tags["ox"] == tags["x"]
+    assert file_post.content == "" and file_post.pubkey == q.pubkey and file_post.created_at == note.created_at
+    assert run(games, webxdc.game_post, games.app, game.id).id == note.id
+    repository = games.app.state.repository
+    for event in (note, file_post):
+        assert run(games, rebuild, games.app, run(games, repository.get_event, event.id)).event == event.to_dict()
+    # Redacting the post deletes both.
+    transact(games, {"type": "m.room.redaction", "event_id": "$gone", "room_id": q.profile_room_id,
+                     "sender": "@q:example.org", "redacts": posted["event_id"], "content": {}})
+    [deletion] = relay_pool.of_kind(5)
+    assert {t[1] for t in deletion.tags if t[0] == "e"} == {note.id, file_post.id}
+    assert run(games, repository.get_event, file_post.id) is None

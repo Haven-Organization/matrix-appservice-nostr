@@ -369,6 +369,40 @@ def note_v4(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[li
     return text, out
 
 
+def note_v5(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """v4; a webxdc app's note also says the app's name when there's no
+    caption, carries its picture (``image``) in its ``imeta``, and is tagged
+    #webxdc, which poster.place's gallery looks for."""
+    text, tags = note_v4(event, recipe)
+    media = recipe.get("media") or {}
+    if not media.get("webxdc"):
+        return text, tags
+    if text == media["url"] and media.get("name"):
+        text = f"{media['name']}\n{media['url']}"
+    if media.get("image"):
+        tags = [[*tag, f"image {media['image']}"] if tag and tag[0] == "imeta" and f"url {media['url']}" in tag else tag
+                for tag in tags]
+    if ["t", "webxdc"] not in tags:
+        tags.append(["t", "webxdc"])
+    return text, tags
+
+
+def file_v1(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
+    """A webxdc app as a NIP-94 file (kind 1063), as Ditto posts them: what
+    Ditto shows as a game (its ``image`` the cartridge's label) and its
+    gallery lists. Sent with the app's note, under the same identifier. The
+    caption, if any, is its text."""
+    content = event.get("content") or {}
+    text = message_body(content) if has_caption(content) else ""
+    text = _replace_pills_v1(text, content, recipe.get("mentions") or []).strip()
+    media = recipe["media"]
+    tags = [["url", media["url"]], ["m", media["m"]], ["x", media["x"]], ["ox", media["x"]], ["size", str(media["size"])],
+            ["alt", f"Webxdc app: {media.get('name') or 'app'}"], ["webxdc", media["webxdc"]]]
+    if media.get("image"):
+        tags.append(["image", media["image"]])
+    return text, tags
+
+
 def comment_v2(event: dict[str, Any], recipe: dict[str, Any]) -> tuple[str, list[list[str]]]:
     """v1 plus hashtags."""
     text, tags = comment_v1(event, recipe)
@@ -463,7 +497,7 @@ def share_v3(event: dict[str, Any], original: dict[str, Any], recipe: dict[str, 
 
 SHARE_CONVERTERS = {1: share_v1, 2: share_v2, 3: share_v3}
 SHARE_VERSION = 3
-NOTE_VERSION = 4
+NOTE_VERSION = 5
 COMMENT_VERSION = 2
 
 
@@ -472,6 +506,8 @@ CONVERTERS = {
     ("note", 2): note_v2,
     ("note", 3): note_v3,
     ("note", 4): note_v4,
+    ("note", 5): note_v5,
+    ("file", 1): file_v1,
     ("comment", 1): comment_v1,
     ("comment", 2): comment_v2,
     ("reaction", 1): reaction_v1,
@@ -480,7 +516,7 @@ CONVERTERS = {
     ("poll", 1): poll_v1,
     ("vote", 1): vote_v1,
 }
-EVENT_KINDS = {"note": NOTE_KIND, "share": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND, "poll": 1068, "vote": 1018}
+EVENT_KINDS = {"file": 1063, "note": NOTE_KIND, "share": NOTE_KIND, "comment": 1111, "reaction": 7, "deletion": DELETION_KIND, "poll": 1068, "vote": 1018}
 
 
 def event_kind_of(recipe: dict[str, Any]) -> int:

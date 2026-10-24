@@ -94,6 +94,58 @@ def _is_xdc(content: dict[str, Any]) -> bool:
     return content.get("msgtype") == "m.file" and (name.endswith(".xdc") or mime == "application/x-webxdc")
 
 
+_APP_FILE = "webxdc:file:{}"  # a Matrix post of a webxdc app -> its kind 1063
+
+
+async def _xdc_details(app: FastAPI, content: dict[str, Any]) -> dict[str, Any]:
+    """The app's name (its manifest's) and picture (its icon, made public),
+    read from inside it."""
+    from bridge.games_room import _icon_of
+    from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
+    from bridge.webxdc import manifest_name
+
+    try:
+        download = await app.state.homeserver.download_media(content["url"])
+    except HomeserverError:
+        return {}
+    if download is None:
+        return {}
+    out: dict[str, Any] = {}
+    name = manifest_name(download.content)
+    if name:
+        out["name"] = name
+    icon = _icon_of(download.content)
+    if icon:
+        try:
+            mxc = await app.state.homeserver.upload_media(icon, "image/png", "icon.png", as_user_id=bot_mxid(app.state.config))
+            published = await publish_matrix_image(app, mxc, max_bytes=PROFILE_IMAGE_MAX_BYTES)
+        except HomeserverError:
+            published = None
+        if published is not None:
+            out["image"] = published.url
+    return out
+
+
+async def _publish_app_file(app: FastAPI, author: NostrId, event: dict[str, Any], recipe: dict[str, Any],
+                            created_at: int) -> None:
+    """A webxdc app's NIP-94 file (kind 1063) alongside its note, as Ditto
+    posts apps. It isn't the Matrix event's own row (the note is); a
+    redaction or edit of the post takes it down too."""
+    file_recipe = {"kind": "file", "v": 1, "room_id": recipe["room_id"], "event_id": recipe["event_id"],
+                   "mentions": recipe.get("mentions") or [], "media": recipe["media"]}
+    text, tags = CONVERTERS[("file", 1)](event, file_recipe)
+    row = await _store_and_send(
+        app, author, kind=event_kind_of(file_recipe), content=text, tags=tags, created_at=created_at, recipe=file_recipe,
+        room_id=recipe["room_id"], matrix_event_id="", notify=None)
+    if row is not None:
+        await app.state.repository.set_state(_APP_FILE.format(recipe["event_id"]), row.id)
+
+
+async def _app_file_of(app: FastAPI, matrix_event_id: str) -> EventRow | None:
+    file_id = await app.state.repository.get_state(_APP_FILE.format(matrix_event_id))
+    return await app.state.repository.get_event(file_id) if file_id else None
+
+
 async def _replies_to_own_message(app: FastAPI, room_id: str, content: dict[str, Any], sender: str) -> bool:
     """True for a message that isn't a reply, or answers ``sender``'s own
     message. False if it answers anyone else's, or what it answers can't be
@@ -202,7 +254,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
 
 
 async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, parent: EventRow | None,
-                        *, edit: str | None = None) -> EventRow | None:
+                        *, edit: str | None = None, game_id: str | None = None) -> EventRow | None:
     """A Matrix post or reply as a Nostr note or comment. ``edit``: the
     Matrix edit this republishes ``event`` after (``event`` is then the
     edited view, ``notes.edited_view``)."""
@@ -258,10 +310,12 @@ async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, pa
         if config.webxdc.enabled and _is_xdc(content):
             from bridge.webxdc import MIME, new_game_id
 
-            # A webxdc app (NIP-DC): a game of its own, with a new identifier.
+            # A webxdc app (NIP-DC): a game of its own, with a new identifier
+            # (or, edited, the one it had), and its own name and picture.
             name = str(content.get("filename") or content.get("body") or "app").rsplit("/", 1)[-1]
-            recipe["media"].update({"m": MIME, "webxdc": new_game_id(),
+            recipe["media"].update({"m": MIME, "webxdc": game_id or new_game_id(),
                                     "name": name[:-4] if name.lower().endswith(".xdc") else name})
+            recipe["media"].update(await _xdc_details(app, content))
 
     if recipe["kind"] == "note":
         recipe["v"] = NOTE_VERSION
@@ -282,6 +336,8 @@ async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, pa
         notify=NotifyTarget(room_id, event_id, "this post" if parent is None else "this reply"),
         extra_relays=await extra_relays_for(app, recipe["p"]),
     )
+    if row is not None and recipe["kind"] == "note" and (recipe.get("media") or {}).get("webxdc"):
+        await _publish_app_file(app, author, event, recipe, created_at)
     if row is not None:
         logger.info("Published %s from %s as %s@%s", row.id, event_id, author.name, config.bridge.domain)
         if parent is not None and not edit:
@@ -330,6 +386,12 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
     hub = getattr(app.state, "relay_hub", None)
     if hub is not None:
         hub.cache.drop(row.id)
+    companion = await _app_file_of(app, target)
+    if companion is not None:
+        await repository.delete_event(companion.id)
+        await repository.delete_state(_APP_FILE.format(target))
+        if hub is not None:
+            hub.cache.drop(companion.id)
     if author is None:
         # Someone else's event, removed in Matrix (a moderator, or the
         # Profile Room's owner): it leaves the relay, and counts against
@@ -338,11 +400,12 @@ async def maybe_handle_redaction(request: Request, event: dict[str, Any]) -> boo
         if guard is not None and row.room_id and await repository.get_id_for_profile_room(row.room_id) is not None:
             await guard.record_report(row.pubkey, 1)
         return True
-    await _send_deletion(app, author, row, event)
+    await _send_deletion(app, author, row, event, also=companion)
     return True
 
 
-async def _send_deletion(app: FastAPI, author: NostrId, row: EventRow, event: dict[str, Any]) -> None:
+async def _send_deletion(app: FastAPI, author: NostrId, row: EventRow, event: dict[str, Any],
+                         also: EventRow | None = None) -> None:
     """A NIP-09 deletion of ``row``, made from ``event`` (a redaction, or
     the edit that replaces the note)."""
     room_id = event.get("room_id", "")
@@ -351,7 +414,7 @@ async def _send_deletion(app: FastAPI, author: NostrId, row: EventRow, event: di
         "v": 1,
         "room_id": room_id,
         "redaction_event": event.get("event_id", ""),
-        "targets": [{"id": row.id, "kind": row.kind}],
+        "targets": [{"id": r.id, "kind": r.kind} for r in (row, also) if r is not None],
     }
     content, tags = deletion_v1(event, recipe)
     deletion = await _store_and_send(
@@ -407,8 +470,15 @@ async def maybe_handle_edit(request: Request, event: dict[str, Any]) -> bool:
     hub = getattr(app.state, "relay_hub", None)
     if hub is not None:
         hub.cache.drop(row.id)
-    await _send_deletion(app, author, row, event)
-    republished = await _publish_post(app, edited, author, parent, edit=event.get("event_id", ""))
+    companion = await _app_file_of(app, target)
+    if companion is not None:
+        await repository.delete_event(companion.id)
+        if hub is not None:
+            hub.cache.drop(companion.id)
+    await _send_deletion(app, author, row, event, also=companion)
+    # A game keeps its identifier through an edit, so its moves still count.
+    game_id = (json.loads(row.source).get("media") or {}).get("webxdc")
+    republished = await _publish_post(app, edited, author, parent, edit=event.get("event_id", ""), game_id=game_id)
     if republished is not None:
         logger.info("Edited %s: now %s", row.id, republished.id)
     return True
