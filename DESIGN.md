@@ -918,15 +918,15 @@ origin per game would need a certificate for `*.xdc.<domain>`.
 
 ## Publishing a webxdc app
 
-An `.xdc` posted in a Profile Room becomes a note (v5: v4 plus the app's
-name as its text when there's no caption, `image` in its `imeta`, and
-`["t","webxdc"]`) and a kind 1063 file (`file` v1: `url`, `m`, `x`, `ox`,
-`size`, `alt`, `webxdc`, `image`; the caption as content), both rebuilt
-from the same Matrix event. The note is that event's row (games are found
-by it); the file's row has no Matrix event of its own and is found through
-`webxdc:file:<event>`, so a redaction deletes both in one kind 5 and an edit
-replaces both, keeping the `webxdc` identifier. The name is the manifest's,
-and the icon inside the app is published as an image for `image`.
+An `.xdc` posted in a Profile Room becomes a kind 1063 file, as Ditto posts
+apps (`file` v1: `url`, `m`, `x`, `ox`, `size`, `alt`, `webxdc`, `image`;
+the caption as content), rebuilt from the Matrix event like a note. The
+name is the manifest's, and the icon inside the app is published as an
+image for `image` (its upload is retried: a homeserver with unwritable
+media folders fails some uploads at random). An edit keeps the `webxdc`
+identifier. (For a while an app also got a note, v5, with the file found
+through `webxdc:file:<event>`; a redaction or edit of such a post still
+takes both down.)
 
 ## Widget sessions
 

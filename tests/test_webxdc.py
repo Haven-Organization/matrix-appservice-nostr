@@ -129,11 +129,10 @@ def test_xdc_upload_becomes_a_game_post(games, homeserver, relay_pool) -> None:
 
     post_message(games, homeserver, q.profile_room_id, {"msgtype": "m.file", "body": "tetris.xdc", "filename": "tetris.xdc",
                                                          "url": "mxc://example.org/app", "info": {"mimetype": "application/zip", "size": 16}})
-    note = relay_pool.of_kind(1)[-1]
+    note = relay_pool.of_kind(1063)[-1]  # as Ditto posts apps
     [game] = webxdc.apps_of(note.to_dict())
-    assert game.name == "tetris" and len(game.id) == 36
-    imeta = next(t for t in note.tags if t[0] == "imeta")
-    assert f"m {webxdc.MIME}" in imeta
+    assert game.name == "tetris" and len(game.id) == 36  # no manifest: the file's name
+    assert ("m", webxdc.MIME) in [tuple(t[:2]) for t in note.tags]
     assert run(games, webxdc.game_post, games.app, game.id).id == note.id
     row = run(games, games.app.state.repository.get_event, note.id)
     assert run(games, rebuild, games.app, row).event == note.to_dict()
@@ -387,12 +386,14 @@ def test_play_posts_a_cartridge_card_that_reloads_the_game(games, homeserver, re
 
 
 def test_an_app_posted_from_matrix_goes_out_as_ditto_posts_them(games, homeserver, relay_pool) -> None:
-    """Forwarded as-is (no filename field, no type): a note and a NIP-94 file
-    under one identifier, named by its manifest, with its icon as picture."""
+    """Forwarded as-is (no filename field, no type): one NIP-94 file, named
+    by its manifest, with its icon as picture, as Ditto posts apps."""
     import io
     import zipfile
 
     from PIL import Image
+
+    from bridge.homeserver_client import HomeserverError
 
     icon = io.BytesIO()
     Image.new("RGB", (20, 20), (90, 10, 10)).save(icon, format="PNG")
@@ -404,25 +405,32 @@ def test_an_app_posted_from_matrix_goes_out_as_ditto_posts_them(games, homeserve
     send(games, message("[create profile"))
     [q] = ids_of(games)
     homeserver.media["mxc://example.org/kc"] = (xdc.getvalue(), "application/octet-stream")
+    # The homeserver fails the first upload (as one with unwritable media folders does, at random).
+    upload, failures = homeserver.upload_media, []
+
+    async def flaky(data, content_type, filename, *, as_user_id):
+        if not failures:
+            failures.append(filename)
+            raise HomeserverError(500, "M_UNKNOWN", "Permission denied")
+        return await upload(data, content_type, filename, as_user_id=as_user_id)
+
+    homeserver.upload_media = flaky
     from tests.test_federation import post as post_message
 
     posted = post_message(games, homeserver, q.profile_room_id, {"msgtype": "m.file", "body": "katawa_crash.xdc",
                                                                   "url": "mxc://example.org/kc", "info": {"size": 999}})
-    note, [file_post] = relay_pool.of_kind(1)[-1], relay_pool.of_kind(1063)
-    [game] = webxdc.apps_of(note.to_dict())
-    [same] = webxdc.apps_of(file_post.to_dict())
-    assert game.name == same.name == "Katawa Crash" and game.id == same.id and game.image and game.image == same.image
-    assert note.content.startswith("Katawa Crash\n") and ("t", "webxdc") in note.tags
+    assert relay_pool.of_kind(1) == [] and failures == ["icon.png"]
+    [file_post] = relay_pool.of_kind(1063)
+    [game] = webxdc.apps_of(file_post.to_dict())
+    assert game.name == "Katawa Crash" and game.image and game.image.startswith("https://")
     tags = {t[0]: t[1] for t in file_post.tags}
     assert tags["m"] == webxdc.MIME and tags["alt"] == "Webxdc app: Katawa Crash" and tags["ox"] == tags["x"]
-    assert file_post.content == "" and file_post.pubkey == q.pubkey and file_post.created_at == note.created_at
-    assert run(games, webxdc.game_post, games.app, game.id).id == note.id
+    assert tags["webxdc"] == game.id and file_post.content == "" and file_post.pubkey == q.pubkey
+    assert run(games, webxdc.game_post, games.app, game.id).id == file_post.id
     repository = games.app.state.repository
-    for event in (note, file_post):
-        assert run(games, rebuild, games.app, run(games, repository.get_event, event.id)).event == event.to_dict()
-    # Redacting the post deletes both.
+    assert run(games, rebuild, games.app, run(games, repository.get_event, file_post.id)).event == file_post.to_dict()
+    # Redacting the post deletes it.
     transact(games, {"type": "m.room.redaction", "event_id": "$gone", "room_id": q.profile_room_id,
                      "sender": "@q:example.org", "redacts": posted["event_id"], "content": {}})
     [deletion] = relay_pool.of_kind(5)
-    assert {t[1] for t in deletion.tags if t[0] == "e"} == {note.id, file_post.id}
-    assert run(games, repository.get_event, file_post.id) is None
+    assert {t[1] for t in deletion.tags if t[0] == "e"} == {file_post.id}

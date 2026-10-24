@@ -115,30 +115,19 @@ async def _xdc_details(app: FastAPI, content: dict[str, Any]) -> dict[str, Any]:
     if name:
         out["name"] = name
     icon = _icon_of(download.content)
-    if icon:
+    for _attempt in range(4) if icon else ():
+        # Tried again on failure: a homeserver whose media store has folders
+        # it can't write to fails some uploads, at random, by their new name.
         try:
             mxc = await app.state.homeserver.upload_media(icon, "image/png", "icon.png", as_user_id=bot_mxid(app.state.config))
             published = await publish_matrix_image(app, mxc, max_bytes=PROFILE_IMAGE_MAX_BYTES)
         except HomeserverError:
-            published = None
+            logger.info("Could not upload the icon of an app; trying again", exc_info=True)
+            continue
         if published is not None:
             out["image"] = published.url
+        break
     return out
-
-
-async def _publish_app_file(app: FastAPI, author: NostrId, event: dict[str, Any], recipe: dict[str, Any],
-                            created_at: int) -> None:
-    """A webxdc app's NIP-94 file (kind 1063) alongside its note, as Ditto
-    posts apps. It isn't the Matrix event's own row (the note is); a
-    redaction or edit of the post takes it down too."""
-    file_recipe = {"kind": "file", "v": 1, "room_id": recipe["room_id"], "event_id": recipe["event_id"],
-                   "mentions": recipe.get("mentions") or [], "media": recipe["media"]}
-    text, tags = CONVERTERS[("file", 1)](event, file_recipe)
-    row = await _store_and_send(
-        app, author, kind=event_kind_of(file_recipe), content=text, tags=tags, created_at=created_at, recipe=file_recipe,
-        room_id=recipe["room_id"], matrix_event_id="", notify=None)
-    if row is not None:
-        await app.state.repository.set_state(_APP_FILE.format(recipe["event_id"]), row.id)
 
 
 async def _app_file_of(app: FastAPI, matrix_event_id: str) -> EventRow | None:
@@ -325,19 +314,22 @@ async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, pa
             if quote["pubkey"] != author.pubkey and quote["pubkey"] not in recipe["p"]:
                 recipe["p"].append(quote["pubkey"])
 
+    if recipe["kind"] == "note" and (recipe.get("media") or {}).get("webxdc"):
+        # A webxdc app goes out as Ditto posts them: a NIP-94 file (kind
+        # 1063) only. (A note too showed twice in Ditto.)
+        recipe = {"kind": "file", "v": 1, "room_id": room_id, "event_id": event_id,
+                  "mentions": recipe.get("mentions") or [], "media": recipe["media"], **({"edit": edit} if edit else {})}
     converter = CONVERTERS[(recipe["kind"], recipe["v"])]
     text, tags = converter(event, recipe)
-    if not text:
+    if not text and recipe["kind"] != "file":
         return None
     created_at = int(event.get("origin_server_ts", 0)) // 1000
     row = await _store_and_send(
         app, author, kind=event_kind_of(recipe), content=text, tags=tags, created_at=created_at, recipe=recipe,
         room_id=room_id, matrix_event_id=event_id,
         notify=NotifyTarget(room_id, event_id, "this post" if parent is None else "this reply"),
-        extra_relays=await extra_relays_for(app, recipe["p"]),
+        extra_relays=await extra_relays_for(app, recipe.get("p") or []),
     )
-    if row is not None and recipe["kind"] == "note" and (recipe.get("media") or {}).get("webxdc"):
-        await _publish_app_file(app, author, event, recipe, created_at)
     if row is not None:
         logger.info("Published %s from %s as %s@%s", row.id, event_id, author.name, config.bridge.domain)
         if parent is not None and not edit:
@@ -444,7 +436,7 @@ async def maybe_handle_edit(request: Request, event: dict[str, Any]) -> bool:
         return False
     repository = app.state.repository
     row = await repository.get_event_by_matrix_event(target, include_copies=False)
-    if row is None or (json.loads(row.source).get("kind") not in ("note", "comment")):
+    if row is None or (json.loads(row.source).get("kind") not in ("note", "comment", "file")):
         return False
     author = await repository.get_id_by_pubkey(row.pubkey)
     if author is None or author.matrix_user_id != sender:
