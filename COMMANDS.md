@@ -21,6 +21,7 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[unfollow <account>`](#unfollow-account)
   - [`[following`](#following)
   - [`[dm <account>`](#dm-account)
+  - [`[join <invite link>`](#join-invite-link)
   - [`[play [<link>]`](#play-link)
   - [`[import <link|nevent|note|naddr>`](#import-linkneventnotenaddr)
 - [Advanced/Maintenance](#advancedmaintenance)
@@ -117,6 +118,12 @@ Lists the accounts the ID follows, with links to their rooms.
 
 Opens a DM room with the account, as the ID, and invites you to it. Run it again to be re-invited. Messages there are sent as NIP-17 private DMs. An ID on this server can't be DMed this way: message its owner in Matrix.
 
+
+### `[join <invite link>`
+
+Joins a Concord community (the encrypted, Discord-style communities of Armada, Vector and other apps) from its invite link (`https://armada.buzz/invite/naddr1…#…`, or any other site's), as your Active identity. The bridge makes a Space for the community and a room for each channel you can read, invites you, and brings in each channel's recent messages. What you say in those rooms goes to the community, encrypted for it.
+
+Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet.
 
 ### `[play [<link>]`
 

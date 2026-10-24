@@ -39,6 +39,7 @@ from bridge.profile_posts import maybe_handle_redaction, maybe_publish_message
 from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.shares import maybe_publish_share, repost_relation
+from bridge.concord import maybe_publish as maybe_publish_concord
 from bridge.users import bot_mxid, is_local_user, is_other_bot
 from bridge.homeserver_client import HomeserverError
 
@@ -123,6 +124,9 @@ _HANDLERS = (
     # to, not by a prefix or a tag.
     maybe_handle_confirmation,
     maybe_handle_command,
+    # A Concord community's channel room: its messages, reactions, edits
+    # and redactions go to the community.
+    maybe_publish_concord,
     maybe_handle_reaction,
     maybe_publish_poll,
     maybe_handle_vote,

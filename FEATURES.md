@@ -23,6 +23,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 - [Spam protection](#spam-protection)
 - [Moderation for admins](#moderation-for-admins)
 - [Games](#games)
+- [Communities (Concord)](#communities-concord)
 - [Not supported](#not-supported)
 
 ## Nostr IDs
@@ -254,6 +255,15 @@ Off unless `webxdc.enabled`. Webxdc mini apps (games, polls, shared editors) ove
 - **Realtime** (for games that need it) uses a key made for each session, not yours, and goes only to the bridge's relay and the game author's relays.
 - **Safety:** a game runs on its own hostname (`webxdc.sandbox_domain`), so it can't reach your Matrix or bridge session, and it has no network access at all: every file it asks for comes from the game file itself. All games share that hostname, so one game could read another's saved data.
 - **Chess and other bot-refereed games** (poster.place's #chesstr, say) need nothing special: they're ordinary posts, replies and DMs with a bot.
+
+## Communities (Concord)
+
+Concord is the end-to-end encrypted, Discord-style community protocol of Armada, Vector, Amethyst and others: a community with channels, roles and an owner, whose messages relays only ever see encrypted.
+
+- **`[join <invite link>`** joins one as your Active identity: a Matrix Space for the community, and a room for each channel you can read (#general, #git, …). The rooms' names follow the community's own, and new channels appear as they're made.
+- **Messages both ways**: messages, threaded replies, reactions, edits and deletes. Members' messages are shown by their ghosts, the same Nostr users as everywhere else. Attachments are encrypted for the community both ways, as Armada does.
+- **Readable on this homeserver.** The bridge decrypts messages into Matrix rooms, which it can't encrypt, so they're stored readable like any bridged room. The community's keys are kept in the bridge's database, encrypted like Nostr keys.
+- **Not yet:** rekeys and refoundings (a community that re-founds after removing someone stops updating here until it's re-joined), roles and moderation from Matrix, voice and video, disappearing messages. Identities on a remote signer can't join.
 
 ## Not supported
 

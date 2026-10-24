@@ -111,6 +111,11 @@ class Feeds:
                 desired[(relay, "dms")] = [{"#p": local_keys, "kinds": DM_KINDS, "since": dm_since}]
         if config.webxdc.enabled:
             await self._desired_games(desired)
+        from bridge import concord
+
+        for (relay, name), filters in (await concord.desired(app)).items():
+            since = await self._since(relay, name)
+            desired[(relay, name)] = [{**f, "since": since} for f in filters]
         return desired
 
     async def _desired_games(self, desired: dict[tuple[str, str], list[dict[str, Any]]]) -> None:
@@ -215,6 +220,14 @@ class Feeds:
         while True:
             relay, name, raw = await self._queue.get()
             try:
+                if name.startswith("concord:"):
+                    from bridge.concord import receive
+
+                    await receive(self.app, raw)
+                    created = raw.get("created_at")
+                    if isinstance(created, int) and created <= time.time() + 600:
+                        await repository.advance_cursor(relay, name, created)
+                    continue
                 result = await ingest(self.app, raw, origin="subscription")
                 created = raw.get("created_at")
                 if isinstance(created, int) and name != "dms" and created <= time.time() + 600:

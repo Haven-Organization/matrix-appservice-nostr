@@ -916,6 +916,36 @@ origin per game would need a certificate for `*.xdc.<domain>`.
 | `webxdc.active_days` | `14` | how long after a game was last opened its moves are followed |
 | `webxdc.max_update_kb` | `128` | largest move accepted |
 
+## Communities: Concord
+
+Concord (github.com/concord-protocol/concord, CORD-01..08) is a community
+protocol over Nostr: a community is a shared key (holding it is
+membership), an owner-rooted signed roster, and relays that carry only
+encrypted streams of kind 1059 events. `bridge.concord` implements the parts
+a member needs:
+
+- **Invites** (CORD-05): the link's naddr locates a kind 33301 bundle, its
+  fragment carries bootstrap relays and a token whose HKDF decrypts the
+  bundle. The owner commitment (`community_id`) is checked before anything
+  is trusted.
+- **The Control Plane** (CORD-02/04) is read for the community's metadata and
+  channels, taking the highest version of each entity signed by the owner
+  or by a member the owner granted a role. Legacy (pre-split) communities
+  are read at their community-root address.
+- **Channels** (CORD-03): each readable channel is a room in the community's
+  Space. Chat rumors (kinds 9, 1111, 7, 5, 3302) are opened, their authors'
+  seals and channel tags checked, and shown by the authors' ghosts; members
+  here post the same shapes, sealed and signed with their identity's key and
+  wrapped with the channel key. Attachments use AES-GCM with the key in the
+  `imeta`, both ways.
+- **Storage.** A community's keys and channel map are one vault-encrypted
+  bridge_state entry; rumor ids and Matrix events map to each other in
+  bridge_state. Messages live in Matrix, as plain text: the rooms can't be
+  encrypted by the bridge, and `[join` warns of it.
+- **Later:** rekeys and refoundings (CORD-06), the full roster and
+  moderation, the Guestbook member list, voice (CORD-07), disappearing
+  messages (CORD-08).
+
 ## Bookkeeping tables
 
 Following the siblings' schema style. One SQLite/Postgres schema, one
