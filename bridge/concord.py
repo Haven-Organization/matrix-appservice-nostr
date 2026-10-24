@@ -29,7 +29,7 @@ import html
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
 
@@ -56,6 +56,10 @@ _ZERO = b"\0" * 32
 RELAY_DICTIONARY = {1: "wss://jskitty.com/nostr", 2: "wss://asia.vectorapp.io/nostr",
                     3: "wss://relay.ditto.pub", 4: "wss://relay.dreamith.to"}
 _MAX_CHANNELS = 256
+# CORD-04 §3: permission bits.
+MANAGE_ROLES, MANAGE_CHANNELS, MANAGE_METADATA, KICK, BAN, MANAGE_MESSAGES = 1, 2, 4, 8, 16, 32
+_ALL = (1 << 63) - 1
+_ROLELESS = 1 << 32
 _MAX_RELAYS = 5
 _BACKFILL = 50
 _STATE = "concord:c:{}"
@@ -201,6 +205,41 @@ class Community:
     channels: dict[str, dict[str, Any]]
     space: str | None
     members: list[int]
+    # The folded roster (CORD-04): role_id -> {"position", "permissions"};
+    # member pubkey -> role ids; banned pubkeys.
+    roles: dict[str, dict[str, int]] = field(default_factory=dict)
+    grants: dict[str, list[str]] = field(default_factory=dict)
+    banned: list[str] = field(default_factory=list)
+    # Disappearing messages (CORD-08): seconds, 0 = off.
+    timer: int = 0
+    # Who's in the community (CORD-02 §5, the Guestbook fold): pubkeys.
+    present: list[str] = field(default_factory=list)
+    # Rotations seen but not yet complete (CORD-06): "rotator:epoch:commit" -> chunk numbers.
+    pending: dict[str, list[int]] = field(default_factory=dict)
+    removed: bool = False
+
+    # -- the roster (CORD-04 §3) --
+    def rank(self, pubkey: str) -> int:
+        if pubkey == self.owner:
+            return 0
+        positions = [self.roles[r]["position"] for r in self.grants.get(pubkey, []) if r in self.roles]
+        return min(positions) if positions else _ROLELESS
+
+    def permissions(self, pubkey: str) -> int:
+        if pubkey == self.owner:
+            return _ALL
+        bits = 0
+        for role_id in self.grants.get(pubkey, []):
+            bits |= self.roles.get(role_id, {}).get("permissions", 0)
+        return bits
+
+    def can(self, pubkey: str, permission: int, *, over: str | None = None) -> bool:
+        """Holds ``permission`` (and strictly outranks ``over``)."""
+        if pubkey in self.banned:
+            return False
+        if not self.permissions(pubkey) & permission and pubkey != self.owner:
+            return False
+        return over is None or self.rank(pubkey) < self.rank(over)
 
     def control(self) -> GroupKey:
         """The Control Plane's read key (and, before the split, its address)."""
@@ -306,51 +345,103 @@ def make_wrap(key: GroupKey, author_secret: bytes, kind: int, content: str, tags
 # -- the Control Plane (CORD-02 §5, CORD-04) ----------------------------------------------------
 
 
-def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
-    """Metadata and channels from Control editions: the highest version of
-    each entity whose actor is the owner, or holds a Grant from the owner.
-    (Ranks and permissions within the roster come in a later phase.)"""
-    granted = {community.owner}
+def _editions(rumors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
     for rumor in rumors:
-        tags = {t[0]: t[1] for t in rumor.get("tags") or [] if len(t) >= 2}
-        if tags.get("vsk") == "3" and rumor.get("pubkey") == community.owner:
-            try:
-                grant = json.loads(rumor.get("content") or "{}")
-                if grant.get("role_ids"):
-                    granted.add(grant.get("member"))
-            except ValueError:
-                pass
-    best: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
-    for rumor in rumors:
-        if rumor.get("kind") != EDITION_KIND or rumor.get("pubkey") not in granted:
+        if rumor.get("kind") != EDITION_KIND:
             continue
         tags = {t[0]: t[1] for t in rumor.get("tags") or [] if len(t) >= 2}
-        vsk, eid, version = tags.get("vsk"), tags.get("eid"), tags.get("ev", "0")
-        if vsk not in ("0", "2") or not eid or not version.isdigit():
+        version = tags.get("ev", "")
+        if not tags.get("vsk") or not tags.get("eid") or not version.isdigit():
             continue
         try:
-            content = json.loads(rumor.get("content") or "{}")
+            content = json.loads(rumor.get("content") or "null")
         except ValueError:
             continue
-        if not isinstance(content, dict):
+        out.append({"vsk": tags["vsk"], "eid": tags["eid"], "version": int(version), "content": content,
+                    "actor": rumor.get("pubkey", ""), "id": rumor.get("id", "")})
+    return out
+
+
+def _heads(community: Community, editions: list[dict[str, Any]], vsk: str, allowed) -> dict[str, Any]:
+    """The current head of each entity of one type: the highest version an
+    authorized actor published; at the same version, the higher-ranked actor,
+    then the lower rumor id (CORD-04 §1). (Chain links aren't checked yet.)"""
+    best: dict[str, dict[str, Any]] = {}
+    for edition in editions:
+        if edition["vsk"] != vsk or not allowed(edition):
             continue
-        current = best.get((vsk, eid))
-        if current is None or int(version) > current[0]:
-            best[(vsk, eid)] = (int(version), content)
-    for (vsk, eid), (_v, content) in best.items():
-        if vsk == "0" and eid == community.id:
-            community.name = str(content.get("name") or community.name)[:64]
-            community.description = str(content.get("description") or "")[:2000]
-            picture = content.get("picture")
-            community.picture = picture if isinstance(picture, str) and picture.startswith("https://") else community.picture
-            relays = [r for r in content.get("relays") or [] if isinstance(r, str) and r.startswith(("wss://", "ws://"))]
-            if relays:
-                community.relays = relays[:_MAX_RELAYS]
-        elif vsk == "2" and len(eid) == 64 and len(community.channels) < _MAX_CHANNELS:
-            channel = community.channels.setdefault(eid, {"epoch": 0})
-            channel["name"] = str(content.get("name") or "channel")[:64]
-            channel["private"] = bool(content.get("private"))
-            channel["deleted"] = bool(content.get("deleted"))
+        current = best.get(edition["eid"])
+        key = (-edition["version"], community.rank(edition["actor"]), edition["id"])
+        if current is None or key < (-current["version"], community.rank(current["actor"]), current["id"]):
+            best[edition["eid"]] = edition
+    return best
+
+
+def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
+    """The Control Plane folded (CORD-04): the roster first, outward from the
+    owner until it settles, then metadata and channels by permission."""
+    editions = _editions(rumors)
+    community.roles, community.grants, community.banned = {}, {}, []
+    for _round in range(8):
+        before = (json.dumps(community.roles, sort_keys=True), json.dumps(community.grants, sort_keys=True), list(community.banned))
+
+        def role_ok(e: dict[str, Any]) -> bool:
+            position = (e["content"] or {}).get("position") if isinstance(e["content"], dict) else None
+            return (isinstance(position, int) and position > 0 and community.can(e["actor"], MANAGE_ROLES)
+                    and community.rank(e["actor"]) < position)
+
+        roles = {}
+        for eid, head in _heads(community, editions, "1", role_ok).items():
+            content = head["content"]
+            if (content.get("scope") or {"kind": "server"}).get("kind") != "server":
+                continue  # channel-scoped roles: a later phase
+            try:
+                bits = int(str(content.get("permissions") or "0"))
+            except ValueError:
+                bits = 0
+            roles[eid] = {"position": int(content["position"]), "permissions": bits}
+
+        def grant_ok(e: dict[str, Any]) -> bool:
+            content = e["content"] if isinstance(e["content"], dict) else {}
+            given = [r for r in content.get("role_ids") or [] if isinstance(r, str)]
+            return community.can(e["actor"], MANAGE_ROLES) and all(
+                community.rank(e["actor"]) < roles.get(r, {}).get("position", 0) for r in given)
+
+        grants = {}
+        for _eid, head in _heads(community, editions, "3", grant_ok).items():
+            content = head["content"]
+            member = content.get("member")
+            if isinstance(member, str) and len(member) == 64 and member != community.owner:
+                grants[member] = [r for r in content.get("role_ids") or [] if r in roles][:64]
+        banned = _heads(community, editions, "4", lambda e: community.can(e["actor"], BAN))
+        community.roles, community.grants = roles, grants
+        heads = list(banned.values())
+        community.banned = sorted({p for p in (heads[0]["content"] if heads and isinstance(heads[0]["content"], list) else [])
+                                   if isinstance(p, str) and len(p) == 64 and p != community.owner})
+        if before == (json.dumps(community.roles, sort_keys=True), json.dumps(community.grants, sort_keys=True), community.banned):
+            break
+    meta = _heads(community, editions, "0", lambda e: e["eid"] == community.id and community.can(e["actor"], MANAGE_METADATA))
+    for head in meta.values():
+        content = head["content"] if isinstance(head["content"], dict) else {}
+        community.name = str(content.get("name") or community.name)[:64]
+        community.description = str(content.get("description") or "")[:2000]
+        picture = content.get("picture")
+        community.picture = picture if isinstance(picture, str) and picture.startswith("https://") else community.picture
+        relays = [r for r in content.get("relays") or [] if isinstance(r, str) and r.startswith(("wss://", "ws://"))]
+        if relays:
+            community.relays = relays[:_MAX_RELAYS]
+        timer = content.get("message_expiration")
+        community.timer = timer if isinstance(timer, int) and timer > 0 else 0
+    channels = _heads(community, editions, "2", lambda e: len(e["eid"]) == 64 and community.can(e["actor"], MANAGE_CHANNELS))
+    for eid, head in channels.items():
+        if len(community.channels) >= _MAX_CHANNELS and eid not in community.channels:
+            continue
+        content = head["content"] if isinstance(head["content"], dict) else {}
+        channel = community.channels.setdefault(eid, {"epoch": 0})
+        channel["name"] = str(content.get("name") or "channel")[:64]
+        channel["private"] = bool(content.get("private"))
+        channel["deleted"] = bool(content.get("deleted"))
 
 
 async def read_control(app: FastAPI, community: Community) -> None:
@@ -728,11 +819,14 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
     kind, text, tags = built
     key = community.channel_key(channel_id)
     wrap, rumor_id = make_wrap(key, secret, kind, text, tags)
-    await app.state.relay_pool.publish(wrap, community.relays)
+    # Recorded before it goes out: the relays echo it straight back, and an
+    # unrecorded message by a member here would be mirrored in a second time.
+    app.state.seen.add("concord:" + wrap.id)
     matrix_event = event.get("event_id", "")
     await app.state.repository.set_state(_MSG.format(rumor_id), json.dumps([room_id, matrix_event if kind != 5 else "", member.pubkey]))
     if kind != 5:
         await app.state.repository.set_state(_MX.format(matrix_event), json.dumps([rumor_id, member.pubkey, kind]))
+    await app.state.relay_pool.publish(wrap, community.relays)
     return True
 
 

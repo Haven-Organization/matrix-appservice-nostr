@@ -87,8 +87,8 @@ def calc_padded_len(unpadded_len: int) -> int:
     return chunk * ((unpadded_len - 1) // chunk + 1)
 
 
-def _pad(plaintext: str) -> bytes:
-    data = plaintext.encode("utf-8")
+def _pad(plaintext: str | bytes) -> bytes:
+    data = plaintext.encode("utf-8") if isinstance(plaintext, str) else plaintext
     length = len(data)
     if not MIN_PLAINTEXT_SIZE <= length <= MAX_PLAINTEXT_SIZE:
         raise Nip44Error("invalid plaintext length: must be between 1 and 65535 bytes")
@@ -96,6 +96,14 @@ def _pad(plaintext: str) -> bytes:
 
 
 def _unpad(padded: bytes) -> str:
+    data = _unpad_bytes(padded)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Nip44Error("plaintext is not UTF-8") from exc
+
+
+def _unpad_bytes(padded: bytes) -> bytes:
     if len(padded) < 2:
         raise Nip44Error("invalid padding")
     length = int.from_bytes(padded[:2], "big")
@@ -107,10 +115,7 @@ def _unpad(padded: bytes) -> str:
         or len(padded) != 2 + calc_padded_len(length)
     ):
         raise Nip44Error("invalid padding")
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise Nip44Error("plaintext is not UTF-8") from exc
+    return data
 
 
 def _chacha20(key: bytes, nonce: bytes, data: bytes) -> bytes:
@@ -124,7 +129,7 @@ def _mac(hmac_key: bytes, nonce: bytes, ciphertext: bytes) -> bytes:
     return hmac.new(hmac_key, nonce + ciphertext, hashlib.sha256).digest()
 
 
-def encrypt(plaintext: str, conversation_key: bytes, nonce: bytes | None = None) -> str:
+def encrypt(plaintext: str | bytes, conversation_key: bytes, nonce: bytes | None = None) -> str:
     """The base64 payload for ``plaintext``. ``nonce`` defaults to fresh
     randomness; pass one only for test vectors."""
     if nonce is None:
@@ -137,6 +142,15 @@ def encrypt(plaintext: str, conversation_key: bytes, nonce: bytes | None = None)
 
 def decrypt(payload: str, conversation_key: bytes) -> str:
     """The plaintext of a payload. Raises ``Nip44Error``."""
+    return _unpad(_open(payload, conversation_key))
+
+
+def decrypt_bytes(payload: str, conversation_key: bytes) -> bytes:
+    """The plaintext as bytes, for binary plaintexts (Concord's key blobs)."""
+    return _unpad_bytes(_open(payload, conversation_key))
+
+
+def _open(payload: str, conversation_key: bytes) -> bytes:
     if not payload or payload.startswith("#"):
         raise Nip44Error("unknown encryption version")
     if not _MIN_PAYLOAD_LENGTH <= len(payload) <= _MAX_PAYLOAD_LENGTH:
@@ -153,4 +167,4 @@ def decrypt(payload: str, conversation_key: bytes) -> str:
     chacha_key, chacha_nonce, hmac_key = get_message_keys(conversation_key, nonce)
     if not hmac.compare_digest(mac, _mac(hmac_key, nonce, ciphertext)):
         raise Nip44Error("invalid MAC")
-    return _unpad(_chacha20(chacha_key, chacha_nonce, ciphertext))
+    return _chacha20(chacha_key, chacha_nonce, ciphertext)

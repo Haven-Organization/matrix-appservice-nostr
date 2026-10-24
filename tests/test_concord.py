@@ -229,3 +229,30 @@ def test_attachments_are_encrypted_both_ways(client, homeserver, relay_pool) -> 
     blob = homeserver.media[run(client, client.app.state.repository.get_blob, imeta["x"]).mxc][0]
     assert AESGCM(bytes.fromhex(imeta["decryption-key"])).decrypt(bytes.fromhex(imeta["decryption-nonce"]), blob, None) == buffer.getvalue()
     assert imeta["m"] == "image/png" and rumor["content"] == ""
+
+
+def test_an_echo_arriving_while_publishing_isnt_shown(client, homeserver, relay_pool) -> None:
+    """The relays echo a sent message back before the publish returns."""
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    from tests.test_federation import post
+
+    echoed = []
+
+    def echo(event, relays):
+        if event.pubkey == community.channel().pk:
+            client.app.state.seen = type(client.app.state.seen)()  # as if from another relay connection
+            echoed.append(event)
+
+    relay_pool.publish_hooks.append(echo)
+    original_publish = relay_pool.publish
+
+    async def publish_then_echo(event, relays, timeout=None):
+        result = await original_publish(event, relays, timeout)
+        if event.pubkey == community.channel().pk:
+            await concord.receive(client.app, event.to_dict())
+        return result
+
+    relay_pool.publish = publish_then_echo
+    before = len(homeserver.messages(room))
+    post(client, homeserver, room, {"msgtype": "m.text", "body": "from Matrix"})
+    assert echoed and len(homeserver.messages(room)) == before + 1  # only the user's own message

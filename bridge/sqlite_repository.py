@@ -1068,6 +1068,9 @@ class SqliteBridgeRepository:
 
         return await self._run(query)
 
+    async def delete_state(self, key: str) -> None:
+        await self._run(lambda conn: conn.execute("DELETE FROM bridge_state WHERE key = ?", (key,)))
+
     async def list_state(self, prefix: str) -> list[tuple[str, str]]:
         """Every (key, value) whose key starts with ``prefix``."""
         def query(conn: Any) -> list[tuple[str, str]]:
