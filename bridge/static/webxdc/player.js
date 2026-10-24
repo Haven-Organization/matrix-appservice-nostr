@@ -82,25 +82,79 @@
 
   /* -- the bridge -- */
   var ws = null, nextAck = 1, acks = {}, self = { addr: '', name: '' }, game = null, saved = null;
+  var started = false, reconnecting = false, pendingSave = null, handedOver = false;
   function connect(session){
     return new Promise(function(resolve, reject){
       var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
         + '/xdc/ws?game=' + encodeURIComponent(gameId) + '&session=' + encodeURIComponent(session);
-      ws = new WebSocket(url);
-      ws.onmessage = function(e){
+      var socket = new WebSocket(url), opened = false, problem = null;
+      ws = socket;
+      socket.onmessage = function(e){
         var m; try{ m = JSON.parse(e.data); }catch(_){ return; }
         if (m.t === 'init'){
-          game = m.game; self = m.self || self; saved = m.save || null;
-          if (window.parent !== window) window.parent.postMessage({ hubTitle: game.name || '' }, location.origin);
+          if (!started){ game = m.game; self = m.self || self; saved = m.save || null; }
+          if (window.parent !== window) window.parent.postMessage({ hubTitle: m.game.name || '' }, location.origin);
           (m.updates || []).forEach(absorb);
+          opened = true;
           resolve();
         } else if (m.t === 'update'){ if (absorb(m.event)) deliver(); }
         else if (m.t === 'realtime'){ toApp({ jsonrpc: '2.0', method: 'webxdc.realtime', params: { b64: m.b64 } }); }
         else if (m.t === 'ack' && acks[m.id]){ var a = acks[m.id]; delete acks[m.id]; m.ok ? a.resolve() : a.reject(new Error(m.error || 'failed')); }
-        else if (m.t === 'error'){ fail(m.error || 'Something went wrong.'); reject(new Error(m.error)); }
+        else if (m.t === 'error'){ problem = m.error || 'Something went wrong.'; if (!started) fail(problem); }
       };
-      ws.onclose = function(){ if (!game) reject(new Error('Could not reach the bridge.')); else say('Disconnected from the bridge. Reload to keep playing.'); };
+      socket.onclose = function(){
+        if (!opened){ reject(new Error(problem || 'Could not reach the bridge.')); return; }
+        if (socket === ws && started) reconnect();   // dropped while playing: the bridge restarted, say
+      };
     });
+  }
+  /* A fresh sign-in: from the Nostr Games widget around us, which signs in
+   * again itself, or through the client. */
+  function newSession(){
+    if (handedOver) return new Promise(function(resolve, reject){
+      function on(ev){
+        if (ev.source !== window.parent || !ev.data || typeof ev.data.hubSession !== 'string') return;
+        window.removeEventListener('message', on); resolve(ev.data.hubSession);
+      }
+      window.addEventListener('message', on);
+      window.parent.postMessage({ hubSessionWanted: true }, location.origin);
+      setTimeout(function(){ window.removeEventListener('message', on); reject(new Error('Could not sign in again.')); }, 90000);
+    });
+    return openId().then(function(creds){
+      return fetch('/widget/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: creds.access_token, matrix_server_name: creds.matrix_server_name }) })
+        .then(function(res){ return res.json().then(function(data){ if (!res.ok) throw new Error(data.detail || 'Could not sign in.'); return data.session_id; }); });
+    });
+  }
+  function reconnect(){
+    if (reconnecting) return;
+    reconnecting = true;
+    say('Reconnecting to the bridge…');
+    var delay = 1000;
+    (async function(){
+      for (;;){
+        try{
+          try{ await connect(cfg.session); }
+          catch(e){
+            if (!/sign-in|session/i.test(e.message)) throw e;
+            cfg.session = await newSession();
+            await connect(cfg.session);
+          }
+          reconnecting = false;
+          statusEl.classList.remove('err'); say('');
+          deliver();
+          if (pendingSave) sendSave();
+          return;
+        }catch(_){
+          await new Promise(function(r){ setTimeout(r, delay); });
+          delay = Math.min(delay * 2, 30000);
+        }
+      }
+    })();
+  }
+  function sendSave(){
+    var data = pendingSave;
+    bridgeSend({ t: 'save', data: data }, true).then(function(){ if (pendingSave === data) pendingSave = null; }, function(){});
   }
   function bridgeSend(msg, wantAck){
     if (!ws || ws.readyState !== 1) return Promise.reject(new Error('not connected'));
@@ -207,9 +261,10 @@
       return;
     }
     if (d.method === 'webxdc.save'){
-      saved = p.data || {};
-      bridgeSend({ t: 'save', data: saved }, true).then(function(){ if (id !== undefined) reply(id, null); },
-        function(e){ if (id !== undefined) replyError(id, e.message); });
+      // Kept until the bridge has it: sent again after a reconnect.
+      saved = pendingSave = p.data || {};
+      sendSave();
+      if (id !== undefined) reply(id, null);
       return;
     }
     if (d.method === 'webxdc.rtJoin'){ bridgeSend({ t: 'rt_join' }, true).then(function(){ reply(id, null); }, function(e){ replyError(id, e.message); }); return; }
@@ -240,7 +295,7 @@
       // fragment, so it never reaches a server or a log).
       var handed = new URLSearchParams(location.hash.slice(1)).get('session');
       if (handed){
-        cfg.session = handed;
+        cfg.session = handed; handedOver = true;
         history.replaceState(null, '', location.pathname + location.search);
       } else {
         if (window.parent === window)
@@ -258,7 +313,12 @@
       await connect(cfg.session);
       await download();
       say('Starting ' + (game.name || 'the game') + '…');
+      started = true;
       startFrame();
+      // Checking in, so the sign-in lasts as long as the game is open.
+      setInterval(function(){
+        fetch('/widget/api/ping', { headers: { Authorization: 'Bearer ' + cfg.session } }).catch(function(){});
+      }, 5 * 60 * 1000);
     }catch(e){ fail(e.message || String(e)); }
   })();
 })();

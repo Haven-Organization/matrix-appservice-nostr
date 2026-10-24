@@ -17,6 +17,7 @@ handlers as the commands, which answer in the room as usual.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 import time
@@ -35,28 +36,93 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_SESSION_TTL = 3600
-_sessions: dict[str, tuple[str, float]] = {}
+# A widget session lasts while it's used: each use (and an open widget's
+# ping every few minutes) pushes its end back, up to a day after the last.
+# Sessions are kept in bridge_state, under a hash of the token, so a
+# restart doesn't sign anyone out.
+_SESSION_TTL = 24 * 3600
+_PERSIST_EVERY = 600  # seconds an expiry may move before it's written again
+_SESSION_KEY = "widget:session:{}"
+_sessions: dict[str, tuple[str, float]] = {}  # token hash -> (user, expires)
+_persisted: dict[str, float] = {}
+_persist: Any = None  # set by load_sessions: writes (hash, user, expires) or (hash, None, 0) to delete
 # scrypt cost an imported ncryptsec may ask for: 2^18 (256 MB). Higher costs
 # would let one paste tie up the server's memory.
 _MAX_IMPORT_LOG_N = 18
 
 
+def _hash(session_id: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(session_id.encode()).hexdigest()
+
+
+async def load_sessions(app: Any) -> None:
+    """The sessions kept from before a restart, and keeping new ones."""
+
+    repository = app.state.repository
+    now = time.time()
+    for key, value in await repository.list_state(_SESSION_KEY.format("")):
+        digest = key.rsplit(":", 1)[1]
+        try:
+            user, expires = json.loads(value)
+        except (ValueError, TypeError):
+            continue
+        if expires > now:
+            _sessions[digest] = (user, expires)
+            _persisted[digest] = expires
+        else:
+            await repository.delete_state(key)
+
+    def persist(digest: str, user: str | None, expires: float) -> None:
+        async def write() -> None:
+            try:
+                if user is None:
+                    await repository.delete_state(_SESSION_KEY.format(digest))
+                else:
+                    await repository.set_state(_SESSION_KEY.format(digest), json.dumps([user, expires]))
+            except Exception:
+                logger.info("Could not keep a widget session", exc_info=True)
+
+        try:
+            asyncio.get_running_loop().create_task(write())
+        except RuntimeError:
+            return False  # not on the server's loop: written next time
+        return True
+
+    global _persist
+    _persist = persist
+
+
+def _keep(digest: str, user: str, expires: float) -> None:
+    _sessions[digest] = (user, expires)
+    if _persist is not None and expires - _persisted.get(digest, 0) >= _PERSIST_EVERY:
+        if _persist(digest, user, expires):
+            _persisted[digest] = expires
+
+
 def _new_session(user: str) -> str:
-    now = time.monotonic()
-    for session_id, (_u, expires) in list(_sessions.items()):
+    now = time.time()
+    for digest, (_u, expires) in list(_sessions.items()):
         if expires < now:
-            del _sessions[session_id]
+            del _sessions[digest]
+            _persisted.pop(digest, None)
+            if _persist is not None:
+                _persist(digest, None, 0)
     session_id = secrets.token_urlsafe(32)
-    _sessions[session_id] = (user, now + _SESSION_TTL)
+    _keep(_hash(session_id), user, now + _SESSION_TTL)
     return session_id
 
 
 def user_of_session(session_id: str) -> str | None:
-    """The Matrix user a widget session belongs to, if it's still valid."""
-    entry = _sessions.get(session_id)
-    if entry is None or time.monotonic() > entry[1]:
+    """The Matrix user a widget session belongs to, if it's still valid
+    (and, being used, it lasts longer)."""
+    digest = _hash(session_id or "")
+    entry = _sessions.get(digest)
+    now = time.time()
+    if entry is None or now > entry[1]:
         return None
+    _keep(digest, entry[0], now + _SESSION_TTL)
     return entry[0]
 
 
@@ -64,10 +130,10 @@ def _session_user(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         raise HTTPException(401, "Missing session; reload the widget.")
-    entry = _sessions.get(auth[7:].strip())
-    if entry is None or time.monotonic() > entry[1]:
+    user = user_of_session(auth[7:].strip())
+    if user is None:
         raise HTTPException(401, "Session expired; reload the widget.")
-    return entry[0]
+    return user
 
 
 async def _member(request: Request, room_id: str) -> str:
@@ -139,6 +205,13 @@ async def session(request: Request) -> JSONResponse:
     if user is None or user.rsplit(":", 1)[-1] != config.homeserver.server_name:
         raise HTTPException(403, "Could not verify who you are with the homeserver.")
     return JSONResponse({"session_id": _new_session(user), "matrix_user_id": user})
+
+
+@router.get("/widget/api/ping")
+async def ping(request: Request) -> dict[str, bool]:
+    """An open widget checking in, so its session lasts while it's open."""
+    _session_user(request)
+    return {"ok": True}
 
 
 # -- what the page shows --------------------------------------------------------------
@@ -578,6 +651,8 @@ _PAGE = r"""<!doctype html>
       const creds = await openId();
       const s = await api("/widget/api/session", { access_token: creds.access_token, matrix_server_name: creds.matrix_server_name });
       session = s.session_id;
+      // Checking in, so the session lasts while the widget is open.
+      setInterval(() => { api("/widget/api/ping").catch(() => {}); }, 5 * 60 * 1000);
       await load();
     } catch (e) { document.getElementById("app").innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`; }
   })();

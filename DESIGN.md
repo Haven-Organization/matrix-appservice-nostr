@@ -928,6 +928,20 @@ by it); the file's row has no Matrix event of its own and is found through
 replaces both, keeping the `webxdc` identifier. The name is the manifest's,
 and the icon inside the app is published as an image for `image`.
 
+## Widget sessions
+
+A widget trades the client's OpenID token for a bridge session
+(`/widget/api/session`). A session lasts a day past its last use: every
+request renews it, and open widgets (the bridge widget, the Nostr Games
+widget, a game) call `/widget/api/ping` every five minutes, so a session
+lasts as long as its window is open. Sessions are kept in bridge_state as
+`widget:session:<sha256 of the token>` (the token itself is never stored),
+written when created and then at most every ten minutes of renewal, and
+loaded at startup, so a restart signs nobody out. If one is refused anyway,
+the Nostr Games widget signs in again by itself and hands the new session
+to its game, which also reconnects by itself when the bridge drops and
+resends a save it couldn't deliver.
+
 ## The Nostr Games widget
 
 `bridge.games_hub` serves `/xdc/hub` (widget id `nostr-games`) and its API,

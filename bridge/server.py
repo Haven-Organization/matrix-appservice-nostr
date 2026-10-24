@@ -257,6 +257,9 @@ def create_app(
         app.state.repository = repository or open_repository(config)
         app.state.vault = KeyVault(config.nostr.key_encryption_secret)
         app.state.signer = Signer(app.state.repository, app.state.vault)
+        from bridge.widget import load_sessions
+
+        await load_sessions(app)  # widgets stay signed in through a restart
         app.state.bot_identity = await app.state.signer.load_bot_identity()
         app.state.fetcher = SafeFetcher(allow_private=config.nostr.allow_private_addresses)
         app.state.relay_pool = relay_pool or RelayPool(

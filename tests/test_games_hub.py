@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import zipfile
 
 from PIL import Image
@@ -246,3 +247,30 @@ def test_saves_follow_the_player(games, homeserver, relay_pool) -> None:
     # Someone else's save is their own.
     with games.websocket_connect(f"/xdc/ws?game={GAME}&session={session_for(games, '@admin:example.org')}") as ws:
         assert ws.receive_json()["save"] is None
+
+
+def test_widget_sessions_last_while_used_and_through_a_restart(repository, homeserver, relay_pool) -> None:
+    from bridge import widget
+    from bridge.config import parse_config
+    from tests.conftest import make_client, raw_config
+
+    config = parse_config(raw_config(webxdc={"enabled": True}))
+    with make_client(config, repository, homeserver, relay_pool) as first:
+        session = widget._new_session("@q:example.org")
+        headers = {"Authorization": "Bearer " + session}
+        assert first.get("/widget/api/ping", headers=headers).json() == {"ok": True}
+        from tests.conftest import settle
+
+        settle(first)
+        # Kept under a hash of the token, never the token itself.
+        kept = run(first, repository.list_state, "widget:session:")
+        assert len(kept) >= 1 and all(session not in k + v for k, v in kept)
+    widget._sessions.clear()  # a restart: nothing in memory
+    with make_client(config, repository, homeserver, relay_pool) as second:
+        assert second.get("/widget/api/ping", headers=headers).status_code == 200
+        assert second.get("/widget/api/ping", headers={"Authorization": "Bearer nope"}).status_code == 401
+    # Used, it lasts longer; unused for a day, it's gone.
+    digest = widget._hash(session)
+    user, expires = widget._sessions[digest]
+    widget._sessions[digest] = (user, time.time() - 1)
+    assert widget.user_of_session(session) is None

@@ -50,18 +50,35 @@
   }
 
   /* -- the bridge -- */
-  var session = null;
-  function api(path, body){
+  var session = null, signingIn = null;
+  /* Signing in: the client's OpenID token, traded for a bridge session. The
+   * session lasts while it's used (and this page checks in every few
+   * minutes); if the bridge doesn't know it any more, this signs in again. */
+  function signIn(){
+    if (!signingIn) signingIn = openId().then(function(creds){
+      return raw('/widget/api/session', { access_token: creds.access_token, matrix_server_name: creds.matrix_server_name });
+    }).then(function(data){ session = data.session_id; signingIn = null; return session; },
+            function(e){ signingIn = null; throw e; });
+    return signingIn;
+  }
+  function raw(path, body){
     var headers = { 'Content-Type': 'application/json' };
     if (session) headers.Authorization = 'Bearer ' + session;
     return fetch(path, { method: body ? 'POST' : 'GET', headers: headers, body: body ? JSON.stringify(body) : undefined })
       .then(function(res){
         return res.json().catch(function(){ return {}; }).then(function(data){
-          if (!res.ok) throw new Error(data.detail || ('Request failed (' + res.status + ')'));
+          if (!res.ok){ var e = new Error(data.detail || ('Request failed (' + res.status + ')')); e.status = res.status; throw e; }
           return data;
         });
       });
   }
+  function api(path, body){
+    return raw(path, body).catch(function(e){
+      if (e.status !== 401 || path === '/widget/api/session') throw e;
+      return signIn().then(function(){ return raw(path, body); });
+    });
+  }
+  setInterval(function(){ if (session) api('/widget/api/ping').catch(function(){}); }, 5 * 60 * 1000);
   function toast(text, ok){
     var n = document.getElementById('toast');
     n.textContent = text; n.className = 'toast show' + (ok ? '' : ' err');
@@ -159,9 +176,11 @@
     if (games[tab] === null) fetchTab(tab); else show();
   });
   window.addEventListener('message', function(ev){
+    if (ev.source !== player.contentWindow || !ev.data) return;
     // The player says what it's playing.
-    if (ev.source === player.contentWindow && ev.data && typeof ev.data.hubTitle === 'string')
-      document.getElementById('title').textContent = ev.data.hubTitle;
+    if (typeof ev.data.hubTitle === 'string') document.getElementById('title').textContent = ev.data.hubTitle;
+    // Or that its sign-in was refused: a fresh one.
+    if (ev.data.hubSessionWanted) signIn().then(function(s){ player.contentWindow.postMessage({ hubSession: s }, location.origin); }, function(){});
   });
 
   document.querySelectorAll('nav button[data-tab]').forEach(function(b){
@@ -187,9 +206,7 @@
     try{
       if (window.parent === window)
         throw new Error('Open this from its room in your Matrix client: it signs in through the client, so it can\'t work in a window of its own.');
-      var creds = await openId();
-      var data = await api('/widget/api/session', { access_token: creds.access_token, matrix_server_name: creds.matrix_server_name });
-      session = data.session_id;
+      await signIn();
       if (params.get('game')) play(params.get('game'), '');  // opened into a game ([play, or a card's 🎮)
       fetchTab('nostr');
     }catch(e){ list.className = 'note'; list.textContent = e.message; }
