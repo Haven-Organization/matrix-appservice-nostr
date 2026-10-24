@@ -126,32 +126,42 @@ async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str
         await notice(app, room_id, f'Reply "{prefix}play" to a game post (one with "🎮" on it), or send '
                                    f'"{prefix}play <link to the game post>", to open that game.')
         return
-    if await webxdc.game_post(app, game.id) is None:
-        await webxdc.register_games(app, (await _raw(app, row)) or {})
-    games_room, new = await ensure_games_room(app, sender)
-    if games_room is None:
-        await notice(app, room_id, "I couldn't make your Games room just now; try again in a minute.")
-        return
-    try:
-        await show_game(app, games_room, game)
-    except HomeserverError:
-        logger.warning("Could not set the game widget in %s", games_room, exc_info=True)
+    opened = await open_game(app, sender, game, row)
+    if opened is None:
         await notice(app, room_id, "I couldn't open the game in your Games room just now; try again in a minute.")
         return
-    await invite_to_room(app, games_room, sender)
-    await webxdc.touch(app, game.id)
-    try:
-        await post_card(app, games_room, game, row)
-    except Exception:
-        logger.warning("Could not post the card of %s", game.id, exc_info=True)
+    games_room, new = opened
     if room_id == games_room:
-        return  # the card says it
+        return  # its card is there
     first = " It needs a Matrix client with widgets, such as Element Web or Desktop." if new else ""
     await notice(
         app, room_id, f"Opened {game.name} in your Games room: {games_room}.{first}",
         html_message=f"Opened <strong>{html.escape(game.name)}</strong> in your {room_link_html(games_room, 'Games room')}."
         f"{html.escape(first)}",
     )
+
+
+async def open_game(app: FastAPI, user: str, game: webxdc.App, row) -> tuple[str, bool] | None:
+    """``game`` as the widget of ``user``'s Games room, with its card there
+    (posted the first time only). (The room, whether it was just made), or
+    None if it couldn't be done."""
+    if await webxdc.game_post(app, game.id) is None:
+        await webxdc.register_games(app, (await _raw(app, row)) or {})
+    games_room, new = await ensure_games_room(app, user)
+    if games_room is None:
+        return None
+    try:
+        await show_game(app, games_room, game)
+    except HomeserverError:
+        logger.warning("Could not set the game widget in %s", games_room, exc_info=True)
+        return None
+    await invite_to_room(app, games_room, user)
+    await webxdc.touch(app, game.id)
+    try:
+        await ensure_card(app, games_room, game, row)
+    except Exception:
+        logger.warning("Could not post the card of %s", game.id, exc_info=True)
+    return games_room, new
 
 
 async def _raw(app: FastAPI, row) -> dict[str, Any] | None:
@@ -163,31 +173,49 @@ async def _raw(app: FastAPI, row) -> dict[str, Any] | None:
 
 # -- the game's card ---------------------------------------------------------------------------
 
-_CARD_KEY = "webxdc:card:{}"
+_CARD_KEY = "webxdc:card:{}"  # game -> its cartridge picture
+_CARD_IN_ROOM = "webxdc:cardmsg:{}:{}"  # (room, game) -> its card there
+_CARD_OF = "webxdc:cardof:{}"  # card -> the game post
+_PLAY_REACTION = "webxdc:playreact:{}"  # a user's 🎮 on a card -> the game post
+PLAY_KEY = "🎮"
 _ICON_MAX_BYTES = 20 * 1024 * 1024
 
 
+async def ensure_card(app: FastAPI, room_id: str, game: webxdc.App, row) -> str | None:
+    """The game's card in ``room_id``: the one already there, or a new one."""
+    repository = app.state.repository
+    key = _CARD_IN_ROOM.format(room_id, game.id)
+    existing = await repository.get_state(key)
+    if existing:
+        try:
+            event = await app.state.homeserver.get_event(room_id, existing, as_user_id=bot_mxid(app.state.config))
+        except HomeserverError:
+            event = None
+        if event and (event.get("content") or {}) and "redacted_because" not in (event.get("unsigned") or {}):
+            return existing
+    card = await post_card(app, room_id, game, row)
+    if card is not None:
+        await repository.set_state(key, card)
+    return card
+
+
 async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row) -> str | None:
-    """A card for the game just loaded: its cartridge picture (as Ditto shows
-    games), name and description, shown as its author's post (MSC4144,
-    ``external_url``), and how to load it again. It counts as a copy of the
-    game post, so replying "[play" to it loads the game again."""
+    """A card for a game: its cartridge picture (as Ditto shows games), name
+    and description, shown as its author's post (MSC4144, ``external_url``),
+    with the bot's 🎮 on it. Toggling your own 🎮 on it loads the game again
+    (``maybe_handle_card_reaction``). It counts as a copy of the game post,
+    so other reactions go to the post, and replying "[play" works too."""
     from bridge.inbound import _per_message_profile, _post_event_type, event_url
-    from bridge.nostr import nip19
 
     config = app.state.config
-    prefix = config.appservice.command_prefix
     raw = await _raw(app, row) or {}
     mxc = await _cartridge(app, game)
     description = _description(raw, game)
-    reference = nip19.nevent_encode(nip19.EventPointer(row.id, (config.nostr.relay_url,), row.pubkey, row.kind))
-    command = f"{prefix}play {reference}"
-    again = f'Reply "{prefix}play" to this to load it again, or send:'
-    caption = f"🎮 {game.name}" + (f"\n{description}" if description else "") + f"\n\n{again}\n{command}"
+    again = f"React {PLAY_KEY} to this to load it again."
+    caption = f"🎮 {game.name}" + (f"\n{description}" if description else "") + f"\n\n{again}"
     formatted = (f"<p>🎮 <strong>{html.escape(game.name)}</strong></p>"
                  + (f"<p>{html.escape(description)}</p>".replace("\n", "<br>") if description else "")
-                 + f"<p>Reply <code>{html.escape(prefix)}play</code> to this to load it again, or send:</p>"
-                 f"<pre><code>{html.escape(command)}</code></pre>")
+                 + f"<p><em>{html.escape(again)}</em></p>")
     content: dict[str, Any] = {"body": caption, "format": "org.matrix.custom.html", "formatted_body": formatted}
     if mxc is not None:
         from bridge.cartridge import HEIGHT, WIDTH
@@ -202,10 +230,55 @@ async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row) -> str | 
         local = await app.state.repository.get_id_by_pubkey(row.pubkey)
         content["com.beeper.per_message_profile"] = (
             await _per_message_profile(app, local) if local is not None else await _ghost_profile(app, row.pubkey))
-    card = await app.state.homeserver.send_message_event(room_id, content, as_user_id=bot_mxid(config),
-                                                         event_type=_post_event_type(app))
-    await app.state.repository.put_mirrored_event(card, row.id, room_id)
+    homeserver = app.state.homeserver
+    bot = bot_mxid(config)
+    card = await homeserver.send_message_event(room_id, content, as_user_id=bot, event_type=_post_event_type(app))
+    repository = app.state.repository
+    await repository.put_mirrored_event(card, row.id, room_id)
+    await repository.set_state(_CARD_OF.format(card), row.id)
+    try:
+        await homeserver.send_message_event(
+            room_id, {"m.relates_to": {"rel_type": "m.annotation", "event_id": card, "key": PLAY_KEY}},
+            as_user_id=bot, event_type="m.reaction")
+    except HomeserverError:
+        logger.info("Could not put %s on the card in %s", PLAY_KEY, room_id, exc_info=True)
     return card
+
+
+async def maybe_handle_card_reaction(request, event: dict[str, Any]) -> bool:
+    """A user's 🎮 on a game card, added or taken away, loads that game.
+    Other reactions on a card fall through (they go to the game post)."""
+    from bridge.users import is_bridge_user, is_local_user
+
+    app = request.app
+    config = app.state.config
+    sender = event.get("sender", "")
+    if not config.webxdc.enabled or is_bridge_user(config, sender) or not is_local_user(config, sender):
+        return False
+    repository = app.state.repository
+    if event.get("type") == "m.reaction":
+        relates = (event.get("content") or {}).get("m.relates_to") or {}
+        if relates.get("rel_type") != "m.annotation" or str(relates.get("key", "")).rstrip("\ufe0f") != PLAY_KEY:
+            return False
+        card = relates.get("event_id")
+        row_id = await repository.get_state(_CARD_OF.format(card)) if isinstance(card, str) else None
+        if not row_id:
+            return False
+        await repository.set_state(_PLAY_REACTION.format(event.get("event_id", "")), row_id)
+    elif event.get("type") == "m.room.redaction":
+        redacted = event.get("redacts") or (event.get("content") or {}).get("redacts")
+        key = _PLAY_REACTION.format(redacted) if isinstance(redacted, str) else None
+        row_id = await repository.get_state(key) if key else None
+        if not row_id:
+            return False
+        await repository.delete_state(key)
+    else:
+        return False
+    row = await repository.get_event(row_id)
+    game = await webxdc.app_of_post(app, row) if row is not None else None
+    if game is not None and await open_game(app, sender, game, row) is None:
+        await notice(app, event.get("room_id", ""), "I couldn't open the game just now; try again in a minute.")
+    return True
 
 
 async def _ghost_profile(app: FastAPI, pubkey: str) -> dict[str, Any]:

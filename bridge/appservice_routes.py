@@ -40,6 +40,7 @@ from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.shares import maybe_publish_share, repost_relation
 from bridge.concord import maybe_publish as maybe_publish_concord
+from bridge.games_room import maybe_handle_card_reaction
 from bridge.groups import maybe_publish as maybe_publish_group
 from bridge.users import bot_mxid, is_local_user, is_other_bot
 from bridge.homeserver_client import HomeserverError
@@ -117,6 +118,9 @@ _HANDLERS = (
     maybe_handle_knock,
     maybe_handle_join,
     maybe_handle_leave,
+    # A 🎮 on a game card, added or taken away: loads the game (before
+    # reactions and redactions go to Nostr).
+    maybe_handle_card_reaction,
     maybe_handle_redaction,
     maybe_handle_profile_state,
     # Before anything that could act on (or publish) the message.

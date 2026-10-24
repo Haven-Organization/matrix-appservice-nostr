@@ -348,13 +348,36 @@ def test_play_posts_a_cartridge_card_that_reloads_the_game(games, homeserver, re
     picture = Image.open(io.BytesIO(data))
     assert mime == "image/png" and picture.size == (480, 560)
     assert picture.convert("RGB").getpixel((240, 254)) == (200, 0, 0)  # the icon is the label
-    assert "🎮 Chess" in content["body"] and "[play nevent1" in content["body"]
+    assert "🎮 Chess" in content["body"] and "React 🎮 to this to load it again." in content["body"]
+    assert "[play" not in content["body"]
     assert content["external_url"].startswith("https://") and "nevent1" in content["external_url"]
     assert content["com.beeper.per_message_profile"]["id"] == remote.ghost_user_id
-    # Replying [play to the card loads the game again, with no second "Opened" notice; the
-    # picture is made once.
-    homeserver._room(games_room)["state"].pop(("m.widget", GAME_WIDGET_ID))
-    play(games, homeserver, games_room, card["event_id"])
+    [bot_play] = homeserver.messages(games_room, "m.reaction")
+    assert bot_play["content"]["m.relates_to"] == {"rel_type": "m.annotation", "event_id": card["event_id"], "key": "🎮"}
+    assert bot_play["sender"] == "@nostrbot:example.org"
+    cards = len(homeserver.messages(games_room))
+
+    def widget_gone():
+        homeserver._room(games_room)["state"].pop(("m.widget", GAME_WIDGET_ID))
+
+    # Toggling a 🎮 on the card loads the game again: adding it, and taking it away.
+    widget_gone()
+    mine = homeserver._store(games_room, "m.reaction", {"m.relates_to": {
+        "rel_type": "m.annotation", "event_id": card["event_id"], "key": "🎮\ufe0f"}}, "@q:example.org")
+    transact(games, mine)
     assert ("m.widget", GAME_WIDGET_ID) in homeserver._room(games_room)["state"]
-    assert not any(c["body"].startswith("Opened") for c in homeserver.sent_to(games_room))
-    assert homeserver.messages(games_room)[-1]["content"]["url"] == content["url"] and fetched == [XDC]
+    widget_gone()
+    transact(games, {"type": "m.room.redaction", "event_id": "$unreact", "room_id": games_room,
+                     "sender": "@q:example.org", "redacts": mine["event_id"], "content": {}})
+    assert ("m.widget", GAME_WIDGET_ID) in homeserver._room(games_room)["state"]
+    # Neither went to Nostr as a reaction or a deletion; no new card, no notices.
+    assert relay_pool.of_kind(7) == [] and relay_pool.of_kind(5) == []
+    assert len(homeserver.messages(games_room)) == cards
+    # [play again, from anywhere, reuses the card; the picture is made once.
+    play(games, homeserver, remote.room_id, shown["event_id"])
+    assert len(homeserver.messages(games_room)) == cards and fetched == [XDC]
+    # Any other reaction on the card is a reaction to the game post.
+    transact(games, homeserver._store(games_room, "m.reaction", {"m.relates_to": {
+        "rel_type": "m.annotation", "event_id": card["event_id"], "key": "🔥"}}, "@q:example.org"))
+    [fire] = relay_pool.of_kind(7)
+    assert fire.content == "🔥" and ("e", post["id"]) in [tuple(t[:2]) for t in fire.tags]
