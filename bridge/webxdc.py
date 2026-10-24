@@ -52,6 +52,7 @@ class App:
     url: str
     sha256: str | None
     name: str
+    image: str | None = None  # its picture (Ditto's "image" tag), if the post gives one
 
 
 def apps_of(raw: dict[str, Any]) -> list[App]:
@@ -86,7 +87,9 @@ def apps_of(raw: dict[str, Any]) -> list[App]:
             name = url.rsplit("/", 1)[-1].split("?", 1)[0]
             name = name[:-4] if name.lower().endswith(".xdc") else "a game"
         sha = fields.get("x", "")
-        found.append(App(game_id, url, sha.lower() if len(sha) == 64 else None, name[:80]))
+        image = fields.get("image") or fields.get("thumb") or ""
+        found.append(App(game_id, url, sha.lower() if len(sha) == 64 else None, name[:80],
+                         image if image.startswith("https://") else None))
     return found
 
 

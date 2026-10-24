@@ -310,3 +310,51 @@ def test_play_and_import_take_a_link(games, homeserver, relay_pool) -> None:
     relay_pool.network.append(other)
     send(games, message(f"[import nostr:{nip19.note_encode(other['id'])}"))
     assert homeserver.sent_to("!dm:example.org")[-1]["body"].startswith("Imported: ")
+
+
+def test_play_posts_a_cartridge_card_that_reloads_the_game(games, homeserver, relay_pool) -> None:
+    import io
+    import zipfile
+
+    from PIL import Image
+
+    from bridge.games_room import GAME_WIDGET_ID
+    from bridge.safe_fetch import Fetched
+
+    icon = io.BytesIO()
+    Image.new("RGB", (16, 16), (200, 0, 0)).save(icon, format="PNG")
+    xdc = io.BytesIO()
+    with zipfile.ZipFile(xdc, "w") as archive:
+        archive.writestr("index.html", "<p>chess</p>")
+        archive.writestr("icon.png", icon.getvalue())
+    fetched: list[str] = []
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            fetched.append(url)
+            return Fetched(url, 200, xdc.getvalue(), "application/zip")
+
+        async def aclose(self):
+            pass
+
+    games.app.state.fetcher = Fetcher()
+    q, alice, post, remote, shown = followed_game(games, homeserver, relay_pool)
+    play(games, homeserver, remote.room_id, shown["event_id"])
+    games_room = run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org")
+    card = homeserver.messages(games_room)[-1]
+    content = card["content"]
+    assert content["msgtype"] == "m.image" and content["filename"] == "Chess.png" and fetched == [XDC]
+    data, mime = homeserver.media[content["url"]]
+    picture = Image.open(io.BytesIO(data))
+    assert mime == "image/png" and picture.size == (480, 560)
+    assert picture.convert("RGB").getpixel((240, 254)) == (200, 0, 0)  # the icon is the label
+    assert "🎮 Chess" in content["body"] and "[play nevent1" in content["body"]
+    assert content["external_url"].startswith("https://") and "nevent1" in content["external_url"]
+    assert content["com.beeper.per_message_profile"]["id"] == remote.ghost_user_id
+    # Replying [play to the card loads the game again, with no second "Opened" notice; the
+    # picture is made once.
+    homeserver._room(games_room)["state"].pop(("m.widget", GAME_WIDGET_ID))
+    play(games, homeserver, games_room, card["event_id"])
+    assert ("m.widget", GAME_WIDGET_ID) in homeserver._room(games_room)["state"]
+    assert not any(c["body"].startswith("Opened") for c in homeserver.sent_to(games_room))
+    assert homeserver.messages(games_room)[-1]["content"]["url"] == content["url"] and fetched == [XDC]

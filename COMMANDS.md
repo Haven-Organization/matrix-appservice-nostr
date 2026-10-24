@@ -131,6 +131,8 @@ It also joins NIP-29 groups (the relay-hosted groups of Flotilla, Chachi, 0xchat
 
 Send it as a reply to a game post (a webxdc mini app, marked 🎮) in any room, or give a link to a game post (on ditto.pub, say), or its `nevent`/`note`/`naddr`: the post is brought in as `[import` would, then opened. The game opens in your Games room, a room the bridge makes for you the first time and invites you back to if you left. The game is the room's widget, and the next `[play` replaces it. Games need a Matrix client with widgets, such as Element Web or Desktop. Moves are posted as your Active identity. Only when `webxdc.enabled` is on.
 
+Each game opened leaves a card in the Games room (its cartridge picture, name and description, and the `[play nevent1…` command for it). Reply `[play` to a card to load that game again.
+
 ### `[import <link|nevent|note|naddr>`
 
 Brings one Nostr post into Matrix without following its author, like matrix-appservice-activitypub's `;import <url>`. Give a link to the post on any Nostr website (`https://njump.me/nevent1…`, `https://ditto.pub/naddr1…`), or the `nevent`, `note` or `naddr` itself (`nostr:` in front works too). An `naddr` is a long-form article: its newest version is brought in.

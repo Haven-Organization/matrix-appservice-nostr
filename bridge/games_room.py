@@ -140,6 +140,12 @@ async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str
         return
     await invite_to_room(app, games_room, sender)
     await webxdc.touch(app, game.id)
+    try:
+        await post_card(app, games_room, game, row)
+    except Exception:
+        logger.warning("Could not post the card of %s", game.id, exc_info=True)
+    if room_id == games_room:
+        return  # the card says it
     first = " It needs a Matrix client with widgets, such as Element Web or Desktop." if new else ""
     await notice(
         app, room_id, f"Opened {game.name} in your Games room: {games_room}.{first}",
@@ -153,3 +159,119 @@ async def _raw(app: FastAPI, row) -> dict[str, Any] | None:
 
     rebuilt = await rebuild(app, row)
     return rebuilt.event if rebuilt.status == "ok" else None
+
+
+# -- the game's card ---------------------------------------------------------------------------
+
+_CARD_KEY = "webxdc:card:{}"
+_ICON_MAX_BYTES = 20 * 1024 * 1024
+
+
+async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row) -> str | None:
+    """A card for the game just loaded: its cartridge picture (as Ditto shows
+    games), name and description, shown as its author's post (MSC4144,
+    ``external_url``), and how to load it again. It counts as a copy of the
+    game post, so replying "[play" to it loads the game again."""
+    from bridge.inbound import _per_message_profile, _post_event_type, event_url
+    from bridge.nostr import nip19
+
+    config = app.state.config
+    prefix = config.appservice.command_prefix
+    raw = await _raw(app, row) or {}
+    mxc = await _cartridge(app, game)
+    description = _description(raw, game)
+    reference = nip19.nevent_encode(nip19.EventPointer(row.id, (config.nostr.relay_url,), row.pubkey, row.kind))
+    command = f"{prefix}play {reference}"
+    again = f'Reply "{prefix}play" to this to load it again, or send:'
+    caption = f"🎮 {game.name}" + (f"\n{description}" if description else "") + f"\n\n{again}\n{command}"
+    formatted = (f"<p>🎮 <strong>{html.escape(game.name)}</strong></p>"
+                 + (f"<p>{html.escape(description)}</p>".replace("\n", "<br>") if description else "")
+                 + f"<p>Reply <code>{html.escape(prefix)}play</code> to this to load it again, or send:</p>"
+                 f"<pre><code>{html.escape(command)}</code></pre>")
+    content: dict[str, Any] = {"body": caption, "format": "org.matrix.custom.html", "formatted_body": formatted}
+    if mxc is not None:
+        from bridge.cartridge import HEIGHT, WIDTH
+
+        content.update({"msgtype": "m.image", "url": mxc, "filename": f"{_slug(game.name)}.png",
+                        "info": {"mimetype": "image/png", "w": WIDTH, "h": HEIGHT}})
+    else:
+        content["msgtype"] = "m.text"
+    if raw:
+        content["external_url"] = event_url(app, raw)
+    if config.bridge.msc4144_per_message_profiles:
+        local = await app.state.repository.get_id_by_pubkey(row.pubkey)
+        content["com.beeper.per_message_profile"] = (
+            await _per_message_profile(app, local) if local is not None else await _ghost_profile(app, row.pubkey))
+    card = await app.state.homeserver.send_message_event(room_id, content, as_user_id=bot_mxid(config),
+                                                         event_type=_post_event_type(app))
+    await app.state.repository.put_mirrored_event(card, row.id, room_id)
+    return card
+
+
+async def _ghost_profile(app: FastAPI, pubkey: str) -> dict[str, Any]:
+    from bridge import remote as remotes
+
+    ghost = (await remotes.get_or_create_remote(app, pubkey)).ghost_user_id
+    profile: dict[str, Any] = {"id": ghost}
+    try:
+        found = await app.state.homeserver.get_profile(ghost)
+    except HomeserverError:
+        found = {}
+    if found.get("displayname"):
+        profile["displayname"] = found["displayname"]
+    if found.get("avatar_url"):
+        profile["avatar_url"] = found["avatar_url"]
+    return profile
+
+
+def _description(raw: dict[str, Any], game: webxdc.App) -> str:
+    text = str(raw.get("content") or "")
+    text = "\n".join(line for line in text.splitlines() if game.url not in line and not line.strip().endswith(".xdc"))
+    return text.strip()[:500]
+
+
+def _slug(name: str) -> str:
+    import re
+
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-")[:60] or "game"
+
+
+async def _cartridge(app: FastAPI, game: webxdc.App) -> str | None:
+    """The game's cartridge picture in Matrix (made once per game)."""
+    from bridge.cartridge import render
+
+    repository = app.state.repository
+    key = _CARD_KEY.format(game.id)
+    cached = await repository.get_state(key)
+    if cached:
+        return cached
+    picture = render(game.id, await _label(app, game), game.name)
+    try:
+        mxc = await app.state.homeserver.upload_media(picture, "image/png", f"{_slug(game.name)}.png",
+                                                      as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        logger.info("Could not upload the cartridge of %s", game.id, exc_info=True)
+        return None
+    await repository.set_state(key, mxc)
+    return mxc
+
+
+async def _label(app: FastAPI, game: webxdc.App) -> bytes | None:
+    """The game's picture: the post's, or else the icon inside the app."""
+    fetcher = app.state.fetcher
+    if game.image:
+        try:
+            return (await fetcher.get(game.image, max_bytes=5 * 1024 * 1024)).content
+        except Exception:
+            logger.info("Could not fetch the picture of %s", game.id, exc_info=True)
+    try:
+        import io
+        import zipfile
+
+        archive = zipfile.ZipFile(io.BytesIO((await fetcher.get(game.url, max_bytes=_ICON_MAX_BYTES)).content))
+        for name in ("icon.png", "icon.jpg"):
+            if name in archive.namelist() and archive.getinfo(name).file_size <= 5 * 1024 * 1024:
+                return archive.read(name)
+    except Exception:
+        logger.info("No icon found in %s", game.id, exc_info=True)
+    return None
