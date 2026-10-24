@@ -49,6 +49,69 @@
     return out;
   }
 
+  /* -- the game's own localStorage, kept in the player's Games room --
+   * Every game runs on the same sandbox origin, so the browser would give
+   * them one localStorage between them. This one is the game's alone, filled
+   * from its save when it starts and sent back a moment after it changes (and
+   * when the game is left). A copy stays in the browser, under the game's
+   * prefix, in case the bridge can't be reached. Flash games under Ruffle keep
+   * their saves here. */
+  (function(){
+    var game = meta.game;
+    var real = null;
+    try{ real = window.localStorage; }catch(_){}
+    if (!game || !real) return;
+    var prefix = 'xdc:' + game + ':', data = {}, i, k;
+    if (meta.save && typeof meta.save === 'object'){
+      data = meta.save;
+    } else {
+      // Nothing kept yet: what this browser has for the game, under its prefix,
+      // or (the first time) what games saved before they had one each.
+      var found = false;
+      for (i = 0; i < real.length; i++){ k = real.key(i); if (k && k.indexOf(prefix) === 0){ data[k.slice(prefix.length)] = real.getItem(k); found = true; } }
+      if (!found) for (i = 0; i < real.length; i++){ k = real.key(i); if (k && k.indexOf('xdc:') !== 0) data[k] = real.getItem(k); }
+    }
+    var timer = null, dirty = !meta.save && Object.keys(data).length > 0;
+    function local(key, value){
+      try{ if (value === null) real.removeItem(prefix + key); else real.setItem(prefix + key, value); }catch(_){}
+    }
+    function flush(){
+      clearTimeout(timer); timer = null;
+      if (!dirty) return;
+      dirty = false;
+      send({ jsonrpc: '2.0', method: 'webxdc.save', params: { data: data } });
+    }
+    function changed(){ dirty = true; clearTimeout(timer); timer = setTimeout(flush, 3000); }
+    var has = Object.prototype.hasOwnProperty;
+    // The methods on a prototype, so the object itself has no fixed keys of
+    // its own (a Proxy listing only the saved keys has to be allowed to).
+    var methods = Object.create(Storage.prototype, {
+      getItem: { value: function(key){ key = String(key); return has.call(data, key) ? data[key] : null; } },
+      setItem: { value: function(key, value){ key = String(key); value = String(value);
+        if (data[key] === value) return; data[key] = value; local(key, value); changed(); } },
+      removeItem: { value: function(key){ key = String(key); if (!has.call(data, key)) return; delete data[key]; local(key, null); changed(); } },
+      clear: { value: function(){ Object.keys(data).forEach(function(key){ local(key, null); }); data = {}; changed(); } },
+      key: { value: function(n){ var keys = Object.keys(data); return n >= 0 && n < keys.length ? keys[n] : null; } },
+      length: { get: function(){ return Object.keys(data).length; } },
+    });
+    var store = Object.create(methods);
+    // localStorage.foo and localStorage['foo'] too, as with the real one.
+    var view = new Proxy(store, {
+      get: function(t, p){ return typeof p === 'symbol' || p in t ? t[p] : t.getItem(p); },
+      set: function(t, p, v){ if (typeof p === 'symbol' || p in t) return false; t.setItem(p, v); return true; },
+      deleteProperty: function(t, p){ t.removeItem(p); return true; },
+      has: function(t, p){ return p in t || has.call(data, p); },
+      ownKeys: function(){ return Object.keys(data); },
+      getOwnPropertyDescriptor: function(t, p){
+        return has.call(data, p) ? { value: data[p], writable: true, enumerable: true, configurable: true } : undefined;
+      },
+    });
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: function(){ return view; } });
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'hidden') flush(); });
+    if (dirty) timer = setTimeout(flush, 3000);
+  })();
+
   var listening = null, rtReady = null;
   window.webxdc = {
     selfAddr: meta.addr || '',

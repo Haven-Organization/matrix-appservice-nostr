@@ -202,7 +202,10 @@ async def player_socket(websocket: WebSocket) -> None:
     hub = webxdc.hub(app)
     hub.add(session)
     await webxdc.touch(app, game_id)
-    await say({"t": "init", "game": webxdc.game_field(info), "self": me, "updates": moves})
+    from bridge import game_saves
+
+    await say({"t": "init", "game": webxdc.game_field(info), "self": me, "updates": moves,
+               "save": await game_saves.load(app, user, game_id)})
     try:
         while True:
             message = json.loads(await websocket.receive_text())
@@ -220,6 +223,11 @@ async def player_socket(websocket: WebSocket) -> None:
                 sent = await webxdc.send_update(app, player, game_id, message.get("update"), str(message.get("descr") or ""))
                 await say({"t": "ack", "id": message.get("id"), "ok": sent is not None,
                            **({} if sent else {"error": "That move couldn't be sent."})})
+            elif kind == "save":
+                # The game's localStorage: kept in the player's Games room.
+                ok = await game_saves.store(app, user, game_id, message.get("data"))
+                await say({"t": "ack", "id": message.get("id"), "ok": ok,
+                           **({} if ok else {"error": "The game's saved data couldn't be kept."})})
             elif kind == "rt_join":
                 session.realtime = True
                 app.state.feeds.changed()

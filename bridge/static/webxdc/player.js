@@ -81,7 +81,7 @@
   }
 
   /* -- the bridge -- */
-  var ws = null, nextAck = 1, acks = {}, self = { addr: '', name: '' }, game = null;
+  var ws = null, nextAck = 1, acks = {}, self = { addr: '', name: '' }, game = null, saved = null;
   function connect(session){
     return new Promise(function(resolve, reject){
       var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
@@ -90,7 +90,7 @@
       ws.onmessage = function(e){
         var m; try{ m = JSON.parse(e.data); }catch(_){ return; }
         if (m.t === 'init'){
-          game = m.game; self = m.self || self;
+          game = m.game; self = m.self || self; saved = m.save || null;
           if (window.parent !== window) window.parent.postMessage({ hubTitle: game.name || '' }, location.origin);
           (m.updates || []).forEach(absorb);
           resolve();
@@ -158,7 +158,9 @@
   async function serve(path){
     var enc = new TextEncoder();
     if (path === '/__webxdc__.js' || path === '/webxdc.js'){
-      var head = 'window.__XDC = ' + JSON.stringify({ addr: self.addr, name: self.name }) + ';\n';
+      // The game's saved data goes in with it: localStorage has to answer at once.
+      var head = 'window.__XDC = ' + JSON.stringify({ addr: self.addr, name: self.name, game: gameId, save: saved })
+        .replace(/</g, '\\u003c') + ';\n';
       return { status: 200, type: 'text/javascript', body: enc.encode(head + shimSrc) };
     }
     var name = decodeURIComponent(path || '/').replace(/^\/+/, '');
@@ -202,6 +204,12 @@
       delivered = Math.max(0, Math.min(moves.length, parseInt(p.serial || 0, 10) || 0));
       deliver();
       reply(id, null);
+      return;
+    }
+    if (d.method === 'webxdc.save'){
+      saved = p.data || {};
+      bridgeSend({ t: 'save', data: saved }, true).then(function(){ if (id !== undefined) reply(id, null); },
+        function(e){ if (id !== undefined) replyError(id, e.message); });
       return;
     }
     if (d.method === 'webxdc.rtJoin'){ bridgeSend({ t: 'rt_join' }, true).then(function(){ reply(id, null); }, function(e){ replyError(id, e.message); }); return; }

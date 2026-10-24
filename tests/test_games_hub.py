@@ -185,3 +185,64 @@ def test_a_rooms_own_games(games, homeserver, relay_pool) -> None:
         assert [json.loads(u["content"]) for u in ws.receive_json()["updates"]] == [{"line": 4}]
     with games.websocket_connect(f"/xdc/ws?game={tetris_id}&session={session_for(games, '@admin:example.org')}") as ws:
         assert ws.receive_json()["t"] == "error"
+
+
+def xdc_named(name: str) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("index.html", "<p>game</p>")
+        archive.writestr("manifest.toml", f'name = "{name}"\n')
+    return out.getvalue()
+
+
+def test_a_rooms_game_is_named_by_its_manifest_and_old_cards_follow(games, homeserver, relay_pool) -> None:
+    from bridge import games_hub
+
+    q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
+    homeserver.media["mxc://example.org/kc"] = (xdc_named("Katawa Crash"), "application/octet-stream")
+    upload = homeserver._store(room, "m.room.message", {"msgtype": "m.file", "body": "katawa_crash.xdc",
+                                                        "url": "mxc://example.org/kc"}, "@q:example.org")
+    game_id = webxdc.local_game_id(room, upload["event_id"])
+    # As registered before names came from the manifest, with a card from then.
+    run(games, games.app.state.repository.set_state, f"webxdc:local:{game_id}", json.dumps(
+        {"room": room, "event": upload["event_id"], "url": "mxc://example.org/kc", "sender": "@q:example.org"}))
+    old = webxdc.App(game_id, "mxc://example.org/kc", None, "katawa_crash")
+    card = run(games, games_room.ensure_card, games.app, room, old, None, {"room": room})
+    assert homeserver._room(room)["events"][card]["content"]["body"].startswith("🎮 katawa_crash")
+    # Now it's read from inside the game, and opening it again fixes the card with an edit.
+    assert [g["name"] for g in run(games, games_hub.room_games, games.app, room) if g["local"]] == ["Katawa Crash"]
+    assert games.post("/xdc/api/open", headers=auth(games), json={"room_id": room, "game": game_id}).status_code == 200
+    edit = homeserver.messages(room)[-1]["content"]
+    assert edit["m.relates_to"] == {"rel_type": "m.replace", "event_id": card}
+    assert edit["m.new_content"]["body"].startswith("🎮 Katawa Crash")
+    assert edit["m.new_content"][webxdc.GAME_FIELD]["name"] == "Katawa Crash"
+    count = len(homeserver.messages(room))
+    games.post("/xdc/api/open", headers=auth(games), json={"room_id": room, "game": game_id})
+    assert len(homeserver.messages(room)) == count  # once
+
+
+def test_saves_follow_the_player(games, homeserver, relay_pool) -> None:
+    from bridge.game_saves import SAVE_STATE_TYPE
+
+    q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
+    session = session_for(games)
+    with games.websocket_connect(f"/xdc/ws?game={GAME}&session={session}") as ws:
+        assert ws.receive_json()["save"] is None
+        ws.send_json({"t": "save", "id": 7, "data": {"localhost/game.swf/kcrashdata": "AL8AAAt0", "best": "42"}})
+        assert ws.receive_json() == {"t": "ack", "id": 7, "ok": True}
+        ws.send_json({"t": "save", "id": 8, "data": "not a save"})
+        assert ws.receive_json()["ok"] is False
+    kept = homeserver._room(room)["state"][(SAVE_STATE_TYPE, GAME)]["content"]
+    assert kept["data"] == {"localhost/game.swf/kcrashdata": "AL8AAAt0", "best": "42"}
+    with games.websocket_connect(f"/xdc/ws?game={GAME}&session={session}") as ws:
+        assert ws.receive_json()["save"]["best"] == "42"
+        # A big one goes up as a file.
+        ws.send_json({"t": "save", "id": 9, "data": {"big": "x" * 100_000}})
+        assert ws.receive_json()["ok"] is True
+    kept = homeserver._room(room)["state"][(SAVE_STATE_TYPE, GAME)]["content"]
+    assert kept["url"].startswith("mxc://") and "data" not in kept
+    with games.websocket_connect(f"/xdc/ws?game={GAME}&session={session}") as ws:
+        assert ws.receive_json()["save"] == {"big": "x" * 100_000}
+    # Someone else's save is their own.
+    with games.websocket_connect(f"/xdc/ws?game={GAME}&session={session_for(games, '@admin:example.org')}") as ws:
+        assert ws.receive_json()["save"] is None

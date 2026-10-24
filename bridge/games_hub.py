@@ -179,6 +179,12 @@ async def room_games(app, room_id: str) -> list[dict[str, Any]]:
             game_id, name, local = game.id, game.name, True
         else:
             return
+        if game_id not in items and not local:
+            # A card or post: the game itself says what it's called now, and
+            # whether it's a room's own.
+            game, _row, where = await webxdc.game_info(app, game_id)
+            if game is not None:
+                name, local = game.name, where is not None
         item = items.setdefault(game_id, {"id": game_id, "name": name, "local": local, "sources": []})
         if source not in item["sources"]:
             item["sources"].append(source)

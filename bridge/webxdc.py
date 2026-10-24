@@ -155,9 +155,37 @@ def local_game_id(room_id: str, event_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"matrix:{room_id}/{event_id}"))
 
 
-def _local_app(game_id: str, content: dict[str, Any]) -> App:
-    name = str(content.get("filename") or content.get("body") or "game").rsplit("/", 1)[-1]
-    return App(game_id, content["url"], None, (name[:-4] if name.lower().endswith(".xdc") else name)[:80] or "a game")
+def _local_app(game_id: str, content: dict[str, Any], name: str | None = None) -> App:
+    if not name:
+        name = str(content.get("filename") or content.get("body") or "game").rsplit("/", 1)[-1]
+        name = name[:-4] if name.lower().endswith(".xdc") else name
+    return App(game_id, content["url"], None, name[:80] or "a game")
+
+
+def manifest_name(xdc: bytes) -> str | None:
+    """The name a webxdc app gives itself, in its manifest.toml."""
+    import io
+    import tomllib
+    import zipfile
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(xdc))
+        if "manifest.toml" not in archive.namelist() or archive.getinfo("manifest.toml").file_size > 64 * 1024:
+            return None
+        name = tomllib.loads(archive.read("manifest.toml").decode("utf-8")).get("name")
+    except (zipfile.BadZipFile, tomllib.TOMLDecodeError, UnicodeDecodeError, KeyError):
+        return None
+    return name.strip()[:80] if isinstance(name, str) and name.strip() else None
+
+
+async def _file_name(app: FastAPI, mxc: str) -> str | None:
+    try:
+        download = await app.state.homeserver.download_media(mxc)
+    except HomeserverError:
+        return None
+    if download is None or len(download.content) > app.state.config.webxdc.max_app_mb * 1024 * 1024:
+        return None
+    return manifest_name(download.content)
 
 
 async def register_local(app: FastAPI, room_id: str, event: dict[str, Any]) -> App | None:
@@ -166,9 +194,15 @@ async def register_local(app: FastAPI, room_id: str, event: dict[str, Any]) -> A
     if not is_xdc_file(content):
         return None
     game_id = local_game_id(room_id, event["event_id"])
+    known = await local_game(app, game_id)
+    if known is not None and "name" in known:
+        return _local_app(game_id, content, known["name"])
+    # Its own name, from inside it (read once): the file's name is only a fallback.
+    name = await _file_name(app, content["url"])
     await app.state.repository.set_state(_LOCAL_KEY.format(game_id), json.dumps(
-        {"room": room_id, "event": event["event_id"], "url": content["url"], "sender": event.get("sender", "")}))
-    return _local_app(game_id, content)
+        {"room": room_id, "event": event["event_id"], "url": content["url"], "sender": event.get("sender", ""),
+         "name": name}))
+    return _local_app(game_id, content, name)
 
 
 async def local_game(app: FastAPI, game_id: str) -> dict[str, Any] | None:
@@ -189,7 +223,13 @@ async def game_info(app: FastAPI, game_id: str) -> tuple[App | None, Any, dict[s
     except HomeserverError:
         event = None
     content = (event or {}).get("content") or {}
-    return (_local_app(game_id, content) if is_xdc_file(content) else None), None, local
+    if not is_xdc_file(content):
+        return None, None, local
+    if "name" not in local:
+        # Registered before names were read from the manifest.
+        await register_local(app, local["room"], event)
+        local = await local_game(app, game_id) or local
+    return _local_app(game_id, content, local.get("name")), None, local
 
 
 async def in_room(app: FastAPI, room_id: str, user: str) -> bool:

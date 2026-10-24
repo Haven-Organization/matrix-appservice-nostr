@@ -943,6 +943,19 @@ of their own, `nostr-game`; it's removed when the hub is next set.)
   are `software.haven.nostr.webxdc.update` events in a thread under the
   file, holding an unsigned update (`id`, `created_at`, `content`, tags)
   that is never published; realtime stays among the players here.
+- **Saves** (`bridge.game_saves`): shim.js gives each game a `localStorage`
+  of its own (a Proxy over the game's keys, `instanceof Storage`), filled
+  from `__XDC.save` before the game's scripts run, written through to the
+  browser under `xdc:<game id>:`, and sent to the bridge (`t: "save"` on
+  the player's socket) 3 seconds after a change and on `pagehide`. The
+  bridge keeps it as `software.haven.nostr.webxdc.save` state (key: game
+  id) in the player's Games room: inline up to 48 KB, else uploaded as JSON
+  with the event holding its mxc. At most 5 MB. With no save yet, the
+  browser's copy under the prefix is used, or else (once) the sandbox's old
+  shared keys.
+- **Names** of a room's own games come from `manifest.toml` (read once, kept
+  in `webxdc:local:<id>`). A card records the name it shows
+  (`webxdc:cardname:<card>`) and is edited when the game's name changes.
 - **Opening** (from the hub or a card's 🎮) needs the right to change the
   room's widgets. The bot sets the widget and posts the card.
 

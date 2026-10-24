@@ -244,6 +244,7 @@ async def _raw(app: FastAPI, row) -> dict[str, Any] | None:
 _CARD_KEY = "webxdc:card:{}"  # game -> its cartridge picture
 _CARD_IN_ROOM = "webxdc:cardmsg:{}:{}"  # (room, game) -> its card there
 _CARD_OF = "webxdc:cardof:{}"  # card -> the game post
+_CARD_NAME = "webxdc:cardname:{}"  # card -> the game name it shows
 _PLAY_REACTION = "webxdc:playreact:{}"  # a user's 🎮 on a card -> the game post
 PLAY_KEY = "🎮"
 _ICON_MAX_BYTES = 20 * 1024 * 1024
@@ -260,6 +261,10 @@ async def ensure_card(app: FastAPI, room_id: str, game: webxdc.App, row, local=N
         except HomeserverError:
             event = None
         if event and (event.get("content") or {}) and "redacted_because" not in (event.get("unsigned") or {}):
+            shown = await repository.get_state(_CARD_NAME.format(existing)) or \
+                ((event["content"].get(webxdc.GAME_FIELD) or {}).get("name"))
+            if shown != game.name:
+                await _rename_card(app, room_id, existing, game, row)
             return existing
     card = await post_card(app, room_id, game, row, local)
     if card is not None:
@@ -273,7 +278,45 @@ async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row, local=Non
     with the bot's 🎮 on it. Toggling your own 🎮 on it loads the game again
     (``maybe_handle_card_reaction``). It counts as a copy of the game post,
     so other reactions go to the post, and replying "[play" works too."""
-    from bridge.inbound import _per_message_profile, _post_event_type, event_url
+    from bridge.inbound import _post_event_type
+
+    config = app.state.config
+    content = await _card_content(app, game, row)
+    homeserver = app.state.homeserver
+    bot = bot_mxid(config)
+    card = await homeserver.send_message_event(room_id, content, as_user_id=bot, event_type=_post_event_type(app))
+    repository = app.state.repository
+    if row is not None:
+        await repository.put_mirrored_event(card, row.id, room_id)
+    await repository.set_state(_CARD_OF.format(card), row.id if row is not None else f"local:{game.id}")
+    await repository.set_state(_CARD_NAME.format(card), game.name)
+    try:
+        await homeserver.send_message_event(
+            room_id, {"m.relates_to": {"rel_type": "m.annotation", "event_id": card, "key": PLAY_KEY}},
+            as_user_id=bot, event_type="m.reaction")
+    except HomeserverError:
+        logger.info("Could not put %s on the card in %s", PLAY_KEY, room_id, exc_info=True)
+    return card
+
+
+async def _rename_card(app: FastAPI, room_id: str, card: str, game: webxdc.App, row) -> None:
+    """The game's name changed (read from inside it, say): the card, edited to match."""
+    from bridge.inbound import _post_event_type
+
+    new = await _card_content(app, game, row)
+    edit = {**new, "body": "* " + new["body"], "formatted_body": "* " + new["formatted_body"],
+            "m.new_content": new, "m.relates_to": {"rel_type": "m.replace", "event_id": card}}
+    try:
+        await app.state.homeserver.send_message_event(room_id, edit, as_user_id=bot_mxid(app.state.config),
+                                                      event_type=_post_event_type(app))
+    except HomeserverError:
+        logger.info("Could not rename the card %s", card, exc_info=True)
+        return
+    await app.state.repository.set_state(_CARD_NAME.format(card), game.name)
+
+
+async def _card_content(app: FastAPI, game: webxdc.App, row) -> dict[str, Any]:
+    from bridge.inbound import _per_message_profile, event_url
 
     config = app.state.config
     raw = (await _raw(app, row) or {}) if row is not None else {}
@@ -299,20 +342,7 @@ async def post_card(app: FastAPI, room_id: str, game: webxdc.App, row, local=Non
         author = await app.state.repository.get_id_by_pubkey(row.pubkey)
         content["com.beeper.per_message_profile"] = (
             await _per_message_profile(app, author) if author is not None else await _ghost_profile(app, row.pubkey))
-    homeserver = app.state.homeserver
-    bot = bot_mxid(config)
-    card = await homeserver.send_message_event(room_id, content, as_user_id=bot, event_type=_post_event_type(app))
-    repository = app.state.repository
-    if row is not None:
-        await repository.put_mirrored_event(card, row.id, room_id)
-    await repository.set_state(_CARD_OF.format(card), row.id if row is not None else f"local:{game.id}")
-    try:
-        await homeserver.send_message_event(
-            room_id, {"m.relates_to": {"rel_type": "m.annotation", "event_id": card, "key": PLAY_KEY}},
-            as_user_id=bot, event_type="m.reaction")
-    except HomeserverError:
-        logger.info("Could not put %s on the card in %s", PLAY_KEY, room_id, exc_info=True)
-    return card
+    return content
 
 
 async def maybe_handle_card_reaction(request, event: dict[str, Any]) -> bool:
