@@ -104,9 +104,12 @@ async def _xdc_details(app: FastAPI, content: dict[str, Any]) -> dict[str, Any]:
     from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
     from bridge.webxdc import manifest_name
 
+    # Nice to have: whatever goes wrong here (a slow homeserver timing out,
+    # say), the app is still posted.
     try:
         download = await app.state.homeserver.download_media(content["url"])
-    except HomeserverError:
+    except Exception:
+        logger.info("Could not read the app being posted", exc_info=True)
         return {}
     if download is None:
         return {}
@@ -121,7 +124,7 @@ async def _xdc_details(app: FastAPI, content: dict[str, Any]) -> dict[str, Any]:
         try:
             mxc = await app.state.homeserver.upload_media(icon, "image/png", "icon.png", as_user_id=bot_mxid(app.state.config))
             published = await publish_matrix_image(app, mxc, max_bytes=PROFILE_IMAGE_MAX_BYTES)
-        except HomeserverError:
+        except Exception:
             logger.info("Could not upload the icon of an app; trying again", exc_info=True)
             continue
         if published is not None:

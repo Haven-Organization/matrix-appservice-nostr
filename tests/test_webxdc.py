@@ -409,9 +409,13 @@ def test_an_app_posted_from_matrix_goes_out_as_ditto_posts_them(games, homeserve
     upload, failures = homeserver.upload_media, []
 
     async def flaky(data, content_type, filename, *, as_user_id):
-        if not failures:
+        if len(failures) < 2:
             failures.append(filename)
-            raise HomeserverError(500, "M_UNKNOWN", "Permission denied")
+            if len(failures) == 1:
+                raise HomeserverError(500, "M_UNKNOWN", "Permission denied")
+            import httpx
+
+            raise httpx.ReadTimeout("slow homeserver")
         return await upload(data, content_type, filename, as_user_id=as_user_id)
 
     homeserver.upload_media = flaky
@@ -419,7 +423,7 @@ def test_an_app_posted_from_matrix_goes_out_as_ditto_posts_them(games, homeserve
 
     posted = post_message(games, homeserver, q.profile_room_id, {"msgtype": "m.file", "body": "katawa_crash.xdc",
                                                                   "url": "mxc://example.org/kc", "info": {"size": 999}})
-    assert relay_pool.of_kind(1) == [] and failures == ["icon.png"]
+    assert relay_pool.of_kind(1) == [] and failures == ["icon.png", "icon.png"]
     [file_post] = relay_pool.of_kind(1063)
     [game] = webxdc.apps_of(file_post.to_dict())
     assert game.name == "Katawa Crash" and game.image and game.image.startswith("https://")
