@@ -256,6 +256,9 @@ class WebxdcSection:
     # Largest app the bridge fetches for a player whose browser can't fetch
     # it directly (a host without CORS), in MB. Never stored.
     max_app_mb: int = 100
+    # Where the Nostr Games widget finds games to browse, besides the
+    # bridge's own relays: the relays Ditto and poster.place list them from.
+    catalog_relays: tuple[str, ...] = ("wss://relay.ditto.pub", "wss://relay.poster.place/")
 
 
 @dataclass(frozen=True)
@@ -281,7 +284,17 @@ def _webxdc_section(raw: dict[str, Any], domain: str) -> WebxdcSection:
         raise ConfigError("webxdc.active_days and webxdc.max_update_kb must be at least 1")
     return WebxdcSection(enabled=bool(raw.get("enabled", False)), sandbox_domain=sandbox,
                          active_days=active_days, max_update_kb=max_update_kb,
-                         max_app_mb=max(1, int(raw.get("max_app_mb", 100))))
+                         max_app_mb=max(1, int(raw.get("max_app_mb", 100))),
+                         catalog_relays=_catalog_relays(raw))
+
+
+def _catalog_relays(raw: dict[str, Any]) -> tuple[str, ...]:
+    value = raw.get("catalog_relays")
+    if value is None:
+        return WebxdcSection.catalog_relays
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.startswith(("wss://", "ws://")) for v in value):
+        raise ConfigError("webxdc.catalog_relays must be a list of wss:// relay URLs")
+    return tuple(value)
 
 
 def _require(section: dict[str, Any], key: str, section_name: str) -> Any:

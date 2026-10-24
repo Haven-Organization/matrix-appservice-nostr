@@ -361,6 +361,7 @@ def test_play_posts_a_cartridge_card_that_reloads_the_game(games, homeserver, re
         homeserver._room(games_room)["state"].pop(("m.widget", GAME_WIDGET_ID))
 
     # Toggling a 🎮 on the card loads the game again: adding it, and taking it away.
+    homeserver._room(games_room)["members"].add("@q:example.org")  # q joined it
     widget_gone()
     mine = homeserver._store(games_room, "m.reaction", {"m.relates_to": {
         "rel_type": "m.annotation", "event_id": card["event_id"], "key": "🎮\ufe0f"}}, "@q:example.org")

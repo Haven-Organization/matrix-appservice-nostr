@@ -36,12 +36,15 @@ from bridge.users import bot_mxid
 logger = logging.getLogger(__name__)
 
 MIME = "application/x-webxdc"
+# Every type a webxdc app is announced under (poster.place takes all three).
+MIMES = frozenset({MIME, "application/vnd.webxdc+zip", "application/webxdc+zip"})
 UPDATE_KIND = 4932
 REALTIME_KIND = 20932
 UPDATE_EVENT_TYPE = "software.haven.nostr.webxdc.update"
 # On a game post's Matrix event: what the player needs to start it.
 GAME_FIELD = "software.haven.nostr.webxdc"
 _GAME_KEY = "webxdc:game:{}"
+_LOCAL_KEY = "webxdc:local:{}"  # a room's own game (an .xdc file in Matrix) -> where it is
 _ACTIVE_KEY = "webxdc:active:{}"
 _REALTIME_MAX = 128_000
 
@@ -78,7 +81,7 @@ def apps_of(raw: dict[str, Any]) -> list[App]:
         groups.append(fields)
     for fields in groups:
         url, game_id = fields.get("url", ""), fields.get("webxdc", "")
-        if fields.get("m") != MIME or not url.startswith(("https://", "http://")) or not game_id or len(game_id) > 128:
+        if (fields.get("m") or "").lower() not in MIMES or not url.startswith(("https://", "http://")) or not game_id or len(game_id) > 128:
             continue
         name = fields.get("alt", "")
         if name.lower().startswith("webxdc app:"):
@@ -133,6 +136,122 @@ async def app_of_post(app: FastAPI, row) -> App | None:
         return None
     games = apps_of(rebuilt.event)
     return games[0] if games else None
+
+
+# -- a room's own games ------------------------------------------------------------
+# An .xdc uploaded in Matrix that isn't on Nostr: playable by the room's
+# members, its moves kept in a thread under the file and never published.
+
+
+def is_xdc_file(content: dict[str, Any]) -> bool:
+    if content.get("msgtype") != "m.file" or not str(content.get("url") or "").startswith("mxc://"):
+        return False
+    name = str(content.get("filename") or content.get("body") or "").lower()
+    mime = str((content.get("info") or {}).get("mimetype") or "").lower()
+    return name.endswith(".xdc") or mime in MIMES
+
+
+def local_game_id(room_id: str, event_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"matrix:{room_id}/{event_id}"))
+
+
+def _local_app(game_id: str, content: dict[str, Any]) -> App:
+    name = str(content.get("filename") or content.get("body") or "game").rsplit("/", 1)[-1]
+    return App(game_id, content["url"], None, (name[:-4] if name.lower().endswith(".xdc") else name)[:80] or "a game")
+
+
+async def register_local(app: FastAPI, room_id: str, event: dict[str, Any]) -> App | None:
+    """A room's own .xdc file as a game, if it is one."""
+    content = event.get("content") or {}
+    if not is_xdc_file(content):
+        return None
+    game_id = local_game_id(room_id, event["event_id"])
+    await app.state.repository.set_state(_LOCAL_KEY.format(game_id), json.dumps(
+        {"room": room_id, "event": event["event_id"], "url": content["url"], "sender": event.get("sender", "")}))
+    return _local_app(game_id, content)
+
+
+async def local_game(app: FastAPI, game_id: str) -> dict[str, Any] | None:
+    stored = await app.state.repository.get_state(_LOCAL_KEY.format(game_id))
+    return json.loads(stored) if stored else None
+
+
+async def game_info(app: FastAPI, game_id: str) -> tuple[App | None, Any, dict[str, Any] | None]:
+    """(the game, its Nostr post, or where it is if it's a room's own)."""
+    post = await game_post(app, game_id)
+    if post is not None:
+        return await app_of_post(app, post), post, None
+    local = await local_game(app, game_id)
+    if local is None:
+        return None, None, None
+    try:
+        event = await app.state.homeserver.get_event(local["room"], local["event"], as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        event = None
+    content = (event or {}).get("content") or {}
+    return (_local_app(game_id, content) if is_xdc_file(content) else None), None, local
+
+
+async def in_room(app: FastAPI, room_id: str, user: str) -> bool:
+    try:
+        return user in await app.state.homeserver.get_joined_members(room_id, as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        return False
+
+
+async def local_updates(app: FastAPI, game_id: str, local: dict[str, Any]) -> list[dict[str, Any]]:
+    """A room game's moves, from its thread in Matrix."""
+    from bridge.inbound import _thread_root_of
+
+    homeserver = app.state.homeserver
+    bot = bot_mxid(app.state.config)
+    root = await _thread_root_of(app, local["room"], local["event"])
+    found, token = [], None
+    for _page in range(100):
+        page = await homeserver.get_relations(local["room"], root, "m.thread", as_user_id=bot, limit=100, from_token=token)
+        for event in page.get("chunk") or []:
+            content = event.get("content") or {}
+            if event.get("type") == UPDATE_EVENT_TYPE and content.get("game") == game_id and isinstance(content.get("update"), dict):
+                found.append(content["update"])
+        token = page.get("next_batch")
+        if not token:
+            break
+    return sorted(found, key=lambda e: (e.get("created_at", 0), e.get("id", "")))
+
+
+async def send_local_update(app: FastAPI, user: str, game_id: str, local: dict[str, Any], update: Any,
+                            descr: str = "") -> dict[str, Any] | None:
+    """``sendUpdate()`` in a room game: handed to the others playing here,
+    then kept in the room. Nothing goes to Nostr."""
+    from bridge.inbound import _thread_root_of
+    from bridge.tasks import run_in_background
+
+    update = update if isinstance(update, dict) else {"payload": update}
+    content = json.dumps(update.get("payload"), ensure_ascii=False, separators=(",", ":"))
+    if len(content.encode()) > app.state.config.webxdc.max_update_kb * 1024:
+        return None
+    tags = [["i", game_id]]
+    for name in ("info", "summary", "document"):
+        value = str(update.get(name) or "")[:50 if name != "document" else 100]
+        if value:
+            tags.append([name, value])
+    move = {"id": uuid.uuid4().hex + uuid.uuid4().hex, "kind": UPDATE_KIND, "created_at": int(time.time()),
+            "sender": user, "content": content, "tags": tags}
+    hub(app).deliver_update(game_id, move)
+
+    async def store() -> None:
+        root = await _thread_root_of(app, local["room"], local["event"])
+        try:
+            await app.state.homeserver.send_message_event(
+                local["room"], {"m.relates_to": {"rel_type": "m.thread", "event_id": root, "is_falling_back": True,
+                                                  "m.in_reply_to": {"event_id": local["event"]}},
+                                "game": game_id, "update": move, "body": descr[:100]},
+                as_user_id=bot_mxid(app.state.config), event_type=UPDATE_EVENT_TYPE)
+        except HomeserverError:
+            logger.warning("Could not keep a move of %s", game_id, exc_info=True)
+
+    run_in_background(app, store(), name=f"room game move {game_id[:8]}")
+    return move
 
 
 async def touch(app: FastAPI, game_id: str) -> None:
@@ -296,6 +415,8 @@ async def send_realtime(app: FastAPI, session: "Session", data: bytes) -> None:
                               created_at=int(time.time()), tags=[["i", session.game_id]])
     raw = event.to_dict()
     hub(app).deliver_realtime(session.game_id, raw, skip=session)
+    if session.local:
+        return  # a room's own game: only those playing here
     relay_hub = getattr(app.state, "relay_hub", None)
     if relay_hub is not None:
         relay_hub.broadcast_ephemeral(raw)
@@ -322,6 +443,7 @@ class Session:
     relays: list[str] = field(default_factory=list)
     key: bytes = field(default_factory=secp256k1.generate_secret_key)
     realtime: bool = False
+    local: bool = False  # a room's own game, kept off Nostr
 
 
 class Hub:

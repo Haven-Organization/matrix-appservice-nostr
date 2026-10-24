@@ -139,6 +139,21 @@ class FakeHomeserver(HomeserverClient):
     async def get_event(self, room_id, event_id, *, as_user_id):
         return self._room(room_id)["events"].get(event_id)
 
+    async def get_messages(self, room_id, *, as_user_id, limit=100, from_token=None):
+        events = list(reversed(self._room(room_id)["events"].values()))  # newest first
+        start = int(from_token or 0)
+        page = events[start:start + limit]
+        return {"chunk": page, **({"end": str(start + limit)} if start + limit < len(events) else {})}
+
+    async def get_relations(self, room_id, event_id, rel_type, *, as_user_id, limit=100, from_token=None):
+        related = [e for e in self._room(room_id)["events"].values()
+                   if ((e.get("content") or {}).get("m.relates_to") or {}).get("rel_type") == rel_type
+                   and e["content"]["m.relates_to"].get("event_id") == event_id]
+        related.reverse()  # newest first
+        start = int(from_token or 0)
+        page = related[start:start + limit]
+        return {"chunk": page, **({"next_batch": str(start + limit)} if start + limit < len(related) else {})}
+
     async def get_profile(self, user_id):
         if user_id not in self.profiles:
             raise HomeserverError(404, "M_NOT_FOUND", "Profile was not found")

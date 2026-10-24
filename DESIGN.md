@@ -916,6 +916,32 @@ origin per game would need a certificate for `*.xdc.<domain>`.
 | `webxdc.active_days` | `14` | how long after a game was last opened its moves are followed |
 | `webxdc.max_update_kb` | `128` | largest move accepted |
 
+## The Nostr Games widget
+
+`bridge.games_hub` serves `/xdc/hub` (widget id `nostr-games`) and its API,
+all behind a widget session. Games rooms get it when made. The layout
+(`io.element.widgets.layout`) puts the game widget in the centre and the
+hub on top, or the hub in the centre when no game is open.
+
+- **Catalog**: `{"kinds":[1063],"#m":[the three webxdc types]}` and
+  `{"kinds":[1,1068,1111,1621],"#t":["webxdc"]}` (poster.place's two
+  queries), from `webxdc.catalog_relays` and `nostr.publish_relays`, plus
+  the bridge's own index. Verified; per game id, the oldest announcement
+  wins (a later picture is borrowed). Kept in memory for 15 minutes,
+  never stored. Opening one imports its post as `[import` does.
+- **A room's games**: the pinned events, widget state with `data.game`,
+  and the last 1,000 timeline events, read by the bot. A game is anything
+  with `software.haven.nostr.webxdc` (mirrored posts and cards carry it)
+  or an `.xdc` file.
+- **A room's own games**: an `.xdc` file in Matrix gets the id
+  `uuid5(URL, "matrix:<room>/<event>")` and a `webxdc:local:<id>` entry
+  (room, event, mxc). Only the room's members may load or play it. Moves
+  are `software.haven.nostr.webxdc.update` events in a thread under the
+  file, holding an unsigned update (`id`, `created_at`, `content`, tags)
+  that is never published; realtime stays among the players here.
+- **Opening** (from the hub or a card's 🎮) needs the right to change the
+  room's widgets. The bot sets the widget and posts the card.
+
 ## Communities: Concord
 
 Concord (github.com/concord-protocol/concord, CORD-01..08) is a community

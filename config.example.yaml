@@ -167,6 +167,9 @@ nostr:
 #   active_days: 14
 #   max_update_kb: 128
 #   max_app_mb: 100
+#   # Where the Nostr Games widget finds games to browse, besides the bridge's
+#   # relays (Ditto's and poster.place's).
+#   catalog_relays: ["wss://relay.ditto.pub", "wss://relay.poster.place/"]
 
 logging:
   level: INFO

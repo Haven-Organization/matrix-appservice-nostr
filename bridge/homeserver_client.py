@@ -321,6 +321,27 @@ class HomeserverClient:
                 return None
             raise
 
+    async def get_messages(self, room_id: str, *, as_user_id: str, limit: int = 100,
+                           from_token: str | None = None) -> dict[str, Any]:
+        """One page of the room's timeline, newest first: ``chunk`` and,
+        while there's more, ``end`` (the ``from_token`` for the next page)."""
+        params: dict[str, Any] = {"dir": "b", "limit": str(limit)}
+        if from_token:
+            params["from"] = from_token
+        return await self._request("GET", f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages",
+                                   params=params, as_user_id=as_user_id)
+
+    async def get_relations(self, room_id: str, event_id: str, rel_type: str, *, as_user_id: str, limit: int = 100,
+                            from_token: str | None = None) -> dict[str, Any]:
+        """One page of the events relating to ``event_id`` with ``rel_type``:
+        ``chunk`` and, while there's more, ``next_batch``."""
+        params: dict[str, Any] = {"limit": str(limit)}
+        if from_token:
+            params["from"] = from_token
+        return await self._request(
+            "GET", f"/_matrix/client/v1/rooms/{quote(room_id, safe='')}/relations/{quote(event_id, safe='')}/{quote(rel_type, safe='')}",
+            params=params, as_user_id=as_user_id)
+
     async def redact_event(self, room_id: str, event_id: str, *, as_user_id: str, reason: str | None = None) -> None:
         await self._request(
             "PUT",

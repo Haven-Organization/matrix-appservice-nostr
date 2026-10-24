@@ -35,7 +35,7 @@ router = APIRouter()
 STATIC = Path(__file__).parent / "static" / "webxdc"
 APP_CSP = ("default-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' data: blob:; "
            "connect-src 'self' data: blob:; base-uri 'self'; form-action 'none'")
-_SCRIPTS = {"zip.js", "player.js", "shim.js"}
+_SCRIPTS = {"zip.js", "player.js", "shim.js", "hub.js"}
 
 
 def _enabled(request: Request | WebSocket) -> None:
@@ -131,11 +131,18 @@ async def app_file(request: Request, game: str) -> Response:
     from bridge.widget import _session_user
 
     _enabled(request)
-    _session_user(request)
-    post = await webxdc.game_post(request.app, game)
-    info = await webxdc.app_of_post(request.app, post) if post is not None else None
+    user = _session_user(request)
+    info, _post, local = await webxdc.game_info(request.app, game)
     if info is None:
         raise HTTPException(404, "No such game here.")
+    if local is not None:
+        # A room's own game: from the homeserver, for the room's members.
+        if not await webxdc.in_room(request.app, local["room"], user):
+            raise HTTPException(403, "That game is only for the members of its room.")
+        download = await request.app.state.homeserver.download_media(info.url)
+        if download is None:
+            raise HTTPException(502, "Couldn't get the game from the homeserver.")
+        return Response(download.content, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
     limit = request.app.state.config.webxdc.max_app_mb * 1024 * 1024
     try:
         fetched = await request.app.state.fetcher.get(info.url, max_bytes=limit)
@@ -169,30 +176,43 @@ async def player_socket(websocket: WebSocket) -> None:
         await say({"t": "error", "error": "Sign-in expired; reload the game."})
         await websocket.close()
         return
-    post = await webxdc.game_post(app, game_id)
-    info = await webxdc.app_of_post(app, post) if post is not None else None
-    if info is None:
-        await say({"t": "error", "error": "That game isn't here any more."})
+    info, post, local = await webxdc.game_info(app, game_id)
+    if info is None or (local is not None and not await webxdc.in_room(app, local["room"], user)):
+        await say({"t": "error", "error": "That game isn't here any more." if info is None
+                   else "That game is only for the members of its room."})
         await websocket.close()
         return
     player = await ids.active_id(app, user)
-    author = await app.state.repository.get_remote_account(post.pubkey)
-    relays = list(remotes.write_relays_for(app, author)[:3]) if author else list(config.nostr.publish_relays[:3])
-    session = webxdc.Session(game_id, say, relays=relays)
+    if local is not None:
+        # A room's own game: players are who they are in Matrix.
+        relays: list[str] = []
+        try:
+            display = (await app.state.homeserver.get_profile(user)).get("displayname")
+        except Exception:
+            display = None
+        me = {"addr": user, "name": str(display or user)}
+        moves = await webxdc.local_updates(app, game_id, local)
+    else:
+        author = await app.state.repository.get_remote_account(post.pubkey)
+        relays = list(remotes.write_relays_for(app, author)[:3]) if author else list(config.nostr.publish_relays[:3])
+        me = {"addr": nip19.npub_encode(player.pubkey) if player else user,
+              "name": f"{player.name}@{config.bridge.domain}" if player else user}
+        moves = await webxdc.updates(app, game_id)
+    session = webxdc.Session(game_id, say, relays=relays, local=local is not None)
     hub = webxdc.hub(app)
     hub.add(session)
     await webxdc.touch(app, game_id)
-    name = (f"{player.name}@{config.bridge.domain}" if player else user)
-    await say({
-        "t": "init", "game": webxdc.game_field(info),
-        "self": {"addr": nip19.npub_encode(player.pubkey) if player else user, "name": name},
-        "updates": await webxdc.updates(app, game_id),
-    })
+    await say({"t": "init", "game": webxdc.game_field(info), "self": me, "updates": moves})
     try:
         while True:
             message = json.loads(await websocket.receive_text())
             kind = message.get("t")
-            if kind == "send":
+            if kind == "send" and local is not None:
+                sent = await webxdc.send_local_update(app, user, game_id, local, message.get("update"),
+                                                      str(message.get("descr") or ""))
+                await say({"t": "ack", "id": message.get("id"), "ok": sent is not None,
+                           **({} if sent else {"error": "That move couldn't be sent."})})
+            elif kind == "send":
                 if player is None:
                     await say({"t": "ack", "id": message.get("id"), "ok": False,
                                "error": "You need a Nostr ID to play: send [create profile to the bot."})

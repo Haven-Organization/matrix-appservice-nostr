@@ -341,6 +341,9 @@ def create_app(
     app.include_router(appservice_router)
     app.include_router(relay_router)
     app.include_router(widget_router)
+    from bridge.games_hub import router as games_hub_router
+
+    app.include_router(games_hub_router)
     app.include_router(webxdc_router)
     # Last: its "/{blob}" path would otherwise shadow single-segment routes.
     app.include_router(media_router)
