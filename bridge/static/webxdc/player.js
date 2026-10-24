@@ -178,6 +178,7 @@
     var bytes = null;
     say('Downloading ' + (game.name || 'the game') + '…');
     try{
+      if (!/^https?:/.test(game.url)) throw new Error('not on the web');  // a room's own game (mxc://)
       var res = await fetch(game.url, { mode: 'cors', credentials: 'omit' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       bytes = new Uint8Array(await res.arrayBuffer());
@@ -242,9 +243,13 @@
       var path = '/';
       try{ path = new URL(p.request.url).pathname; }catch(_){}
       serve(path).then(function(r){
-        var buf = r.body.byteOffset === 0 && r.body.byteLength === r.body.buffer.byteLength ? r.body.buffer : r.body.slice().buffer;
+        // Always a copy: transferring the cached file's own buffer would empty
+        // it, and the next request for that file (a HEAD then a GET, say) would
+        // get nothing.
+        var buf = r.body.slice().buffer;
         reply(id, { status: r.status, statusText: '', headers: { 'content-type': r.type, 'content-security-policy': CSP,
-          'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }, bytes: buf }, [buf]);
+          'content-length': String(buf.byteLength), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
+          bytes: buf }, [buf]);
       }, function(){ replyError(id, 'could not read that file from the app'); });
       return;
     }
