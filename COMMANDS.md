@@ -21,7 +21,7 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[unfollow <account>`](#unfollow-account)
   - [`[following`](#following)
   - [`[dm <account>`](#dm-account)
-  - [`[play`](#play)
+  - [`[play [<link>]`](#play-link)
   - [`[import <link|nevent|note|naddr>`](#import-linkneventnotenaddr)
 - [Advanced/Maintenance](#advancedmaintenance)
   - [`[backfill [N]`](#backfill-n)
@@ -118,9 +118,9 @@ Lists the accounts the ID follows, with links to their rooms.
 Opens a DM room with the account, as the ID, and invites you to it. Run it again to be re-invited. Messages there are sent as NIP-17 private DMs. An ID on this server can't be DMed this way: message its owner in Matrix.
 
 
-### `[play`
+### `[play [<link>]`
 
-Send it as a reply to a game post (a webxdc mini app, marked 🎮) in any room. The game opens in your Games room, a room the bridge makes for you the first time and invites you back to if you left. The game is the room's widget, and the next `[play` replaces it. Games need a Matrix client with widgets, such as Element Web or Desktop. Moves are posted as your Active identity. Only when `webxdc.enabled` is on.
+Send it as a reply to a game post (a webxdc mini app, marked 🎮) in any room, or give a link to a game post (on ditto.pub, say), or its `nevent`/`note`/`naddr`: the post is brought in as `[import` would, then opened. The game opens in your Games room, a room the bridge makes for you the first time and invites you back to if you left. The game is the room's widget, and the next `[play` replaces it. Games need a Matrix client with widgets, such as Element Web or Desktop. Moves are posted as your Active identity. Only when `webxdc.enabled` is on.
 
 ### `[import <link|nevent|note|naddr>`
 

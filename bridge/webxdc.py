@@ -57,6 +57,15 @@ class App:
 def apps_of(raw: dict[str, Any]) -> list[App]:
     """The webxdc apps a post carries (NIP-DC ``imeta``), with an identifier."""
     found: list[App] = []
+    groups: list[dict[str, str]] = []
+    if raw.get("kind") == 1063:
+        # NIP-94 file metadata (NIP-DC's other form, which Ditto uses): the
+        # same fields as flat tags.
+        flat: dict[str, str] = {}
+        for tag in raw.get("tags") or []:
+            if isinstance(tag, list) and len(tag) >= 2 and isinstance(tag[1], str):
+                flat.setdefault(tag[0], tag[1].strip())
+        groups.append(flat)
     for tag in raw.get("tags") or []:
         if not isinstance(tag, list) or not tag or tag[0] != "imeta":
             continue
@@ -65,6 +74,8 @@ def apps_of(raw: dict[str, Any]) -> list[App]:
             if isinstance(item, str) and " " in item:
                 key, _, value = item.partition(" ")
                 fields.setdefault(key, value.strip())
+        groups.append(fields)
+    for fields in groups:
         url, game_id = fields.get("url", ""), fields.get("webxdc", "")
         if fields.get("m") != MIME or not url.startswith(("https://", "http://")) or not game_id or len(game_id) > 128:
             continue

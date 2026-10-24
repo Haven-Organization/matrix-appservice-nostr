@@ -256,3 +256,57 @@ def test_websocket_needs_a_session(games, homeserver, relay_pool) -> None:
     followed_game(games, homeserver, relay_pool)
     with games.websocket_connect(f"/xdc/ws?game={GAME}&session=nope") as ws:
         assert ws.receive_json()["t"] == "error"
+
+
+def ditto_game(author, game_id=GAME):
+    """A game as Ditto posts it: a NIP-94 file (kind 1063)."""
+    return author.event(1063, "Dino", [["url", "https://blossom.example/dino.xdc"], ["m", webxdc.MIME], ["x", "cd" * 32],
+                                       ["size", "70966"], ["alt", "Webxdc app: Dino"], ["webxdc", game_id],
+                                       ["image", "https://blossom.example/dino.png"]])
+
+
+def test_ditto_style_game_is_recognised_and_shown(games, homeserver, relay_pool) -> None:
+    import io
+
+    from PIL import Image
+
+    from bridge.safe_fetch import Fetched
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (0, 200, 0)).save(buffer, format="PNG")
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            return Fetched(url, 200, buffer.getvalue(), "image/png")
+
+        async def aclose(self):
+            pass
+
+    games.app.state.fetcher = Fetcher()
+    [found] = webxdc.apps_of(ditto_game(Stranger()))
+    assert found.name == "Dino" and found.url.endswith("dino.xdc") and found.sha256 == "cd" * 32
+    q, alice, post, remote, shown = followed_game(games, homeserver, relay_pool)
+    dino = ditto_game(alice, game_id="33333333-3333-3333-3333-333333333333")
+    assert run(games, ingest, games.app, dino, origin="subscription").stored
+    content = homeserver.messages(remote.room_id)[-1]["content"]
+    assert content["msgtype"] == "m.image"  # the game's icon
+    assert "🎮 Dino: reply [play to open" in content["body"] and "dino.xdc" not in content["body"]
+    assert content[webxdc.GAME_FIELD]["name"] == "Dino"
+
+
+def test_play_and_import_take_a_link(games, homeserver, relay_pool) -> None:
+    from bridge.nostr import nip19
+
+    send(games, message("[create profile"))
+    alice = Stranger()
+    dino = ditto_game(alice, game_id="44444444-4444-4444-4444-444444444444")
+    relay_pool.network.append(dino)
+    link = "https://ditto.pub/" + nip19.nevent_encode(nip19.EventPointer(dino["id"], (), alice.pubkey))
+    send(games, message(f"[play {link}"))
+    reply = homeserver.sent_to("!dm:example.org")[-1]["body"]
+    assert reply.startswith("Opened Dino in your Games room")
+    assert run(games, webxdc.game_post, games.app, "44444444-4444-4444-4444-444444444444") is not None
+    other = ditto_game(alice, game_id="55555555-5555-5555-5555-555555555555")
+    relay_pool.network.append(other)
+    send(games, message(f"[import nostr:{nip19.note_encode(other['id'])}"))
+    assert homeserver.sent_to("!dm:example.org")[-1]["body"].startswith("Imported: ")

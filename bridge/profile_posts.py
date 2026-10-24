@@ -51,7 +51,7 @@ from bridge.users import bot_mxid, is_bridge_user, is_local_user, is_other_bot
 logger = logging.getLogger(__name__)
 
 # What a reply in Matrix can answer on Nostr.
-REPLYABLE_KINDS = frozenset({1, 20, 21, 22, 1111, 30023, 34235, 34236})
+REPLYABLE_KINDS = frozenset({1, 20, 21, 22, 1063, 1111, 30023, 34235, 34236})
 
 
 def _relates_to(content: dict[str, Any]) -> dict[str, Any]:

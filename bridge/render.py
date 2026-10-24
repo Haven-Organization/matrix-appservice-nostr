@@ -70,9 +70,26 @@ class Rendered:
 
 
 def attachments_of(raw: dict[str, Any]) -> list[Attachment]:
-    """Media an event carries: its imeta tags, else media URLs in its text."""
+    """Media an event carries: its imeta tags, else media URLs in its text.
+    A NIP-94 file (kind 1063) carries its file in flat tags, and maybe a
+    preview ``image``, shown in its place when the file isn't a picture or
+    a video itself (a webxdc game's icon, say)."""
     found: list[Attachment] = []
     seen: set[str] = set()
+    if raw.get("kind") == 1063:
+        flat: dict[str, str] = {}
+        for tag in raw.get("tags") or []:
+            if isinstance(tag, list) and len(tag) >= 2 and isinstance(tag[1], str):
+                flat.setdefault(tag[0], tag[1].strip())
+        url = flat.get("url", "")
+        if url.startswith(("https://", "http://")):
+            file = Attachment(url, flat.get("m"), flat.get("x"), flat.get("dim"), flat.get("alt"))
+            preview = flat.get("image") or flat.get("thumb") or ""
+            if file.family not in ("image", "video") and preview.startswith(("https://", "http://")):
+                found.append(Attachment(preview, "image/" + (preview.rsplit(".", 1)[-1].lower() if "." in preview[-6:] else "png")))
+                seen.add(preview)
+            found.append(file)
+            seen.add(url)
     for tag in raw.get("tags") or []:
         if not isinstance(tag, list) or not tag or tag[0] != "imeta":
             continue

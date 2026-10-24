@@ -176,9 +176,9 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                  "and dm)."),
                 (f"{p}following", "List every account your Active identity follows."),
                 (f"{p}dm [<account>]", "Start, or get back into, a private DM with a Nostr account."),
-                *([(f"{p}play",
-                    "Reply to a game post (a webxdc mini app, marked 🎮) to open it in your Games room. Games "
-                    "need a Matrix client with widgets, such as Element Web or Desktop.")]
+                *([(f"{p}play [<link>]",
+                    "Reply to a game post (a webxdc mini app, marked 🎮), or give a link to one, to open it in "
+                    "your Games room. Games need a Matrix client with widgets, such as Element Web or Desktop.")]
                   if config.webxdc.enabled else []),
                 (f"{p}import <link|nevent|note|naddr>",
                  "Bring one Nostr post (or article) into Matrix by its link, without following its author. A reply "
@@ -904,7 +904,7 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
     elif keyword == "play":
         from bridge.games_room import handle_play
 
-        await handle_play(app, room_id, sender, content)
+        await handle_play(app, room_id, sender, content, argument)
     elif keyword == "delete":
         await id_deletion.handle_delete(app, room_id, sender, argument)
     elif keyword in ("link", "unlink"):

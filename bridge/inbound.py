@@ -59,7 +59,8 @@ logger = logging.getLogger(__name__)
 
 INDEXED_TAG_LETTERS = frozenset("epaqkdiEPAK")
 # 34235/34236: NIP-71's addressable videos, shown like kinds 21 and 22.
-POST_KINDS = frozenset({1, 20, 21, 22, 1111, 30023, 34235, 34236})
+# 1063: a NIP-94 file (how Ditto posts webxdc games, among other files).
+POST_KINDS = frozenset({1, 20, 21, 22, 1063, 1111, 30023, 34235, 34236})
 REACTION_KIND = 7
 REPOST_KINDS = frozenset({6, 16})
 ZAP_RECEIPT_KIND = 9735

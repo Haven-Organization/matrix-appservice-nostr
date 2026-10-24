@@ -248,8 +248,8 @@ Bridge admins are listed in `bridge.admins` (or, optionally, are Synapse server 
 
 Off unless `webxdc.enabled`. Webxdc mini apps (games, polls, shared editors) over Nostr, as Ditto and poster.place run them (NIP-DC), so a game is playable from any of them.
 
-- **Game posts** show where any post does, with "🎮 *name*: reply `[play` to open". The game file isn't copied into Matrix. A `.xdc` file you post in your Profile Room is published as a game.
-- **`[play`**, as a reply to a game post anywhere, opens it in your **Games room**: a room the bridge makes for you, with the game as its widget. Opening another game replaces it; the game's state is on Nostr, so nothing is lost. Games need a Matrix client with widgets, such as Element Web or Desktop.
+- **Game posts** show where any post does, with "🎮 *name*: reply `[play` to open". Both forms NIP-DC allows work: a post with the game attached, and a NIP-94 file post (kind 1063, how Ditto posts games), shown with the game's icon. The game file isn't copied into Matrix. A `.xdc` file you post in your Profile Room is published as a game.
+- **`[play`**, as a reply to a game post anywhere (or `[play <link>` with a link to one), opens it in your **Games room**: a room the bridge makes for you, with the game as its widget. Opening another game replaces it; the game's state is on Nostr, so nothing is lost. Games need a Matrix client with widgets, such as Element Web or Desktop.
 - **Moves** are Nostr events signed as your Active identity, sent out at once and then kept in Matrix as hidden events in a thread under the game post, which is a place to talk about the game. Everyone playing the same post plays the same game, here or in another Nostr app.
 - **Realtime** (for games that need it) uses a key made for each session, not yours, and goes only to the bridge's relay and the game author's relays.
 - **Safety:** a game runs on its own hostname (`webxdc.sandbox_domain`), so it can't reach your Matrix or bridge session, and it has no network access at all: every file it asks for comes from the game file itself. All games share that hostname, so one game could read another's saved data.

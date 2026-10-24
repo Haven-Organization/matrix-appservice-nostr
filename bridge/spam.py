@@ -293,7 +293,7 @@ def meets_pow(event: Event, required: int) -> bool:
 
 # Kinds whose p tags are mentions of people (where tagging dozens at once is
 # the "hellthread" spam pattern), as opposed to lists of them.
-_CONVERSATION_KINDS = frozenset({1, 6, 7, 16, 20, 21, 22, 1111, 1068, 30023, 34235, 34236})
+_CONVERSATION_KINDS = frozenset({1, 6, 7, 16, 20, 21, 22, 1063, 1111, 1068, 30023, 34235, 34236})
 
 
 class Tier(Enum):

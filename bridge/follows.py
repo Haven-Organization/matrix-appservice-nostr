@@ -201,7 +201,7 @@ async def thread_root_row(app: FastAPI, room_id: str, content: dict[str, Any]):
     return None
 
 
-THREAD_KINDS = frozenset({1, 20, 21, 22, 1111, 30023, 34235, 34236})
+THREAD_KINDS = frozenset({1, 20, 21, 22, 1063, 1111, 30023, 34235, 34236})
 
 
 async def backfill_thread(app: FastAPI, root_row, count: int) -> int:
@@ -259,7 +259,7 @@ async def backfill_posts(app: FastAPI, remote: RemoteAccount, count: int) -> int
 
     relays = remotes.write_relays_for(app, remote)
     found = await app.state.relay_pool.query(
-        relays, [{"authors": [remote.pubkey], "kinds": [1, 6, 16, 20, 21, 22, 30023, 34235, 34236], "limit": count}], timeout=12.0
+        relays, [{"authors": [remote.pubkey], "kinds": [1, 6, 16, 20, 21, 22, 1063, 30023, 34235, 34236], "limit": count}], timeout=12.0
     )
     posts = sorted(
         (e for e in found if e.get("pubkey") == remote.pubkey), key=lambda e: e.get("created_at", 0)

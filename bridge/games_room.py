@@ -93,7 +93,7 @@ async def show_game(app: FastAPI, room_id: str, game: webxdc.App) -> None:
         logger.info("Could not lay the game out in %s", room_id, exc_info=True)
 
 
-async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str, Any]) -> None:
+async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str, Any], argument: str = "") -> None:
     from bridge.commands import reply_target_event_id
     from bridge.interactions import reposted_original
 
@@ -102,16 +102,29 @@ async def handle_play(app: FastAPI, room_id: str, sender: str, content: dict[str
     if not config.webxdc.enabled:
         await notice(app, room_id, "Games aren't turned on on this bridge.")
         return
-    target = reply_target_event_id(content)
-    relates = content.get("m.relates_to") or {}
-    if target is None and relates.get("rel_type") == "m.thread":
-        target = relates.get("event_id")
-    row = await app.state.repository.get_event_by_matrix_event(target) if target else None
+    row = None
+    if argument.strip():
+        # A link to the game post (or its nevent/note/naddr): brought in
+        # first, as [import does, so there's no need to find it in a room.
+        from bridge.importing import ImportProblem, fetch_post, import_post, parse_post_reference
+
+        try:
+            row = await import_post(app, await fetch_post(app, parse_post_reference(argument)))
+        except ImportProblem as exc:
+            await notice(app, room_id, str(exc))
+            return
+    else:
+        target = reply_target_event_id(content)
+        relates = content.get("m.relates_to") or {}
+        if target is None and relates.get("rel_type") == "m.thread":
+            target = relates.get("event_id")
+        row = await app.state.repository.get_event_by_matrix_event(target) if target else None
     if row is not None and row.kind in (6, 16):
         row = await reposted_original(app, row) or row
     game = await webxdc.app_of_post(app, row) if row is not None else None
     if game is None:
-        await notice(app, room_id, f'Reply "{prefix}play" to a game post (one with "🎮" on it) to open that game.')
+        await notice(app, room_id, f'Reply "{prefix}play" to a game post (one with "🎮" on it), or send '
+                                   f'"{prefix}play <link to the game post>", to open that game.')
         return
     if await webxdc.game_post(app, game.id) is None:
         await webxdc.register_games(app, (await _raw(app, row)) or {})

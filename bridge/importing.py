@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 _BECH_RE = re.compile(r"\b((?:nevent|note|naddr)1[02-9ac-hj-np-z]+)", re.IGNORECASE)
 _MAX_ANCESTORS = 10
-IMPORTABLE_KINDS = frozenset({1, 20, 21, 22, 1111, 30023, 34235, 34236})
+IMPORTABLE_KINDS = frozenset({1, 20, 21, 22, 1063, 1111, 30023, 34235, 34236})
 
 
 class ImportProblem(Exception):
