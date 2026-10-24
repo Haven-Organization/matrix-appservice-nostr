@@ -113,7 +113,9 @@ class Feeds:
             await self._desired_games(desired)
         from bridge import concord
 
-        for (relay, name), filters in (await concord.desired(app)).items():
+        from bridge import groups
+
+        for (relay, name), filters in [*(await concord.desired(app)).items(), *(await groups.desired(app)).items()]:
             since = await self._since(relay, name)
             desired[(relay, name)] = [{**f, "since": since} for f in filters]
         return desired
@@ -184,7 +186,11 @@ class Feeds:
             relay, name = key
             if current is not None:
                 await pool.unsubscribe(relay, current[0])
-            sub_id = pool.subscribe(relay, filters, self._make_handler(name))
+            # A filter's "_auth" names who to authenticate as (NIP-42), for
+            # members-only NIP-29 groups; it isn't sent.
+            auth = next((f["_auth"] for f in filters if f.get("_auth")), None)
+            sent = [{k: v for k, v in f.items() if k != "_auth"} for f in filters]
+            sub_id = pool.subscribe(relay, sent, self._make_handler(name), auth_pubkey=auth)
             self._active[key] = (sub_id, filters)
         logger.info("Subscriptions: %d on %d relays", len(self._active), len({k[0] for k in self._active}))
 
@@ -220,10 +226,15 @@ class Feeds:
         while True:
             relay, name, raw = await self._queue.get()
             try:
-                if name.startswith("concord:"):
-                    from bridge.concord import receive
+                if name.startswith(("concord:", "nip29:")):
+                    if name.startswith("concord:"):
+                        from bridge.concord import receive
 
-                    await receive(self.app, raw)
+                        await receive(self.app, raw)
+                    else:
+                        from bridge.groups import receive as receive_group
+
+                        await receive_group(self.app, relay, raw)
                     created = raw.get("created_at")
                     if isinstance(created, int) and created <= time.time() + 600:
                         await repository.advance_cursor(relay, name, created)

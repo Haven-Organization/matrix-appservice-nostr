@@ -24,6 +24,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 - [Moderation for admins](#moderation-for-admins)
 - [Games](#games)
 - [Communities (Concord)](#communities-concord)
+- [Groups (NIP-29)](#groups-nip-29)
 - [Not supported](#not-supported)
 
 ## Nostr IDs
@@ -270,6 +271,16 @@ Concord is the end-to-end encrypted, Discord-style community protocol of Armada,
 - **Disappearing messages** (CORD-08): expired messages aren't brought in, and messages with an expiry are redacted in Matrix when it passes. Messages sent from Matrix carry the community's timer. Timer changes are shown when they come from staff.
 - **Custom emoji reactions** (NIP-30) both ways, as image reactions with `bridge.msc4027_custom_reactions` on, as on posts.
 - **Not yet:** moderation from Matrix, voice and video. Identities on a remote signer can't join.
+
+## Groups (NIP-29)
+
+NIP-29 groups are open chat groups hosted by a relay, which keeps the group's rules: who's a member, who's an admin, what it's called. Flotilla, Chachi, 0xchat, Coracle and Armada use them. Nothing is encrypted.
+
+- **`[join <group>`** joins one as your Active identity, by its `naddr1…` link (from any app, with `?invite=<code>` if it has one) or as `relay.example'groupid`. The bridge asks the relay to let you in (kind 9021), makes a room for the group in a Space for its relay, and brings in its recent messages and its members. A closed group needs an invite link. If the relay leaves the request for an admin to approve, you're told when you're in.
+- **Messages both ways**: messages, replies (`q` tags), threads (kinds 11 and 1111), reactions (custom emoji too) and deletes. Files are published like a post's. The bridge authenticates to the relay as you (NIP-42), so members-only groups work.
+- **From the relay and its admins**: renames and new pictures change the room's name, topic and avatar. Admins are shown at power level 50, for display only. Members added or removed come and go from the room; if it's you who's removed, you're told and taken out. Messages admins delete are redacted.
+- **Readable on this homeserver.** A `private` group's relay only lets members read, but the room can't be encrypted. The bot says so when you join.
+- **Not yet:** moderating from Matrix, leaving the group from Matrix, editing messages, subgroups as nested Spaces, and live audio/video.
 
 ## Not supported
 

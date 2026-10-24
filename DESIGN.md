@@ -968,6 +968,31 @@ a member needs:
   timer. A 1740 notice is shown only from MANAGE_METADATA holders.
 - **Later:** moderation from Matrix, channel-scoped roles, voice (CORD-07).
 
+## Groups: NIP-29
+
+`bridge.groups` joins relay-based groups. A group is (relay, id); its
+relay signs the metadata, admin and member lists (39000-39002) with its
+NIP-11 `self` key. Without one, the first signer seen is trusted (some
+relays omit `self`; NIP-11 `pubkey` is the operator's and may differ).
+
+- **Joining** sends a 9021 (with the invite `code`) unless the newest
+  9000/9001, or the 39002 list, already has the identity. `duplicate:` is
+  success. A refusal from a closed group without a code stops. Any other
+  refusal leaves the request pending, and a later 9000 says so in the room.
+- **Rooms**: one Space per relay (`nip29:space:<relay>`), one room per
+  group (`nip29:room:<room>` → `relay'id`). Settings and member IDs live in
+  `nip29:g:<relay'id>`; message mappings in `nip29:m:`/`nip29:x:`, as for
+  Concord. Nothing of the messages themselves is stored.
+- **Subscriptions** (`groups.desired`) are per relay and per reading
+  identity. The filter's `_auth` makes `feeds` subscribe with that
+  `auth_pubkey`, so members-only relays get NIP-42 AUTH as a member.
+- **Outgoing** events carry `h` and up to three `previous` references
+  (first 8 hex characters of recent events by others, kept in memory).
+  The mapping is recorded before publishing, so the relay's echo isn't
+  shown twice. A relay refusal is told in the room, as a reply.
+- **Moderation** kinds (9000, 9001, 9005) count only from listed admins or
+  the relay key; the relay is the real enforcer.
+
 ## Bookkeeping tables
 
 Following the siblings' schema style. One SQLite/Postgres schema, one

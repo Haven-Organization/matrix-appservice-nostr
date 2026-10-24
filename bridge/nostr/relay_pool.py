@@ -459,10 +459,12 @@ class RelayPool:
         self.connection(url).subscribe(subscription)
         return subscription.id
 
-    async def query(self, urls: list[str], filters: list[dict[str, Any]], *, timeout: float = 8.0) -> list[dict[str, Any]]:
+    async def query(self, urls: list[str], filters: list[dict[str, Any]], *, timeout: float = 8.0,
+                    auth_pubkey: str | None = None) -> list[dict[str, Any]]:
         """One-off fetch: ask every relay in ``urls`` and collect what they
         send until each says EOSE (or closes, or ``timeout``). Events are
-        deduplicated by id; nothing is verified here."""
+        deduplicated by id; nothing is verified here. ``auth_pubkey``: who
+        to authenticate as (NIP-42) if a relay asks."""
         urls = list(dict.fromkeys(normalize_relay_url(url) for url in urls))
         if not urls:
             return []
@@ -486,7 +488,7 @@ class RelayPool:
             if connection._unsafe:
                 on_done(url, "")
                 continue
-            sub_id = self.subscribe(url, filters, on_event, on_eose=on_done, on_closed=on_done)
+            sub_id = self.subscribe(url, filters, on_event, on_eose=on_done, on_closed=on_done, auth_pubkey=auth_pubkey)
             subs.append((url, sub_id))
         try:
             await asyncio.wait_for(all_done.wait(), timeout)

@@ -40,6 +40,7 @@ from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.shares import maybe_publish_share, repost_relation
 from bridge.concord import maybe_publish as maybe_publish_concord
+from bridge.groups import maybe_publish as maybe_publish_group
 from bridge.users import bot_mxid, is_local_user, is_other_bot
 from bridge.homeserver_client import HomeserverError
 
@@ -129,6 +130,8 @@ _HANDLERS = (
     # A Concord community's channel room: its messages, reactions, edits
     # and redactions go to the community.
     maybe_publish_concord,
+    # A NIP-29 group's room: the same, to the group's relay.
+    maybe_publish_group,
     maybe_handle_reaction,
     maybe_publish_poll,
     maybe_handle_vote,

@@ -119,11 +119,13 @@ Lists the accounts the ID follows, with links to their rooms.
 Opens a DM room with the account, as the ID, and invites you to it. Run it again to be re-invited. Messages there are sent as NIP-17 private DMs. An ID on this server can't be DMed this way: message its owner in Matrix.
 
 
-### `[join <invite link>`
+### `[join <invite link | group>`
 
 Joins a Concord community (the encrypted, Discord-style communities of Armada, Vector and other apps) from its invite link (`https://armada.buzz/invite/naddr1…#…`, or any other site's), as your Active identity. The bridge makes a Space for the community and a room for each channel you can read, invites you, and brings in each channel's recent messages. What you say in those rooms goes to the community, encrypted for it.
 
 Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet.
+
+It also joins NIP-29 groups (the relay-hosted groups of Flotilla, Chachi, 0xchat and others), by their `naddr1…` link (with `?invite=<code>` for a closed group) or as `relay.example'groupid`. The bridge sends the relay your join request, makes a room for the group in a Space for its relay, and brings in its recent messages. What you say there goes to the group as you.
 
 ### `[play [<link>]`
 

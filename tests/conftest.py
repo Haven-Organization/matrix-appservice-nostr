@@ -222,7 +222,7 @@ class FakeRelayPool:
     def connections(self) -> list:
         return []
 
-    async def query(self, urls, filters, *, timeout=8.0):
+    async def query(self, urls, filters, *, timeout=8.0, auth_pubkey=None):
         from bridge.relay_server import matches
 
         found = {}
