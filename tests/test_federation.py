@@ -538,6 +538,10 @@ def test_backfill_a_thread(client, homeserver, relay_pool) -> None:
     assert relation["event_id"] == mirrored["event_id"]
     assert relation["m.in_reply_to"]["event_id"] == rows[first["id"]].matrix_event_id
     assert "Done: 3 replies brought in." in homeserver.sent_to(remote.room_id)[-1]["body"]
+    # The bot answered in the thread it was asked in, before and after.
+    for notice in [c for c in homeserver.sent_to(remote.room_id) if c.get("msgtype") == "m.notice"][-2:]:
+        assert notice["m.relates_to"] == {"rel_type": "m.thread", "event_id": mirrored["event_id"], "is_falling_back": True,
+                                          "m.in_reply_to": {"event_id": "$bf1"}}
     # Again: nothing new.
     transact(client, {"type": "m.room.message", "event_id": "$bf2", "room_id": remote.room_id, "sender": "@q:example.org",
                       "content": {"msgtype": "m.text", "body": "[backfill",

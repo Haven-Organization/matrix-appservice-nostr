@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import html
 import logging
 from typing import Any
@@ -12,6 +13,39 @@ from bridge.homeserver_client import HomeserverError
 from bridge.users import bot_mxid
 
 logger = logging.getLogger(__name__)
+
+# The thread of the event being handled: (room, thread root, the event).
+# The bot's answers go in it, as the user asked in it; work the handling
+# starts in the background (a backfill's "Done", say) keeps it too, since
+# tasks copy the context they're made in.
+_thread: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar("bot_reply_thread", default=None)
+
+
+def answering(event: dict[str, Any]) -> contextvars.Token | None:
+    """Handling ``event``: if it's in a thread, the bot answers there. Pass
+    the result to ``done_answering``."""
+    relates = (event.get("content") or {}).get("m.relates_to") or {}
+    if relates.get("rel_type") != "m.thread" or not isinstance(relates.get("event_id"), str):
+        return _thread.set(None)
+    return _thread.set((event.get("room_id", ""), relates["event_id"], event.get("event_id", "")))
+
+
+def done_answering(token: contextvars.Token | None) -> None:
+    if token is not None:
+        _thread.reset(token)
+
+
+def _in_thread(room_id: str, content: dict[str, Any]) -> None:
+    thread = _thread.get()
+    if thread is None or thread[0] != room_id:
+        return
+    relates = content.get("m.relates_to")
+    if relates is None:
+        content["m.relates_to"] = {"rel_type": "m.thread", "event_id": thread[1], "is_falling_back": True,
+                                   "m.in_reply_to": {"event_id": thread[2]}}
+    elif isinstance(relates, dict) and "rel_type" not in relates and "m.in_reply_to" in relates:
+        # A reply to something in the thread: kept in it.
+        content["m.relates_to"] = {**relates, "rel_type": "m.thread", "event_id": thread[1], "is_falling_back": False}
 
 
 async def notice(
@@ -33,6 +67,7 @@ async def notice(
         content["formatted_body"] = html_message
     if extra:
         content.update(extra)
+    _in_thread(room_id, content)
     try:
         return await app.state.homeserver.send_message_event(room_id, content, as_user_id=bot_mxid(app.state.config))
     except HomeserverError:

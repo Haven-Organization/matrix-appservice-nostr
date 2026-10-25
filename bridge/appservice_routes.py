@@ -163,9 +163,15 @@ async def handle_event(request: Request, event: dict[str, Any]) -> None:
         and repost_relation(event) is None
     ):
         return
-    for handler in _HANDLERS:
-        if await handler(request, event):
-            return
+    from bridge.messages import answering, done_answering
+
+    token = answering(event)  # the bot answers in the event's thread, if it's in one
+    try:
+        for handler in _HANDLERS:
+            if await handler(request, event):
+                return
+    finally:
+        done_answering(token)
 
 
 @router.put("/_matrix/app/v1/transactions/{txn_id}")
