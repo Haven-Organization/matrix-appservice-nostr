@@ -365,6 +365,10 @@ class RelayConnection:
             if not accepted and message.startswith("auth-required:"):
                 if await self._authenticate(event.pubkey, max(0.1, deadline - time.monotonic())):
                     accepted, message = await self._send_event(event, max(0.1, deadline - time.monotonic()))
+                    if not accepted and message.startswith("auth-required:"):
+                        # Signed in, and still turned away: a members-only
+                        # relay. That's its policy, not something to retry.
+                        message = "restricted:" + message.removeprefix("auth-required:")
             if not accepted and message.startswith("rate-limited:"):
                 self._cooldown()
             elif accepted:

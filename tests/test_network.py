@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import pytest
@@ -112,8 +113,10 @@ class FakeRelay:
     """Enough of a relay to exercise the pool: stores events, answers REQs
     by author, and can require NIP-42 auth, rate-limit, or hang up."""
 
-    def __init__(self, *, require_auth: bool = False, rate_limit_after: int | None = None) -> None:
-        self.require_auth = require_auth
+    def __init__(self, *, require_auth: bool = False, rate_limit_after: int | None = None,
+                 members: set[str] | None = None) -> None:
+        self.require_auth = require_auth or members is not None
+        self.members = members
         self.rate_limit_after = rate_limit_after
         self.events: list[dict[str, Any]] = []
         self.reqs: list[list[Any]] = []
@@ -144,6 +147,8 @@ class FakeRelay:
                     await ws.send(json.dumps(["OK", event["id"], False, "rate-limited: slow down"]))
                 elif self.require_auth and event["pubkey"] not in authed:
                     await ws.send(json.dumps(["OK", event["id"], False, "auth-required: who are you"]))
+                elif self.members is not None and event["pubkey"] not in self.members:
+                    await ws.send(json.dumps(["OK", event["id"], False, "auth-required: members only"]))
                 else:
                     nostr_event.verify(event)
                     self.events.append(event)
@@ -244,6 +249,27 @@ async def test_a_dns_failure_is_tried_again(monkeypatch) -> None:
         failing[0] = False
         [result] = await pool.publish(_note(secret, "y"), [url], timeout=6)
         assert result.accepted
+    finally:
+        await pool.close()
+        server.close()
+
+
+async def test_members_only_relay_is_a_policy_refusal() -> None:
+    # Still "auth-required" after signing in: the relay only takes its own
+    # members, so retrying won't help.
+    relay = FakeRelay(members=set())
+    server, url = await _start(relay)
+    secret = secp256k1.generate_secret_key()
+
+    async def signer(for_pubkey: str, relay_url: str, challenge: str):
+        return nostr_event.build(secret, kind=22242, content="", created_at=int(time.time()),
+                                 tags=[["relay", relay_url], ["challenge", challenge]])
+
+    pool = RelayPool(allow_private=True, min_send_interval=0, auth_signer=signer)
+    try:
+        [result] = await pool.publish(_note(secret, "x"), [url], timeout=5)
+        assert relay.authed_pubkeys and not result.accepted and not result.retryable
+        assert result.message == "restricted: members only"
     finally:
         await pool.close()
         server.close()
