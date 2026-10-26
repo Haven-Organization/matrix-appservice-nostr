@@ -123,6 +123,9 @@ async def _attempt(app: FastAPI, event: Event, relays: list[str], attempts: int,
         logger.info("%s accepted %s", result.relay, event.id)
     for result in [*policy, *other]:
         logger.info("%s refused %s: %s", result.relay, event.id, result.message)
+    for result in results:
+        if result.retryable:
+            logger.info("%s didn't take %s (trying again later): %s", result.relay, event.id, result.message or "no answer")
     if policy:
         await _record_policy_refusals(app, event.pubkey, policy, notify)
     if retry and attempts < _MAX_ATTEMPTS:
