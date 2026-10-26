@@ -67,13 +67,16 @@ def _is_edit(content: dict[str, Any]) -> bool:
 
 def _reply_targets(content: dict[str, Any]) -> list[str]:
     """What a message answers, most specific first: the event it replies
-    to, then its thread's root."""
+    to, then its thread's root. A reply picked out on purpose inside a
+    thread answers just that event, not the thread's root."""
     relates = _relates_to(content)
     targets = []
     in_reply_to = (relates.get("m.in_reply_to") or {}).get("event_id")
     if isinstance(in_reply_to, str):
         targets.append(in_reply_to)
     if relates.get("rel_type") == "m.thread" and isinstance(relates.get("event_id"), str):
+        if targets and relates.get("is_falling_back") is False:
+            return targets
         targets.append(relates["event_id"])
     return targets
 
@@ -171,20 +174,6 @@ async def _reply_heading(app: FastAPI, relation: dict[str, Any]) -> dict[str, st
             "url": url if isinstance(url, str) and url.startswith(("https://", "http://")) else ""}
 
 
-async def _replies_to_own_message(app: FastAPI, room_id: str, content: dict[str, Any], sender: str) -> bool:
-    """True for a message that isn't a reply, or answers ``sender``'s own
-    message. False if it answers anyone else's, or what it answers can't be
-    found."""
-    targets = _reply_targets(content)
-    if not targets:
-        return True
-    try:
-        target = await app.state.homeserver.get_event(room_id, targets[0], as_user_id=bot_mxid(app.state.config))
-    except HomeserverError:
-        return False
-    return bool(target) and target.get("sender") == sender
-
-
 async def _mentions(app: FastAPI, content: dict[str, Any]) -> list[dict[str, str]]:
     """The message's pills of Nostr accounts: local users with an ID (the
     key their active ID has now) and ghosts of remote accounts."""
@@ -276,10 +265,10 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
         return profile_id is not None  # conversation, not a post
     if author is None:
         return True
-    if parent is None and not await _replies_to_own_message(app, room_id, content, sender):
-        # Answering something that isn't on Nostr and isn't the owner's own:
-        # another bridge's post or bot (a room shared with other bridges), or
-        # someone in the room. That's conversation, not a Nostr post.
+    if parent is None and social is None and _reply_targets(content):
+        # Answering something that isn't on Nostr (in a thread or not): a
+        # guest in the room, another bridge's post or bot, or one of the
+        # owner's own messages that was never posted. That's conversation.
         return True
     await _publish_post(app, event, author, parent)
     return True

@@ -84,10 +84,44 @@ def test_replies_to_things_not_on_nostr_stay_in_matrix(client, homeserver, relay
     for target in (question, ghost):
         send(client, message("confirm", room=room, reply_to=target["event_id"]))
     assert relay_pool.of_kind(1) == []
-    # Replying to your own message that never went to Nostr is still a post.
+    # Nor is replying to your own message that never went to Nostr.
     own = homeserver._store(room, "m.room.message", {"msgtype": "m.text", "body": "older"}, "@q:example.org")
     send(client, message("following up", room=room, reply_to=own["event_id"]))
-    assert relay_pool.of_kind(1)[-1].content == "following up"
+    assert relay_pool.of_kind(1) == []
+
+
+def test_chatting_with_a_guest_in_a_profile_room(shared, homeserver, relay_pool) -> None:
+    send(shared, message("[create profile"))
+    [q] = ids_of(shared)
+    room = q.profile_room_id
+
+    def threaded(body, root, reply, falling_back):
+        event = message(body, room=room)
+        event["content"]["m.relates_to"] = {"rel_type": "m.thread", "event_id": root, "is_falling_back": falling_back,
+                                            "m.in_reply_to": {"event_id": reply}}
+        return event
+
+    guest = homeserver._store(room, "m.room.message", {"msgtype": "m.text", "body": "hey there"}, "@guest:example.org")
+    send(shared, message("hi back", room=room, reply_to=guest["event_id"]))
+    send(shared, threaded("in his thread", guest["event_id"], guest["event_id"], True))
+    assert relay_pool.of_kind(1) == []
+    # A thread under a post: replying to the post is a Nostr reply, but an
+    # explicit reply to the guest in it stays in Matrix.
+    posted = message("a real post", room=room)
+    send(shared, posted)
+    [post] = relay_pool.of_kind(1)
+    said = homeserver._store(room, "m.room.message", {"msgtype": "m.text", "body": "cool"}, "@guest:example.org")
+    send(shared, threaded("thanks", posted["event_id"], said["event_id"], False))
+    assert relay_pool.of_kind(1) == [post] and not relay_pool.of_kind(1111)
+    send(shared, threaded("more on this", posted["event_id"], said["event_id"], True))
+    assert relay_pool.of_kind(1)[-1].content == "more on this"
+    # Asides: a prefix and a space (or a prefix alone), ours or another bot's.
+    published = len(relay_pool.of_kind(1))
+    answered = len(homeserver.sent_to(room))
+    for body in ("[ just between us", "[ help", "[", "] and this", "[\nsecond line"):
+        send(shared, message(body, room=room))
+    assert len(relay_pool.of_kind(1)) == published
+    assert len(homeserver.sent_to(room)) == answered
 
 
 def _mark_shared(homeserver, room, *, msc4501_level=None):

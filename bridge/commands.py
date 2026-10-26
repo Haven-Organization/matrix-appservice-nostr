@@ -124,10 +124,26 @@ def message_addresses_other_bot(content: dict, config: Any) -> bool:
     return False
 
 
+@lru_cache(maxsize=32)
+def _aside_re(prefixes: tuple[str, ...]) -> re.Pattern[str]:
+    alternatives = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
+    return re.compile(rf"^(?:{alternatives})(?:\s|$)")
+
+
+def is_aside(content: dict, config: Any) -> bool:
+    """A message starting with a command prefix and then a space ("[ hi"),
+    or just a prefix: said in Matrix only. Never published, and no bot
+    answers it."""
+    section = config.appservice
+    prefixes = (section.command_prefix, *section.other_command_prefixes)
+    return bool(_aside_re(tuple(prefixes)).match(first_line(content).rstrip()))
+
+
 def message_for_a_bot(content: dict, config: Any) -> bool:
-    """Whether a message is meant for this bot or another one: either way,
-    it's never published."""
-    return message_addresses_bot(content, config) or message_addresses_other_bot(content, config)
+    """Whether a message is meant for this bot or another one (or is an
+    aside): either way, it's never published."""
+    return (is_aside(content, config) or message_addresses_bot(content, config)
+            or message_addresses_other_bot(content, config))
 
 
 def _handle(app: FastAPI, nostr_id: NostrId) -> str:
@@ -169,6 +185,10 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
             "Following, messaging, and everyday commands.",
             [
                 (f"{p}help", "Show this message, or run with a section name to see its commands."),
+                (f"{p} <message>",
+                 f'An aside: "{p}" and a space starts a message that stays in Matrix. It isn\'t posted to Nostr '
+                 "and I don't answer it. Replies to messages that aren't Nostr posts (in a thread or not) stay "
+                 "in Matrix too, so you can chat with guests in your Profile Room."),
                 (f"{p}follow [<account>]",
                  "Follow a Nostr account (npub, nprofile, name@domain or a profile link) as your Active identity, "
                  f'in a room of its own for its posts. Undo it with "{p}unfollow", or by leaving that room. Run '
@@ -867,6 +887,8 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
     room_id = event.get("room_id", "")
     if not sender or not room_id:
         return False
+    if is_aside(content, config):
+        return True  # "[ ...": kept out of Nostr, and not answered
     if not message_addresses_bot(content, config):
         # Another bot's command: not ours to answer, and never a post.
         return message_addresses_other_bot(content, config)

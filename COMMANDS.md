@@ -17,6 +17,7 @@ Where a command takes an `<account>`, any of these work: `npub1â€¦`, `nprofile1â
   - [`[create room <number or id>`](#create-room-number-or-id)
 - [General](#general)
   - [`[help [section]`](#help-section)
+  - [`[ <message>`](#-message)
   - [`[follow <account>`](#follow-account)
   - [`[unfollow <account>`](#unfollow-account)
   - [`[following`](#following)
@@ -99,6 +100,12 @@ Following, messaging, and everyday commands. These act as your Active identity, 
 ### `[help [section]`
 
 Without a section, lists the sections with a line about each. `[help <section>` shows that section's commands, as a table: `[help profile`, `[help general`, `[help advanced`, `[help admin` (bridge admins only) or `[help danger`. `[help all` shows every section but Admin.
+
+### `[ <message>`
+
+An aside. A message that starts with `[` and a space (or with one of the other bots' prefixes and a space, or is just a prefix) stays in Matrix: it isn't posted to Nostr, and no bot answers it. `[ help` is an aside too, not a command.
+
+Replies don't need it: a reply (or an explicit reply inside a thread) to a message that isn't a Nostr post stays in Matrix as well. So you can chat with someone you've invited to your Profile Room without posting by accident.
 
 ### `[follow <account>`
 
