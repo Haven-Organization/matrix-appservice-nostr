@@ -39,6 +39,11 @@ class UnsafeAddress(Exception):
     """The URL points somewhere the bridge refuses to connect to."""
 
 
+class ResolveFailed(UnsafeAddress):
+    """The host's name didn't resolve: maybe gone, maybe a passing DNS
+    hiccup, so nothing to hold against it for good."""
+
+
 class FetchError(Exception):
     """The fetch failed: unreachable, too big, too slow, or too many redirects."""
 
@@ -87,10 +92,10 @@ async def resolve_target(url: str, *, allow_private: bool, schemes: tuple[str, .
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
         except OSError as exc:
-            raise UnsafeAddress(f"Could not resolve {hostname}") from exc
+            raise ResolveFailed(f"Could not resolve {hostname}") from exc
         addresses = list(dict.fromkeys(info[4][0] for info in infos))
         if not addresses:
-            raise UnsafeAddress(f"Could not resolve {hostname}")
+            raise ResolveFailed(f"Could not resolve {hostname}")
     if not allow_private and not all(_is_public(address) for address in addresses):
         raise UnsafeAddress(f"{hostname} does not resolve to a public address")
     return Target(scheme=scheme, hostname=hostname, port=port, address=addresses[0])

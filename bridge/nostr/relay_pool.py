@@ -35,7 +35,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection, connect
 
 from bridge.nostr.event import Event
-from bridge.safe_fetch import USER_AGENT, SafeFetcher, UnsafeAddress, resolve_target
+from bridge.safe_fetch import USER_AGENT, ResolveFailed, SafeFetcher, UnsafeAddress, resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +183,10 @@ class RelayConnection:
                     for subscription in list(self.subscriptions.values()):
                         await self._send_req(subscription)
                     await self._read_loop(ws)
+            except ResolveFailed as exc:
+                # A DNS failure is tried again later, like any failed connection.
+                self.last_error = str(exc)
+                logger.info("Relay %s: %s", self.url, exc)
             except UnsafeAddress as exc:
                 self.last_error = str(exc)
                 self._unsafe = True

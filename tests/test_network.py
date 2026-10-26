@@ -12,7 +12,7 @@ from websockets.asyncio.server import serve
 from bridge.nostr import event as nostr_event
 from bridge.nostr import secp256k1
 from bridge.nostr.relay_pool import RelayPool, normalize_relay_url
-from bridge.safe_fetch import FetchError, SafeFetcher, UnsafeAddress, resolve_target
+from bridge.safe_fetch import FetchError, ResolveFailed, SafeFetcher, UnsafeAddress, resolve_target
 
 # -- address guard -------------------------------------------------------------
 
@@ -216,6 +216,34 @@ async def test_private_relay_refused_without_flag() -> None:
         [result] = await pool.publish(_note(secp256k1.generate_secret_key(), "x"), [url], timeout=2)
         assert not result.accepted and result.message.startswith("blocked:") and not result.retryable
         assert relay.connections == 0
+    finally:
+        await pool.close()
+        server.close()
+
+
+async def test_a_dns_failure_is_tried_again(monkeypatch) -> None:
+    # A name that didn't resolve once (a DNS hiccup) isn't "blocked", and
+    # isn't given up on.
+    import bridge.nostr.relay_pool as relay_pool
+
+    relay = FakeRelay()
+    server, url = await _start(relay)
+    failing = [True]
+
+    async def flaky(*args, **kwargs):
+        if failing[0]:
+            raise ResolveFailed("Could not resolve relay.example")
+        return await resolve_target(*args, **kwargs)
+
+    monkeypatch.setattr(relay_pool, "resolve_target", flaky)
+    pool = RelayPool(allow_private=True, connect_timeout=1, min_send_interval=0)
+    secret = secp256k1.generate_secret_key()
+    try:
+        [result] = await pool.publish(_note(secret, "x"), [url], timeout=1)
+        assert not result.accepted and result.retryable and not result.message.startswith("blocked:")
+        failing[0] = False
+        [result] = await pool.publish(_note(secret, "y"), [url], timeout=6)
+        assert result.accepted
     finally:
         await pool.close()
         server.close()
