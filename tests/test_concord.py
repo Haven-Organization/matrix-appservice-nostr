@@ -440,3 +440,59 @@ def test_a_declined_room_isnt_invited_to_again(client, homeserver, relay_pool) -
     assert homeserver.invites.count((state.channels[git]["room"], "@q:example.org")) == 1
     send(client, message(f"[join {community.link()}"))
     assert invites() == 2
+
+
+def test_the_icon_and_banner_go_on_the_space(client, homeserver, relay_pool) -> None:
+    import hashlib
+    import io
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from PIL import Image
+
+    from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
+    from bridge.safe_fetch import Fetched
+
+    def png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), colour).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    files, fetched = {}, []
+
+    def sealed(url, image):
+        key, nonce = secrets.token_bytes(32), secrets.token_bytes(16)
+        files[url] = AESGCM(key).encrypt(nonce, image, None)
+        return {"url": url, "key": key.hex(), "nonce": nonce.hex(), "hash": hashlib.sha256(image).hexdigest(), "ext": "png"}
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            fetched.append(url)
+            return Fetched(url, 200, files[url], "application/octet-stream")
+
+        async def aclose(self):
+            pass
+
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    client.app.state.fetcher = Fetcher()
+    icon, banner = png((1, 2, 3)), png((4, 5, 6))
+    meta = {"name": "PosterChan", "relays": [RELAY], "icon": sealed("https://media.example/i1", icon),
+            "banner": sealed("https://media.example/b1", banner)}
+    run(client, concord.receive, client.app, community.edition("0", community.id, meta, version=2))
+    state = run(client, concord.load, client.app, community.id)
+    avatar = homeserver.state_of(state.space, "m.room.avatar")
+    assert homeserver.media[avatar["url"]] == (icon, "image/png")
+    assert homeserver.state_of(room, "m.room.avatar") == avatar  # the channels too
+    assert homeserver.media[homeserver.state_of(state.space, PROFILE_BANNER_STATE_TYPE)["url"]][0] == banner
+    # Nothing's fetched again until they change; then the new icon replaces it.
+    run(client, concord.receive, client.app, community.edition("0", community.id, dict(meta, name="PosterChan 2"), version=3))
+    assert fetched == ["https://media.example/i1", "https://media.example/b1"]
+    files["https://media.example/plain.png"] = icon2 = png((7, 8, 9))
+    meta = {"name": "PosterChan", "relays": [RELAY], "picture": "https://media.example/plain.png"}
+    run(client, concord.receive, client.app, community.edition("0", community.id, meta, version=4))
+    assert homeserver.media[homeserver.state_of(state.space, "m.room.avatar")["url"]] == (icon2, "image/png")
+    assert homeserver.state_of(state.space, PROFILE_BANNER_STATE_TYPE) == {}  # the banner was taken away
+    # A sealed file that doesn't match its hash isn't shown.
+    bad = sealed("https://media.example/i2", png((0, 0, 0)))
+    bad["hash"] = "00" * 32
+    run(client, concord.receive, client.app, community.edition("0", community.id, dict(meta, icon=bad), version=5))
+    assert homeserver.media[homeserver.state_of(state.space, "m.room.avatar")["url"]] == (icon2, "image/png")

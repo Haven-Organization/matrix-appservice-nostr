@@ -223,6 +223,14 @@ class Community:
     # Room -> the Matrix users invited to it once already: nobody is invited
     # again (someone who declined, or left, stays out) until they "[join" again.
     invited: dict[str, list[str]] = field(default_factory=dict)
+    # The community's icon and banner: {"url"} for a plain link, or with
+    # "key", "nonce" (AES-GCM), "hash" (of the image) and "ext" when the
+    # file is encrypted for the community, as Armada uploads them.
+    icon: dict[str, str] = field(default_factory=dict)
+    banner: dict[str, str] = field(default_factory=dict)
+    # What's been put in Matrix of those: "icon"/"banner" -> the image it
+    # was, "icon_mxc" -> its upload, "rooms" -> room -> the icon it shows.
+    shown: dict[str, Any] = field(default_factory=dict)
 
     # -- the roster (CORD-04 §3) --
     def rank(self, pubkey: str) -> int:
@@ -406,6 +414,29 @@ def _heads(community: Community, editions: list[dict[str, Any]], vsk: str, allow
     return best
 
 
+_IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+
+
+def _image_ref(value: Any) -> dict[str, str]:
+    """A community image from its metadata: a plain https link, or an
+    encrypted file ({"url", "key", "nonce", "hash", "ext"})."""
+    if isinstance(value, str):
+        return {"url": value} if value.startswith("https://") and len(value) <= 2000 else {}
+    if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"].startswith("https://"):
+        return {}
+    ref = {"url": value["url"][:2000]}
+    for name, size in (("key", 64), ("nonce", 0), ("hash", 64)):
+        item = value.get(name)
+        if isinstance(item, str) and all(c in "0123456789abcdefABCDEF" for c in item) and item and (not size or len(item) == size):
+            ref[name] = item.lower()
+    if bool(ref.get("key")) != bool(ref.get("nonce")) or ("key" in ref and not 16 <= len(ref["nonce"]) <= 256):
+        return {}
+    ext = value.get("ext")
+    if isinstance(ext, str) and ext.lower() in _IMAGE_TYPES:
+        ref["ext"] = ext.lower()
+    return ref
+
+
 def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
     """The Control Plane folded (CORD-04): the roster first, outward from the
     owner until it settles, then metadata and channels by permission."""
@@ -457,6 +488,8 @@ def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
         community.description = str(content.get("description") or "")[:2000]
         picture = content.get("picture")
         community.picture = picture if isinstance(picture, str) and picture.startswith("https://") else community.picture
+        community.icon = _image_ref(content.get("icon")) or _image_ref(picture)
+        community.banner = _image_ref(content.get("banner"))
         relays = [r for r in content.get("relays") or [] if isinstance(r, str) and r.startswith(("wss://", "ws://"))]
         if relays:
             community.relays = relays[:_MAX_RELAYS]
@@ -502,7 +535,6 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
             preset="private_chat", history_visibility="shared",
         )
         made.add(community.space)
-        await _set_avatar(app, community.space, community.picture)
     for channel_id in community.readable():
         info = community.channels[channel_id]
         name = f"#{info.get('name') or 'channel'}"
@@ -516,7 +548,6 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
                                               as_user_id=bot, state_key=info["room"])
             made.add(info["room"])
             await app.state.repository.set_state(_ROOM.format(info["room"]), f"{community.id}|{channel_id}")
-            await _set_avatar(app, info["room"], community.picture)
         else:
             current = await homeserver.get_room_state(info["room"], "m.room.name", as_user_id=bot)
             if (current or {}).get("name") != name:
@@ -525,6 +556,7 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
     from bridge.spaces import add_room_to_space
 
     rooms = [community.space, *(community.channels[c]["room"] for c in community.readable())]
+    await _show_images(app, community, rooms)
     for room in rooms:
         if room not in community.invited:
             # Made just now (everyone was invited with it), or from before
@@ -541,7 +573,40 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
         await add_room_to_space(app, user, community.space)
 
 
+async def _fetch_image(app: FastAPI, ref: dict[str, str]) -> tuple[bytes, str]:
+    """The image's bytes and type: fetched, and decrypted if it's sealed for
+    the community (checked against its hash)."""
+    fetched = await app.state.fetcher.get(ref["url"], max_bytes=app.state.config.nostr.max_media_mb * 1024 * 1024)
+    data = fetched.content
+    if ref.get("key"):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        data = AESGCM(bytes.fromhex(ref["key"])).decrypt(bytes.fromhex(ref["nonce"]), data, None)
+    if ref.get("hash") and hashlib.sha256(data).hexdigest() != ref["hash"]:
+        raise ValueError("hash mismatch")
+    mime = _IMAGE_TYPES.get(ref.get("ext", ""))
+    if mime is None:
+        mime = {b"\x89PNG": "image/png", b"\xff\xd8\xff": "image/jpeg", b"GIF8": "image/gif"}.get(
+            next((m for m in (b"\x89PNG", b"\xff\xd8\xff", b"GIF8") if data.startswith(m)), b""), "")
+        if not mime and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            mime = "image/webp"
+    if not mime:
+        raise ValueError("not an image")
+    return data, mime
+
+
+async def _upload_image(app: FastAPI, ref: dict[str, str], name: str) -> str | None:
+    try:
+        data, mime = await _fetch_image(app, ref)
+        return await app.state.homeserver.upload_media(data, mime, f"{name}.{mime.split('/')[1]}",
+                                                        as_user_id=bot_mxid(app.state.config))
+    except Exception as exc:
+        logger.info("Could not fetch a community %s from %s: %s", name, ref.get("url"), exc)
+        return None
+
+
 async def _set_avatar(app: FastAPI, room_id: str, url: str) -> None:
+    """A room's avatar from a plain image link (NIP-29 groups)."""
     if not url:
         return
     from bridge.render import Attachment, copy_attachment
@@ -553,6 +618,51 @@ async def _set_avatar(app: FastAPI, room_id: str, url: str) -> None:
                                                         as_user_id=bot_mxid(app.state.config))
     except HomeserverError:
         logger.info("Could not set the avatar of %s", room_id, exc_info=True)
+
+
+def _ref_key(ref: dict[str, str]) -> str:
+    return json.dumps(ref, sort_keys=True) if ref else ""
+
+
+async def _show_images(app: FastAPI, community: Community, rooms: list[str]) -> None:
+    """The community's icon as the avatar of its Space and rooms, and its
+    banner as the Space's banner: set when they change (or a room is new)."""
+    from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
+
+    homeserver = app.state.homeserver
+    bot = bot_mxid(app.state.config)
+    shown = community.shown
+    icon = _ref_key(community.icon)
+    if icon and shown.get("icon") != icon:
+        # If it can't be fetched now, it's tried again at the next change
+        # to the community, or the next "[join".
+        mxc = await _upload_image(app, community.icon, "icon")
+        if mxc is not None:
+            shown.update(icon=icon, icon_mxc=mxc)
+    elif not icon:
+        shown.pop("icon", None)
+        shown.pop("icon_mxc", None)
+    seen = shown.setdefault("rooms", {})
+    for room in rooms if shown.get("icon", "") == icon else ():
+        if seen.get(room) == icon:
+            continue
+        try:
+            await homeserver.send_state_event(room, "m.room.avatar", {"url": shown["icon_mxc"]} if icon else {},
+                                              as_user_id=bot)
+            seen[room] = icon
+        except HomeserverError:
+            logger.info("Could not set the avatar of %s", room, exc_info=True)
+    banner = _ref_key(community.banner)
+    if shown.get("banner", "") != banner and community.space:
+        mxc = await _upload_image(app, community.banner, "banner") if banner else None
+        if banner and mxc is None:
+            return
+        try:
+            await homeserver.send_state_event(community.space, PROFILE_BANNER_STATE_TYPE, {"url": mxc} if mxc else {},
+                                              as_user_id=bot, state_key="")
+            shown["banner"] = banner
+        except HomeserverError:
+            logger.info("Could not set the banner of %s", community.space, exc_info=True)
 
 
 # -- joining --------------------------------------------------------------------------------
@@ -690,6 +800,18 @@ async def _refresh(app: FastAPI, community: Community) -> None:
         logger.info("Could not update the rooms of %s", community.id, exc_info=True)
     await save(app, community)
     app.state.feeds.changed()
+
+
+async def refresh_all(app: FastAPI) -> None:
+    """At startup: each community's metadata, channels and roster, for
+    whatever changed while the bridge was away."""
+    for community in await all_communities(app):
+        if community.removed or community.space is None:
+            continue
+        try:
+            await _refresh(app, community)
+        except Exception:
+            logger.exception("Could not refresh community %s", community.id)
 
 
 # -- roles as power levels ------------------------------------------------------------------
