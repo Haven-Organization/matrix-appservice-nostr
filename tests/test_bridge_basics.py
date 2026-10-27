@@ -28,9 +28,9 @@ def test_config_defaults(config) -> None:
     raw = raw_config()
     del raw["nostr"]["publish_relays"]
     defaults = parse_config(raw).nostr
-    assert "wss://poster.place/relay" in defaults.publish_relays
-    assert "wss://relay.poster.place/" in defaults.publish_relays
-    # poster.place requires auth even to read, so it isn't a fallback.
+    # poster.place only takes posts from its members, and requires auth even
+    # to read, so it's neither.
+    assert not any("poster.place" in url for url in defaults.publish_relays)
     assert not any("poster.place" in url for url in defaults.fallback_relays)
 
 

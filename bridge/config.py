@@ -23,9 +23,8 @@ DEFAULT_PUBLISH_RELAYS = (
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
-    "wss://poster.place/relay",
-    "wss://relay.poster.place/",
 )
+# Not poster.place: it only takes posts from its own members now.
 DEFAULT_DISCOVERY_RELAYS = ("wss://purplepag.es", "wss://relay.damus.io")
 # For reading accounts that publish no relay list. Not poster.place: it
 # requires authentication even to read.

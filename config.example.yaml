@@ -113,8 +113,7 @@ nostr:
   # in the database are useless, and those identities are lost.
   key_encryption_secret: "key_secret_replace_me"
 
-  # publish_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net,
-  #                  wss://poster.place/relay, wss://relay.poster.place/]
+  # publish_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net]
   # discovery_relays: [wss://purplepag.es, wss://relay.damus.io]
   # fallback_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net]
   # web_viewer_url: https://ditto.pub/
