@@ -38,7 +38,9 @@ from bridge.users import bot_mxid
 logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
-_NOSTR_RE = re.compile(r"(?:nostr:)?((?:npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]{20,})")
+# A leading "@" is part of the match: many clients write a mention as
+# "@nostr:npub1...", and the pill it becomes replaces the "@" too.
+_NOSTR_RE = re.compile(r"@?(?:nostr:)?((?:npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]{20,})")
 _SHORTCODE_RE = re.compile(r":([a-zA-Z0-9_-]+):")
 _TRAILING = ".,;:!?)]}'\""
 _MEDIA_EXTENSIONS = {
@@ -183,6 +185,10 @@ async def render(app: FastAPI, raw: dict[str, Any], *, skip_urls: set[str] | fro
                 f'alt=":{html.escape(value)}:" title=":{html.escape(value)}:">'
             )
         else:
+            if token_text.startswith("@") and not value.startswith(("npub", "nprofile")):
+                # Only a person's "@" belongs to the pill; keep any other.
+                plain.append("@")
+                rich.append("@")
             label, link = await _nostr_reference(app, value, viewer)
             plain.append(label)
             rich.append(link)

@@ -647,3 +647,17 @@ def test_reacting_to_a_repost_card_acts_on_the_original(client, homeserver, rela
     relation = my_card["content"]["org.matrix.msc4501.social.relates_to"]
     assert relation["event_id"] == original_row.matrix_event_id
     assert my_card["content"]["org.matrix.msc4501.social.body"] == "bob's original post"
+
+
+def test_an_at_sign_before_a_mention_belongs_to_the_pill(client) -> None:
+    from bridge.render import render
+
+    q = create_id(client)
+    npub = nip19.npub_encode(q.pubkey)
+    note = nip19.note_encode("ab" * 32)
+    raw = Stranger().event(1, f"hi @nostr:{npub} and @{npub}!", [["p", q.pubkey]])
+    shown = run(client, render, client.app, raw)
+    assert "@<a" not in shown.html and "@@" not in shown.body
+    assert shown.html.count("matrix.to/#/@q:example.org") == 2
+    kept = run(client, render, client.app, Stranger().event(1, f"see @nostr:{note}"))
+    assert kept.body.startswith("see @")
