@@ -839,10 +839,15 @@ private.
 
 ### Who can have IDs
 
-Any local user of the homeserver (`homeserver.server_name`). Users on other
-Matrix servers can't, which is the same as the siblings.
+Any local user of the homeserver (`homeserver.server_name`).
 `bridge.id_allowed_users` (a list of MXID globs, empty means everyone local)
-lets a host restrict it.
+lets a host restrict it. Users of other Matrix servers only with a bridge
+admin's grant (`[allow`), as in matrix-appservice-activitypub: see
+`bridge/shadow_ids.py` for the tiers, the precedence of the grants, and
+shadow IDs (made automatically, profile mirrored from Matrix, upgraded in
+place by `[create profile`). A shadow ID's kind 0 has no room event behind
+it, so its recipe (`matrix_profile`) holds the display name, like the
+picture URL and handle a `profile` recipe already holds.
 
 ### Testing
 

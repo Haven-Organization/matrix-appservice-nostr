@@ -27,7 +27,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 
-from bridge import ids
+from bridge import ids, shadow_ids
 from bridge import remote as remotes
 from bridge.event_sources import rebuild
 from bridge.inbound import index_tags, reply_targets
@@ -36,7 +36,7 @@ from bridge.notes import reaction_v1, repost_kind, repost_v1
 from bridge.notifications import notify
 from bridge.publishing import NotifyTarget, publish_in_background
 from bridge.repository import EventRow, NostrId
-from bridge.users import is_bridge_user, is_local_user
+from bridge.users import is_bridge_user
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
     app = request.app
     config = app.state.config
     sender = event.get("sender", "")
-    if is_bridge_user(config, sender) or not is_local_user(config, sender):
+    if is_bridge_user(config, sender) or not sender.startswith("@"):
         return False
     relates = (event.get("content") or {}).get("m.relates_to") or {}
     target_event = relates.get("event_id")
@@ -128,8 +128,8 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
         target = original
         if original.room_id and original.matrix_event_id:
             card_room, card_event = original.room_id, original.matrix_event_id
-    actor = await acting_id(app, sender, room_id)
-    if actor is None:
+    actor = await shadow_ids.ensure_shadow_id_and_tell(app, sender, room_id)
+    if actor is None or not await shadow_ids.still_allowed(app, actor, room_id):
         return True
     hint = config.nostr.relay_url
     base = {

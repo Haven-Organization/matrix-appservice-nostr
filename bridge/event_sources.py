@@ -19,6 +19,10 @@ Source kinds:
   that event has been redacted, the event is gone. A note or comment
   republished after a Matrix edit has ``edit``: the edit event, whose
   ``m.new_content`` it is converted from (``notes.edited_view``).
+- ``matrix_profile`` (kind 0), version 1: a shadow ID's profile
+  (``bridge.shadow_ids``), its owner's Matrix display name and avatar.
+  There is no room event behind it, so the recipe holds the name, the
+  picture URL, the "about" line and the handle.
 - ``profile`` (kind 0), version 1: rebuilt from the Profile Room's
   ``m.room.name`` and ``m.room.topic`` state events, by event ID (an old
   state event can still be fetched after a newer one replaces it). The
@@ -131,8 +135,14 @@ def profile_content_v2(
 
 
 async def profile_content_from_source(app: FastAPI, source: dict[str, Any]) -> str:
-    """The kind 0 content a ``profile`` recipe produces (v1 or v2). Raises
-    ``HomeserverError`` if the homeserver can't be asked."""
+    """The kind 0 content a ``profile`` recipe produces (v1 or v2), or a
+    ``matrix_profile`` one (v1). Raises ``HomeserverError`` if the
+    homeserver can't be asked."""
+    if source.get("kind") == "matrix_profile":
+        if source.get("v") != 1:
+            raise ValueError(f"Unknown matrix_profile source version {source.get('v')!r}")
+        return profile_content_v1(name=source.get("name"), about=source.get("about"), picture=source.get("picture"),
+                                  banner=None, nip05=source["nip05"])
     version = source.get("v")
     if version not in (1, 2):
         raise ValueError(f"Unknown profile source version {version!r}")
@@ -196,7 +206,7 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
             tags = [list(tag) for tag in source["tags"]]
             content = source.get("content", "")
             event_kind = int(source["event_kind"])
-        elif kind == "profile":
+        elif kind in ("profile", "matrix_profile"):
             tags = []
             content = await profile_content_from_source(app, source)
             event_kind = PROFILE_KIND

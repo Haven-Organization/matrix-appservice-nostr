@@ -23,6 +23,11 @@ bridge:
   # Also count Synapse server admins as bridge admins (Synapse only; needs
   # homeserver.synapse_admin_token). Any other homeserver: leave it off.
   # use_synapse_admin_api: false
+
+  # Users of other homeservers: off means none of them can use the bridge,
+  # whatever "[allow" has granted. Grants are made with "[allow"; with none,
+  # only this homeserver's users can use it either way.
+  # third_party_access: true
   # internal_base_url: http://127.0.0.1:8092
   # Reverse proxies whose X-Forwarded-For is believed (relay rate limits, bans).
   # trusted_proxies: ["127.0.0.1", "::1"]

@@ -140,6 +140,25 @@ class RelayRefusal:
     reason: str
 
 
+@dataclass(frozen=True)
+class ThirdPartyAllow:
+    """One admin grant letting users of another homeserver use the bridge
+    (``[allow``; ``bridge.shadow_ids``).
+
+    ``rule_type`` is ``mxid`` (one user), ``homeserver`` (everyone on a
+    domain) or ``room`` (anyone whose event comes from that room: passive
+    content only, never commands). ``tier`` is ``full`` or ``shadow``, or
+    for an ``mxid`` row ``banned``; a ``room`` row is always ``shadow``.
+    The most specific row wins: mxid (ban included), then homeserver, then
+    room. ``granted_by``/``granted_at`` are for the record only."""
+
+    rule_type: str
+    value: str
+    tier: str
+    granted_by: str
+    granted_at: str
+
+
 class BridgeRepository(Protocol):
     async def close(self) -> None: ...
 
@@ -230,6 +249,26 @@ class BridgeRepository(Protocol):
     async def delete_pending_publish(self, event_id: str) -> None: ...
     async def get_relay_refusal(self, relay: str, pubkey: str) -> RelayRefusal | None: ...
     async def put_relay_refusal(self, refusal: RelayRefusal) -> None: ...
+
+    # -- third-party access ----------------------------------------------
+    async def add_third_party_allow(self, rule_type: str, value: str, tier: str, *, granted_by: str, now: str) -> None:
+        """Grant (or regrant, overwriting the tier: this is also how an mxid
+        ban is lifted)."""
+        ...
+
+    async def remove_third_party_allow(self, rule_type: str, value: str) -> None: ...
+
+    async def set_third_party_ban(self, mxid: str, *, granted_by: str, now: str) -> None:
+        """A stored ban for one user, outranking any homeserver or room grant."""
+        ...
+
+    async def list_third_party_allows(self) -> list[ThirdPartyAllow]: ...
+
+    async def resolve_third_party_tier(self, *, mxid: str, homeserver: str, room_id: str = "") -> str | None:
+        """``full``, ``shadow`` or ``None`` (no access): the mxid row if there
+        is one (a ban is ``None``), else the homeserver's, else ``shadow``
+        if ``room_id`` is a granted room. ``room_id=""`` skips rooms."""
+        ...
 
     # -- blobs -----------------------------------------------------------
     async def put_blob(self, blob: Blob) -> None: ...

@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 
-from bridge import confirm, id_deletion, ids, room_links
+from bridge import confirm, id_deletion, ids, room_links, shadow_ids
 from bridge.admins import is_admin
 from bridge.homeserver_client import HomeserverError
 from bridge.identity_events import sync_identity
@@ -37,14 +37,14 @@ from bridge.messages import notice, room_link_html
 from bridge.nostr import nip19
 from bridge.profile_rooms import create_profile_room, ensure_user_rooms
 from bridge.repository import NostrId
-from bridge.users import bot_mxid, is_bridge_user, is_local_user, localpart
+from bridge.users import bot_mxid, is_bridge_user
 
 logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
     "profiles|create|switch|rename|unlink|link|delete|play|join|id|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
-    "widget|import|export|status|help"
+    "allowed|allow|disallow|widget|import|export|status|help"
 )
 
 _COMMAND_RE = re.compile(rf"\b({_COMMAND_KEYWORDS})\b\s*(.*)", re.IGNORECASE)
@@ -233,8 +233,19 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
         ),
         "admin": (
             "Admin",
-            "Moderating the bridge's relay, gated to bridge admins.",
+            "Moderating the bridge's relay and who may use the bridge, gated to bridge admins.",
             [
+                (f"{p}allow mxid|homeserver|room <value> [full|shadow]",
+                 "Let users of another homeserver use the bridge: one user (mxid) or a whole homeserver, at "
+                 '"full" access (their own Profile Rooms, DMs, everything) or "shadow" (the default: a Nostr '
+                 "identity made for them that mirrors their Matrix name and avatar; following, replying and "
+                 "reacting, but no profile of their own). A homeserver asks for a confirm first. room: anyone "
+                 "replying, reacting or voting in that one already-bridged room, always shadow, never covering "
+                 "commands even there; takes a room ID or #alias, or nothing to mean this room."),
+                (f"{p}disallow mxid|homeserver|room <value>",
+                 "Remove a homeserver or room grant. For an mxid, bans that user instead, overriding any "
+                 f'homeserver or room grant; "{p}allow mxid" lifts it. Nothing they already have is deleted.'),
+                (f"{p}allowed", "List every grant, with its tier, and whether third-party access is on."),
                 (f"{p}ban <npub|handle|IP> [1h|6h|1d|7d|30d|forever] [purge] [reason]",
                  "Ban an account or address from the relay (7 days by default). purge also removes their "
                  "events from Matrix."),
@@ -369,6 +380,14 @@ async def _already_yours(app: FastAPI, room_id: str, sender: str, nostr_id: Nost
     nostr_id = await app.state.repository.get_id(nostr_id.id) or nostr_id
     handle = _handle(app, nostr_id)
     if nostr_id.profile_room_id:
+        if await shadow_ids.effective_tier(app, nostr_id) == "shadow":
+            # A third party's parked room: kept, but not theirs to use now.
+            await notice(
+                app, room_id,
+                "You already have a profile room, but profile access isn't currently enabled for you. "
+                "It's parked, not deleted -- ask an admin to grant full access again to use it.",
+            )
+            return
         await notice(
             app,
             room_id,
@@ -378,7 +397,8 @@ async def _already_yours(app: FastAPI, room_id: str, sender: str, nostr_id: Nost
             f"Profile Room {room_link_html(nostr_id.profile_room_id)} and your other bridge rooms.",
         )
     else:
-        await notice(app, room_id, f"{handle} is already yours, but I couldn't create its Profile Room. Try again in a minute.")
+        # A shadow ID (or an unlinked one): it becomes a full one, in place.
+        await _finish_creating(app, room_id, sender, nostr_id)
 
 
 async def _create(app: FastAPI, room_id: str, sender: str, name: str) -> None:
@@ -442,11 +462,18 @@ async def _handle_create(app: FastAPI, room_id: str, sender: str, argument: str)
             await notice(app, room_id, f"Nostr IDs here are always @{config.bridge.domain}.")
             return
     else:
-        name = localpart(sender)
+        name = shadow_ids.default_id_name(config, sender)
     own = await app.state.repository.get_id_by_name(name)
     if own is not None and own.matrix_user_id == sender:
         await _already_yours(app, room_id, sender, own)
         return
+    if requested is None:
+        # A shadow ID that had to take another name (the default was
+        # taken): still the one a bare "create profile" upgrades.
+        owned = await app.state.repository.list_ids_for_user(sender)
+        if len(owned) == 1 and not owned[0].profile_room_id:
+            await _already_yours(app, room_id, sender, owned[0])
+            return
     limit = await ids.limit_problem(app, sender, is_admin=await is_admin(config, app.state.homeserver, sender))
     if limit is not None:
         await notice(app, room_id, limit.message)
@@ -628,9 +655,14 @@ async def _account_label(app: FastAPI, pubkey: str, nip05: str | None = None) ->
 async def _handle_follow(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
     from bridge.follows import safe_follow
 
-    actor = await _actor(app, room_id, sender)
-    reference = await _resolve(app, room_id, argument) if actor else None
-    if actor is None or reference is None:
+    reference = await _resolve(app, room_id, argument)
+    if reference is None:
+        return
+    # The one command that makes a shadow ID for someone who has none.
+    actor = await shadow_ids.ensure_shadow_id_and_tell(app, sender, room_id)
+    if actor is None:
+        prefix = app.state.config.appservice.command_prefix
+        await notice(app, room_id, f'You need a Nostr ID first: "{prefix}create profile".')
         return
     if await app.state.repository.get_id_by_pubkey(reference.pubkey) is not None:
         await notice(app, room_id, "That's an ID on this server: join its Profile Room to follow it in Matrix.")
@@ -872,6 +904,287 @@ async def _handle_status(app: FastAPI, room_id: str, sender: str) -> None:
     await notice(app, room_id, "\n".join(lines))
 
 
+# -- third-party access ([allow / [disallow / [allowed) -------------------------------
+# As matrix-appservice-activitypub's ;allow. See bridge.shadow_ids for what
+# the grants and tiers mean.
+
+# Blocked for a third party at shadow tier whatever follows them: they make
+# or change a profile, or reach someone privately.
+_SHADOW_TIER_BLOCKED_ANY_ARG = frozenset({"dm", "backfill", "link", "unlink", "rename"})
+# Blocked only with this first word after them.
+_SHADOW_TIER_BLOCKED_EXACT = frozenset({("create", "profile"), ("create", "id"), ("create", "room")})
+
+
+async def _third_party_refused(app: FastAPI, room_id: str, sender: str, keyword: str, argument: str) -> bool:
+    """The command gate. Users of this homeserver pass. A third party needs
+    third-party access on and their own grant (mxid or homeserver: a room
+    grant never covers commands, see ``bridge.shadow_ids``), and at shadow
+    tier can't run the commands that make or change a profile. ``[delete
+    profile`` is exempt: revoking a grant never deletes an ID, so its owner
+    must always be able to delete it themselves. True if refused (and
+    told)."""
+    config = app.state.config
+    if not shadow_ids.is_third_party(config, sender):
+        return False
+    words = argument.lower().split()
+    first = words[0] if words else ""
+    if keyword == "delete" and first == "profile":
+        return False
+    if not config.bridge.third_party_access:
+        logger.info("Ignoring a command from %s: third-party access is off", sender)
+        await notice(app, room_id, "Third-party access is currently disabled.")
+        return True
+    tier = await shadow_ids.resolve_third_party_tier(app, sender)
+    if tier is None:
+        logger.info("Ignoring a command from %s, who isn't on this homeserver or allowed", sender)
+        await notice(app, room_id, f"Commands are only available to users on {config.homeserver.server_name}.")
+        return True
+    if tier == "shadow":
+        p = config.appservice.command_prefix
+        if keyword in _SHADOW_TIER_BLOCKED_ANY_ARG:
+            await notice(app, room_id, f'"{p}{keyword}" is disabled for third-party accounts at shadow tier.')
+            return True
+        if (keyword, first) in _SHADOW_TIER_BLOCKED_EXACT:
+            await notice(app, room_id, f'"{p}{keyword} {first}" is disabled for third-party accounts at shadow tier.')
+            return True
+    return False
+
+
+_ALLOW_RULE_TYPES = ("mxid", "homeserver", "room")
+_ALLOW_TIERS = ("full", "shadow")
+_MXID_RE = re.compile(r"^@[^:\s]+:[A-Za-z0-9.\-]+(?::\d+)?$")
+_ROOM_ID_RE = re.compile(r"^![^:\s]+:[A-Za-z0-9.\-]+(?::\d+)?$")
+_ROOM_ALIAS_RE = re.compile(r"^#[^:\s]+:[A-Za-z0-9.\-]+(?::\d+)?$")
+# A server name: a domain, maybe with a port. Just enough to keep obvious
+# garbage out of the grants.
+_HOMESERVER_RE = re.compile(r"^[A-Za-z0-9.\-]+(?::\d+)?$")
+ALLOW_HOMESERVER_ACTION = "allow_homeserver"
+
+
+def _allow_usage(p: str) -> str:
+    return (
+        f"Usage: {p}allow mxid @user:example.org [full|shadow] | "
+        f"{p}allow homeserver example.org [full|shadow] (tier defaults to shadow if omitted) | "
+        f"{p}allow room [!roomid:example.org|#alias:example.org] (always shadow -- passive content only, "
+        "doesn't cover commands; room is optional if the CURRENT room is already bridged as something)"
+    )
+
+
+def _disallow_usage(p: str) -> str:
+    return (
+        f"Usage: {p}disallow mxid @user:example.org | {p}disallow homeserver example.org | "
+        f"{p}disallow room [!roomid:example.org|#alias:example.org] (room is optional if the CURRENT room is "
+        "already bridged as something)"
+    )
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def bridged_as(app: FastAPI, room_id: str) -> str | None:
+    """What the bridge already uses ``room_id`` for, or ``None``."""
+    repository = app.state.repository
+    if await repository.get_id_for_profile_room(room_id) is not None:
+        return "someone's Profile Room"
+    if await repository.get_remote_account_for_room(room_id) is not None:
+        return "a Nostr account's room"
+    if await repository.get_dm_room_info(room_id) is not None:
+        return "a DM room"
+    if await repository.get_state(f"concord:room:{room_id}"):
+        return "a Concord channel room"
+    if await repository.get_state(f"nip29:room:{room_id}"):
+        return "a NIP-29 group room"
+    if await repository.get_notifications_room_owner(room_id) is not None:
+        return "a Notifications room"
+    return None
+
+
+async def _target_room(app: FastAPI, room_id: str, value: str | None, verb: str) -> str | None:
+    """The room ``[allow room``/``[disallow room`` is about: the one named
+    (an ID or an #alias), or with none named, this one if it's bridged."""
+    p = app.state.config.appservice.command_prefix
+    if value is None:
+        if await bridged_as(app, room_id) is None:
+            await notice(
+                app, room_id,
+                "This room isn't bridged as anything, so there's no room to default to here -- run "
+                f'"{p}{verb} room <room_id_or_#alias>" naming the room.',
+            )
+            return None
+        return room_id
+    if _ROOM_ALIAS_RE.match(value):
+        try:
+            return await app.state.homeserver.resolve_room_alias(value)
+        except HomeserverError as exc:
+            await notice(app, room_id, f"Couldn't resolve {value}: {exc}")
+            return None
+    if _ROOM_ID_RE.match(value):
+        return value
+    await notice(app, room_id, f"{value} doesn't look like a valid room ID or alias (e.g. !roomid:example.org or "
+                               "#alias:example.org).")
+    return None
+
+
+async def _handle_allow(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    """Grant access to a user, a homeserver, or one room's passive content."""
+    config = app.state.config
+    p = config.appservice.command_prefix
+    if not await is_admin(config, app.state.homeserver, sender):
+        await notice(app, room_id, "Only a bridge admin can manage third-party access.")
+        return
+    parts = argument.split()
+    if not parts or parts[0].lower() not in _ALLOW_RULE_TYPES:
+        await notice(app, room_id, _allow_usage(p))
+        return
+    rule_type = parts[0].lower()
+    repository = app.state.repository
+    if rule_type == "room":
+        if len(parts) > 2:
+            await notice(app, room_id, _allow_usage(p))
+            return
+        target = await _target_room(app, room_id, parts[1] if len(parts) == 2 else None, "allow")
+        if target is None:
+            return
+        await repository.add_third_party_allow("room", target, "shadow", granted_by=sender, now=_now_iso())
+        try:
+            joined = target in await app.state.homeserver.get_joined_rooms(as_user_id=bot_mxid(config))
+        except HomeserverError:
+            joined = True
+        note = "" if joined else " Note: the bot isn't currently in this room, so this won't take effect until it is."
+        await notice(
+            app, room_id,
+            f"Allowed any third party to post/react/reply from {target} (shadow tier, passive content only -- "
+            f"commands still need their own mxid/homeserver grant).{note}",
+        )
+        return
+    if len(parts) not in (2, 3):
+        await notice(app, room_id, _allow_usage(p))
+        return
+    value = parts[1]
+    tier = parts[2].lower() if len(parts) == 3 else "shadow"
+    if tier not in _ALLOW_TIERS:
+        await notice(app, room_id, f'"{parts[2]}" must be "full" or "shadow".')
+        return
+    if rule_type == "mxid":
+        if not _MXID_RE.match(value):
+            await notice(app, room_id, f"{value} doesn't look like a valid MXID (e.g. @user:example.org).")
+            return
+        await repository.add_third_party_allow("mxid", value, tier, granted_by=sender, now=_now_iso())
+        await notice(app, room_id, f"Allowed {value} to use this bridge at {tier} tier.")
+        return
+    # A whole homeserver: everyone on a server you don't control, so confirmed first.
+    if not _HOMESERVER_RE.match(value):
+        await notice(app, room_id, f"{value} doesn't look like a valid homeserver domain.")
+        return
+    value = value.lower()
+    undo = f"{p}disallow homeserver {value}"
+    plain = (
+        f"⚠️ This will let EVERY user on {value} use this bridge at {tier} tier -- that's every account on a "
+        f'server you don\'t control, not just people you already trust. This can be undone later with "{undo}" '
+        f'(though any identity already provisioned under it stays around until deleted -- see "{p}delete profile").'
+    )
+    rich = (
+        f"<p>⚠️ This will let EVERY user on <strong>{html.escape(value)}</strong> use this bridge at {tier} tier "
+        "-- that's every account on a server you don't control, not just people you already trust. This can be "
+        f"undone later with <code>{html.escape(undo)}</code> (though any identity already provisioned under it "
+        "stays around until deleted).</p>"
+    )
+    await confirm.ask(app, room_id, action=ALLOW_HOMESERVER_ACTION, user=sender,
+                      args={"homeserver": value, "tier": tier}, plain=plain, rich=rich)
+
+
+async def _execute_allow_homeserver(app: FastAPI, room_id: str, sender: str, args: dict[str, Any]) -> None:
+    """A "confirm" to "[allow homeserver": a bridge-wide admin action, so
+    whoever confirms must (still) be an admin."""
+    homeserver, tier = args.get("homeserver"), args.get("tier")
+    if not isinstance(homeserver, str) or tier not in _ALLOW_TIERS:
+        return
+    if not await is_admin(app.state.config, app.state.homeserver, sender):
+        await notice(app, room_id, "Only a bridge admin can confirm this.")
+        return
+    await app.state.repository.add_third_party_allow("homeserver", homeserver, tier, granted_by=sender, now=_now_iso())
+    await notice(app, room_id, f"Allowed every user on {homeserver} to use this bridge at {tier} tier.")
+
+
+confirm.register(ALLOW_HOMESERVER_ACTION, _execute_allow_homeserver)
+
+
+async def _handle_disallow(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    """Take a homeserver or room grant away, or ban one user (a stored ban
+    outranks their homeserver's grant and any room's). Immediate: it can
+    only narrow access. Never deletes an ID made under the grant."""
+    config = app.state.config
+    p = config.appservice.command_prefix
+    if not await is_admin(config, app.state.homeserver, sender):
+        await notice(app, room_id, "Only a bridge admin can manage third-party access.")
+        return
+    parts = argument.split()
+    if not parts or parts[0].lower() not in _ALLOW_RULE_TYPES:
+        await notice(app, room_id, _disallow_usage(p))
+        return
+    rule_type = parts[0].lower()
+    repository = app.state.repository
+    if rule_type == "room":
+        if len(parts) > 2:
+            await notice(app, room_id, _disallow_usage(p))
+            return
+        target = await _target_room(app, room_id, parts[1] if len(parts) == 2 else None, "disallow")
+        if target is None:
+            return
+        await repository.remove_third_party_allow("room", target)
+        await notice(
+            app, room_id,
+            f"Removed the room grant for {target}. Any identity already provisioned under it stays around until "
+            f'deleted (see "{p}allowed" to see current grants).',
+        )
+        return
+    if len(parts) != 2:
+        await notice(app, room_id, _disallow_usage(p))
+        return
+    value = parts[1]
+    if rule_type == "mxid":
+        if not _MXID_RE.match(value):
+            await notice(app, room_id, f"{value} doesn't look like a valid MXID (e.g. @user:example.org).")
+            return
+        await repository.set_third_party_ban(value, granted_by=sender, now=_now_iso())
+        await notice(
+            app, room_id,
+            f"Banned {value} from this bridge. This overrides any homeserver- or room-level grant for them "
+            f'specifically -- to lift it, run "{p}allow mxid {value} full|shadow" again.',
+        )
+        return
+    value = value.lower()
+    await repository.remove_third_party_allow("homeserver", value)
+    await notice(
+        app, room_id,
+        f"Removed the homeserver grant for {value}. Any identity already provisioned under it stays around until "
+        f'deleted (see "{p}allowed" to see current grants).',
+    )
+
+
+async def _handle_allowed(app: FastAPI, room_id: str, sender: str) -> None:
+    config = app.state.config
+    if not await is_admin(config, app.state.homeserver, sender):
+        await notice(app, room_id, "Only a bridge admin can view third-party access grants.")
+        return
+    grants = await app.state.repository.list_third_party_allows()
+    switch = "on" if config.bridge.third_party_access else "off"
+    if not grants:
+        await notice(app, room_id,
+                     f"No third-party access grants (bridge.third_party_access is {switch}) -- everyone stays local-only.")
+        return
+    lines = [f"Third-party access is {switch}.", ""]
+    for rule_type in _ALLOW_RULE_TYPES:
+        matching = [g for g in grants if g.rule_type == rule_type]
+        if matching:
+            lines.append(f"{rule_type}:")
+            lines.extend(f"- {g.value}: {g.tier} (by {g.granted_by})" for g in matching)
+    await notice(app, room_id, "\n".join(lines))
+
+
 # -- dispatch -----------------------------------------------------------------
 
 
@@ -913,11 +1226,17 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         return True
 
     keyword, argument = parsed
-    if not is_local_user(config, sender):
-        await notice(app, room_id, f"Only users of {config.homeserver.server_name} can use this bridge.")
-        return True
     if keyword == "help":
         await _handle_help(app, room_id, argument, sender)
+        return True
+    if await _third_party_refused(app, room_id, sender, keyword, argument):
+        return True
+    if keyword == "allow":
+        await _handle_allow(app, room_id, sender, argument)
+    elif keyword == "disallow":
+        await _handle_disallow(app, room_id, sender, argument)
+    elif keyword == "allowed":
+        await _handle_allowed(app, room_id, sender)
     elif keyword == "status":
         await _handle_status(app, room_id, sender)
     elif keyword == "create":

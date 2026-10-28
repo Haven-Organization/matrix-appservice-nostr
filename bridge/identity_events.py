@@ -98,19 +98,47 @@ async def _room_state(app: FastAPI, room_id: str) -> dict[str, dict[str, Any]]:
     return {e["type"]: e for e in events if e.get("type") in wanted and e.get("state_key") == ""}
 
 
-async def _image_entry(app: FastAPI, event: dict[str, Any] | None, previous: dict[str, Any] | None) -> dict[str, Any] | None:
-    """``{"event_id", "mxc", "url"}`` for an avatar/banner state event,
-    reusing the previous URL when the image is the same one."""
-    mxc = ((event or {}).get("content") or {}).get("url")
+async def _mxc_entry(app: FastAPI, mxc: Any, previous: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``{"mxc", "url"}`` for a profile image, reusing the previous URL
+    when the image is the same one."""
     if not isinstance(mxc, str) or not mxc.startswith("mxc://"):
         return None
     if previous and previous.get("mxc") == mxc and previous.get("url"):
-        return {"event_id": event["event_id"], "mxc": mxc, "url": previous["url"]}
+        return {"mxc": mxc, "url": previous["url"]}
     published = await publish_matrix_image(app, mxc, max_bytes=PROFILE_IMAGE_MAX_BYTES)
     if published is None:
         logger.info("Profile image %s can't be used; leaving it out", mxc)
         return None
-    return {"event_id": event["event_id"], "mxc": mxc, "url": published.url}
+    return {"mxc": mxc, "url": published.url}
+
+
+async def _image_entry(app: FastAPI, event: dict[str, Any] | None, previous: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``{"event_id", "mxc", "url"}`` for an avatar/banner state event."""
+    entry = await _mxc_entry(app, ((event or {}).get("content") or {}).get("url"), previous)
+    return {"event_id": event["event_id"], **entry} if entry is not None and event is not None else None
+
+
+async def mirrored_profile_source(app: FastAPI, nostr_id: NostrId, previous: dict[str, Any] | None) -> dict[str, Any]:
+    """The ``matrix_profile`` v1 recipe for a shadow ID's kind 0: its
+    owner's Matrix display name and avatar (``bridge.shadow_ids``). There's
+    no room event to rebuild these from, so the recipe holds them, as it
+    holds the picture URL and handle of a ``profile`` one."""
+    user = nostr_id.matrix_user_id
+    try:
+        profile = await app.state.homeserver.get_profile(user)
+    except HomeserverError:
+        profile = {}
+    avatar = await _mxc_entry(app, profile.get("avatar_url"), (previous or {}).get("avatar_image"))
+    name = profile.get("displayname")
+    return {
+        "kind": "matrix_profile",
+        "v": 1,
+        "name": name if isinstance(name, str) and name.strip() else user,
+        "about": f"{user} is a Matrix user.",
+        "picture": (avatar or {}).get("url"),
+        "nip05": handle(app, nostr_id),
+        "avatar_image": avatar,
+    }
 
 
 async def profile_source(app: FastAPI, nostr_id: NostrId, previous: dict[str, Any] | None) -> dict[str, Any]:
@@ -206,19 +234,32 @@ async def sync_identity(app: FastAPI, nostr_id: NostrId) -> list[Event]:
 async def _sync_identity(app: FastAPI, nostr_id: NostrId) -> list[Event]:
     repository = app.state.repository
     published: list[Event] = []
-    if nostr_id.profile_room_id:
+    from bridge.shadow_ids import mirrors_matrix
+
+    mirrored = await mirrors_matrix(app, nostr_id)
+    if mirrored or nostr_id.profile_room_id:
         previous = await repository.get_latest_event(nostr_id.pubkey, PROFILE_KIND)
         previous_source = json.loads(previous.source) if previous is not None else None
-        source = await profile_source(app, nostr_id, previous_source if (previous_source or {}).get("kind") == "profile" else None)
+        if mirrored:
+            # A shadow ID (or a parked one): its owner's Matrix profile.
+            source = await mirrored_profile_source(
+                app, nostr_id, previous_source if (previous_source or {}).get("kind") == "matrix_profile" else None
+            )
+        else:
+            source = await profile_source(
+                app, nostr_id, previous_source if (previous_source or {}).get("kind") == "profile" else None
+            )
         content = await profile_content_from_source(app, source)
         if not _unchanged(previous, nostr_id.pubkey, PROFILE_KIND, [], content):
             event = await _store_and_publish(
                 app, nostr_id, kind=PROFILE_KIND, tags=[], content=content, source=source,
-                previous=previous, label=f"profile of {handle(app, nostr_id)}", room_id=nostr_id.profile_room_id,
+                previous=previous, label=f"profile of {handle(app, nostr_id)}",
+                room_id=None if mirrored else nostr_id.profile_room_id,
             )
             if event is not None:
                 published.append(event)
-        await _update_bridge_info(app, nostr_id, source)
+        if not mirrored:
+            await _update_bridge_info(app, nostr_id, source)
 
     lists = [
         (RELAY_LIST_KIND, relay_list_tags(app), "relay list"),

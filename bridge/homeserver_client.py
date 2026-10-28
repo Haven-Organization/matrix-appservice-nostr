@@ -299,6 +299,16 @@ class HomeserverClient:
                 return None
             raise
 
+    async def resolve_room_alias(self, alias: str) -> str:
+        """The room a published alias (``#name:example.org``) points to."""
+        result = await self._request("GET", f"/_matrix/client/v3/directory/room/{quote(alias, safe='')}")
+        return result["room_id"]
+
+    async def get_joined_rooms(self, *, as_user_id: str) -> list[str]:
+        result = await self._request("GET", "/_matrix/client/v3/joined_rooms", as_user_id=as_user_id)
+        rooms = result.get("joined_rooms") if isinstance(result, dict) else None
+        return [r for r in rooms if isinstance(r, str)] if isinstance(rooms, list) else []
+
     async def get_full_state(self, room_id: str, *, as_user_id: str) -> list[dict[str, Any]]:
         """Every current state event in the room, with event IDs."""
         result = await self._request(

@@ -255,6 +255,10 @@ async def maybe_send_dm(request: Request, event: dict[str, Any]) -> bool:
     content = event.get("content") or {}
     if local is None or sender != local.matrix_user_id:
         return True
+    from bridge.shadow_ids import still_allowed
+
+    if not await still_allowed(app, local, room_id):
+        return True  # a third party whose access was taken away: stays in Matrix
     if (content.get("m.relates_to") or {}).get("rel_type") == "m.replace":
         return True  # edits can't be sent
     from bridge.commands import message_for_a_bot

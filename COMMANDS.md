@@ -2,7 +2,8 @@
 
 A message is a command when it starts with the command prefix (`[` by default, `appservice.command_prefix`) followed straight away by a command, or when it tags the bot (`@nostrbot:example.org status`). Only the first line counts, and case doesn't matter. A `[` followed by anything else (`[citation needed]`) is an ordinary message. A command sent in a Profile Room is never published.
 
-Only users of the bridge's own homeserver can use commands.
+- Every command **except `[help` and `[delete profile`** only works for users of the bridge's own homeserver, unless a bridge admin has allowed them: an exact MXID or a whole homeserver (see [`[allow`](#allow-mxidhomeserverroom-value-fullshadow)). Anyone else is told commands aren't available to them. The whole feature can be switched off with `bridge.third_party_access` (on by default, see [CONFIG.md](CONFIG.md)). This stops someone on another server from squatting names on your domain or using your bridge's reputation, while letting an admin open it up to people they trust.
+- An allowed user of another homeserver gets one of two tiers, set per grant: **shadow** (the default): `[follow`, `[join` and replying, reacting and voting, as a Nostr ID the bridge makes for them that always mirrors their Matrix display name and avatar; no `[create profile`/`[create room`/`[link`/`[unlink`/`[rename`, no `[dm`, no `[backfill`. Or **full**: the ability to make their own profiles with `[create profile`, after which they're like a local user. A local user goes through the same shadow stage automatically, with no grant involved: it's how every ID starts until `[create profile` (see [Shadow IDs](#shadow-ids)).
 
 The same sections are shown by `[help`, laid out like matrix-appservice-activitypub's. Keep this file and `_help_sections` in `bridge/commands.py` in sync.
 
@@ -37,12 +38,16 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[ban <npub, handle or IP> [duration] [purge] [reason]`](#ban-npub-handle-or-ip-duration-purge-reason)
   - [`[unban <npub, handle or IP>`](#unban-npub-handle-or-ip)
   - [`[bans`](#bans)
+  - [`[allow`](#allow-mxidhomeserverroom-value-fullshadow)
+  - [`[disallow`](#disallow-mxidhomeserverroom-value)
+  - [`[allowed`](#allowed)
 - [⚠️ Danger Zone](#️-danger-zone)
   - [`[link <number or id> [keep]`](#link-number-or-id-keep)
   - [`[unlink <number or id>`](#unlink-number-or-id)
   - [`[rename <number or id> <new id>`](#rename-number-or-id-new-id)
   - [`[delete profile [<number|id>]`](#delete-profile-numberid)
 - [IDs, and which one is used](#ids-and-which-one-is-used)
+- [Shadow IDs](#shadow-ids)
 
 ## Profile
 
@@ -214,6 +219,33 @@ Lifts a ban, including an automatic one.
 
 Lists the current bans, manual and automatic, with when each ends and why.
 
+### `[allow mxid|homeserver|room <value> [full|shadow]`
+
+**Syntax:** `[allow mxid @user:example.org [full|shadow]`, `[allow homeserver example.org [full|shadow]` (the tier is `shadow` if you don't say), or `[allow room [!roomid:example.org|#alias:example.org]` (no tier: always `shadow`; the room is optional).
+
+Lets users of another homeserver use the bridge:
+
+- `mxid`/`homeserver`: one Matrix user, or everyone on a homeserver, at `full` (their own Profile Rooms, DMs, every command) or `shadow` (a Nostr ID the bridge makes for them, mirroring their Matrix display name and avatar; `[follow`, `[join`, replying and reacting everywhere, but nothing that makes or changes a profile). An `mxid` grant takes effect at once. A `homeserver` grant (trusting everyone on a server you don't control) asks for a **confirm** reply first, which must come from a bridge admin.
+- `room`: anyone at all, from any homeserver, gets a shadow ID just by replying, reacting or voting in this one already-bridged room, with no vetting of who they are or where they're from. Always `shadow`, and **only** for that room and only for those passive things: it does **not** let them run commands, not even `[follow` (that would follow an account as this bridge, into a room the grant was never meant to cover). Getting in through one room's grant gives nothing in any other room. It's stored even if the bot isn't in the room yet (you're warned, and it applies once the bot is). Takes a room ID, a `#alias:example.org`, or nothing at all, meaning the room you're in, as long as the bridge already uses it for something (a Profile Room, an account's room, a DM, a Concord channel, a group, ...).
+
+The most specific grant wins: an `mxid` grant (a ban included, see `[disallow`) over a `homeserver` grant, over a `room` grant for the room the action happens in (which only counts for passive things, never commands).
+
+Granting `full` only allows making a profile; it doesn't make one. Until they run `[create profile`, a full-granted user acts through their shadow ID like anyone else.
+
+### `[disallow mxid|homeserver|room <value>`
+
+**Syntax:** `[disallow mxid @user:example.org`, `[disallow homeserver example.org`, or `[disallow room [!roomid:example.org|#alias:example.org]` (the room is optional, as for `[allow room`).
+
+For a `homeserver` or `room`, removes the grant, at once, no confirm needed. For an `mxid`, it **bans** that user instead: a stored ban that outranks any homeserver or room grant they'd otherwise get, so one bad actor can be kept out of an allowed homeserver or room. To lift a ban, `[allow mxid` them again at `full` or `shadow`.
+
+Either way, nothing they already have is deleted: their IDs, keys, followers, follows and any Profile Room stay, just unused. A full ID that loses full access keeps its Profile Room, parked: its posts there stop going to Nostr and its profile goes back to mirroring Matrix, until full access is granted again. [`[delete profile`](#delete-profile-numberid) (which anyone with an ID can always run, allowed or not) actually removes an ID.
+
+### `[allowed`
+
+Lists every grant, by kind, with its tier (`banned` for a banned user) and who granted it, and whether `bridge.third_party_access` is on.
+
+The [widget](#widget) has the same for admins: a **Third-party access** card listing grants, with a form to add one and a button to revoke each.
+
 ## ⚠️ Danger Zone
 
 Commands that change what a room or an identity is, in ways that are hard to undo. Each says what will happen and waits for you to reply **confirm** to its message.
@@ -264,3 +296,20 @@ When you do something on Nostr, the bridge uses:
 3. **Anywhere else:** your active ID.
 
 Undoing something (removing a reaction, say) always uses the ID that did it in the first place.
+
+## Shadow IDs
+
+Everyone's first Nostr ID can come about without asking: the first time you do something that goes out to Nostr without having an ID (`[follow`, `[join`, replying to a Nostr post, reacting to one, voting in a Nostr poll), the bridge makes one for you and says so once:
+
+> I've created a shadow Nostr identity for you: alice@example.org. It mirrors your Matrix display name/avatar automatically, and has no profile of its own yet. Run "[create profile" anytime to turn it into a full, customizable profile.
+
+A shadow ID:
+
+- is named like a bare `[create profile` would name it: your Matrix username (`alice`), or for a user of another homeserver, username and homeserver (`@alice:other.org` → `alice_other.org`). If that's taken or can't be used, the nearest free name.
+- has no Profile Room. Its Nostr profile is your Matrix display name and avatar, with "`@you:server` is a Matrix user." as its bio, and it's updated within 20 minutes when you change them.
+- otherwise works like any ID: it follows, replies, reacts and gets notifications.
+
+`[create profile` (with no name) turns it into a full ID **in place**: same key, same handle, same followers, now with a Profile Room whose name and avatar start from your Matrix profile. An ID with a key you brought yourself is never given a mirrored profile: its profile is yours from before.
+
+A user of another homeserver needs a grant first (see [`[allow`](#allow-mxidhomeserverroom-value-fullshadow)), and at shadow tier can't run `[create profile`.
+

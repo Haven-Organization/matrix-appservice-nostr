@@ -22,7 +22,8 @@ from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.nostr import nip19
 from bridge.spaces import NOTIFICATIONS_ROOM_SPACE_ORDER, add_room_to_space, profile_room_space_order
 from bridge.tasks import run_in_background
-from bridge.users import bot_mxid, is_local_user
+from bridge.shadow_ids import may_use_bridge
+from bridge.users import bot_mxid, is_bridge_user
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ async def maybe_handle_knock(request: Request, event: dict) -> bool:
     if remote is not None:
         # Anyone from this server knocking on an account's room is let in.
         config = app.state.config
-        if is_local_user(config, knocker) or config.bridge.accept_federated_knocks:
+        if await may_use_bridge(app, knocker) or config.bridge.accept_federated_knocks:
             try:
                 await app.state.homeserver.invite_user(room_id, knocker, as_user_id=remote.ghost_user_id)
             except HomeserverError:
@@ -82,7 +83,7 @@ async def maybe_handle_join(request: Request, event: dict) -> bool:
     config = app.state.config
     room_id = event.get("room_id", "")
     user = event.get("state_key", "")
-    if not room_id or not is_local_user(config, user):
+    if not room_id or not await may_use_bridge(app, user):
         return False
     repository = app.state.repository
     nostr_id = await repository.get_id_for_profile_room(room_id)
@@ -120,7 +121,7 @@ async def maybe_handle_leave(request: Request, event: dict) -> bool:
     app = request.app
     user = event.get("state_key", "")
     room_id = event.get("room_id", "")
-    if not is_local_user(app.state.config, user):
+    if not user.startswith("@") or is_bridge_user(app.state.config, user):
         return False
     if await app.state.repository.get_remote_account_for_room(room_id) is None:
         return False

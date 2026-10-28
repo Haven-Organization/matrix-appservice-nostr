@@ -26,11 +26,11 @@ from bridge import remote as remotes
 from bridge.event_sources import EMBED_FIELD
 from bridge.homeserver_client import HomeserverError
 from bridge.inbound import REJECTED, IngestResult, _store, event_url, index_tags
-from bridge.interactions import acting_id
+from bridge import shadow_ids
 from bridge.notes import POLL_RESPONSE_TYPES, POLL_START_TYPES, poll_v1, vote_v1
 from bridge.publishing import NotifyTarget, publish_in_background
 from bridge.repository import EventRow
-from bridge.users import is_bridge_user, is_local_user
+from bridge.users import is_bridge_user
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ async def maybe_publish_poll(request: Request, event: dict[str, Any]) -> bool:
     profile = await app.state.repository.get_id_for_profile_room(room_id)
     if profile is None or event.get("sender") != profile.matrix_user_id:
         return False
+    if not await shadow_ids.may_post_from_profile_room(app, profile) or not await shadow_ids.still_allowed(
+        app, profile, room_id
+    ):
+        return True  # a third party's parked room: stays in Matrix
     recipe = {"kind": "poll", "v": 1, "room_id": room_id, "event_id": event.get("event_id", ""),
               "relay_hint": app.state.config.nostr.relay_url}
     content, tags = poll_v1(event, recipe)
@@ -83,15 +87,15 @@ async def maybe_handle_vote(request: Request, event: dict[str, Any]) -> bool:
     app = request.app
     config = app.state.config
     sender = event.get("sender", "")
-    if is_bridge_user(config, sender) or not is_local_user(config, sender):
+    if is_bridge_user(config, sender) or not sender.startswith("@"):
         return False
     poll_event = ((event.get("content") or {}).get("m.relates_to") or {}).get("event_id")
     poll = await app.state.repository.get_event_by_matrix_event(poll_event) if isinstance(poll_event, str) else None
     if poll is None or poll.kind != POLL_KIND:
         return False
     room_id = event.get("room_id", "")
-    voter = await acting_id(app, sender, room_id)
-    if voter is None:
+    voter = await shadow_ids.ensure_shadow_id_and_tell(app, sender, room_id)
+    if voter is None or not await shadow_ids.still_allowed(app, voter, room_id):
         return True
     recipe = {"kind": "vote", "v": 1, "room_id": room_id, "event_id": event.get("event_id", ""),
               "poll": poll.id, "poll_pubkey": poll.pubkey}

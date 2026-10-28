@@ -39,7 +39,7 @@ from bridge.homeserver_client import HomeserverError
 from bridge.messages import notice, room_link_html
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19, nip44, secp256k1
-from bridge.users import bot_mxid, is_bridge_user, is_local_user
+from bridge.users import bot_mxid, is_bridge_user
 
 logger = logging.getLogger(__name__)
 
@@ -669,13 +669,14 @@ async def _show_images(app: FastAPI, community: Community, rooms: list[str]) -> 
 
 
 async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
-    from bridge import ids
-
     p = app.state.config.appservice.command_prefix
     if not argument.strip():
         await notice(app, room_id, f'Usage: "{p}join <community invite link>" (an Armada, Vector or other Concord invite).')
         return
-    member = await ids.active_id(app, sender)
+    from bridge.shadow_ids import ensure_shadow_id_and_tell
+
+    # Like [follow: makes a shadow ID for someone who has none.
+    member = await ensure_shadow_id_and_tell(app, sender, room_id)
     if member is None:
         await notice(app, room_id, f'You need a Nostr identity first: "{p}create profile".')
         return
@@ -1342,7 +1343,7 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
     mapped = await app.state.repository.get_state(_ROOM.format(room_id))
     if not mapped:
         return False
-    if is_bridge_user(config, sender) or not is_local_user(config, sender):
+    if is_bridge_user(config, sender) or not sender.startswith("@"):
         return True
     from bridge.commands import message_for_a_bot
 
@@ -1359,6 +1360,10 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
         if candidate is not None and candidate.matrix_user_id == sender:
             member = candidate
             break
+    from bridge.shadow_ids import still_allowed
+
+    if member is not None and not await still_allowed(app, member, room_id):
+        return True  # a third party whose access was taken away: stays in Matrix
     if member is None:
         await notice(app, room_id, f'Join the community first: "{config.appservice.command_prefix}join <invite link>".')
         return True

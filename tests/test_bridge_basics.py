@@ -240,7 +240,7 @@ def test_status_shows_relays_to_admins_only(client, homeserver) -> None:
 
 def test_remote_users_cannot_use_commands(client, homeserver) -> None:
     _transaction(client, "t5", _message("[status", sender="@someone:other.org"))
-    assert "Only users of example.org" in homeserver.sent[0][1]["body"]
+    assert "Commands are only available to users on example.org." in homeserver.sent[0][1]["body"]
 
 
 def test_bot_and_ghost_messages_ignored(client, homeserver) -> None:

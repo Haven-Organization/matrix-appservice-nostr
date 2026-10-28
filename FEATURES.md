@@ -5,6 +5,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 ## Contents
 
 - [Nostr IDs](#nostr-ids)
+- [Shadow IDs and third-party access](#shadow-ids-and-third-party-access)
 - [Your Profile Room](#your-profile-room)
 - [Sharing a room with other bridges](#sharing-a-room-with-other-bridges)
 - [Publishing, and when it doesn't work](#publishing-and-when-it-doesnt-work)
@@ -40,6 +41,17 @@ Each ID also publishes, and keeps up to date:
 - its **pinned posts** (kind 10001), from the Profile Room's pins,
 - its **follow list** (kind 3) and **mute list** (kind 10000), from `[follow` and `[block`.
 
+## Shadow IDs and third-party access
+
+The same scheme as matrix-appservice-activitypub. Every ID starts out **shadow**: made automatically the first time its Matrix user does something that goes out to Nostr (`[follow`, `[join`, a reply, a reaction, a vote), with no Profile Room of its own. Its Nostr profile always mirrors the user's current Matrix display name and avatar, republished when they change (checked every 20 minutes). Running `[create profile` with the default name **upgrades** that same ID in place (same key, handle and followers) into a **full** one, with a Profile Room the user controls. A user of this homeserver always starts shadow and can always upgrade; no grant is involved. An ID made from a key you brought is never given a mirrored profile.
+
+A user of a **different** Matrix homeserver needs a bridge admin's grant to do anything here, through `[allow`/`[disallow`/`[allowed` (see [COMMANDS.md](COMMANDS.md#allow-mxidhomeserverroom-value-fullshadow)) or the widget's Third-party access card, under the master `bridge.third_party_access` switch (see [CONFIG.md](CONFIG.md)):
+
+- An exact MXID or a whole homeserver can be granted **full** (the ability to make real profiles, the same way a local user does; granting it doesn't make one) or **shadow** (the default: everything but the commands that make or change a profile, and DMs; following, replying and reacting all work).
+- A single already-bridged room can be granted too, whoever is posting: anyone gets a shadow ID just by replying, reacting or voting in that room. Always shadow, and only for passive things in that room: it doesn't let them run commands, not even `[follow`.
+- The most specific grant wins: an MXID grant (or ban) over a homeserver grant, over a room grant for the room the action happens in.
+- Taking a grant away, demoting full to shadow, or banning someone never deletes anything. A demoted full ID keeps its Profile Room, parked: nothing posted there goes out and its profile mirrors Matrix again, until full access is restored and the same room picks up where it left off.
+
 ## Your Profile Room
 
 **Its name, topic, avatar and banner are the ID's Nostr profile.** Change any of them and a new profile (kind 0) is published. The avatar and banner are cleaned first: rotation applied, EXIF metadata (which often holds GPS coordinates) removed, and re-encoded if needed. The cleaned copy is stored back in Matrix and served at `https://<relay host>/<sha256>.<ext>`. An ID made from an imported key keeps the website and Lightning address its old profile had.
@@ -72,7 +84,7 @@ Each ID also publishes, and keeps up to date:
 - encrypted files (the bridge can't read encrypted rooms)
 - files over the size limit (the bot tells you why)
 
-**Other people in your Profile Room:** a local user who replies to one of your posts publishes that reply from *their own* active ID, as a reply to your post. Anything else they say there is conversation and stays in Matrix.
+**Other people in your Profile Room:** someone who replies to one of your posts publishes that reply from *their own* active ID, as a reply to your post: a shadow ID is made for them if they have none (for a user of another homeserver, only with a grant). Anything else they say there is conversation and stays in Matrix.
 
 **Posts from your other Nostr apps:** if you brought your own key, what you post from another app as that ID is shown in its Profile Room too, sent by the bot under your ID's name (MSC4144), and your deletions are applied.
 
@@ -112,7 +124,7 @@ The bridge itself is `_@<bridge.domain>`, shown by Nostr apps as just the domain
 - The room's name, topic and avatar, and the ghost's display name and avatar, follow the account's profile.
 - The account's NIP-05 handle is only shown once checked: the bridge fetches it and makes sure it points back to the same key.
 - With `bridge.set_msc4501_profile_room`, the ghost's Matrix profile points at its room (MSC4501). With `bridge.msc4503_external_handle`, its handle (or `npub`) is recorded on its profile or its events (MSC4503). Both need MSC4133 profile fields on the homeserver, and are skipped quietly where it doesn't have them.
-- You're invited to the room, and it's filed in your Nostr space. Other local users can knock and are let straight in (and users of other homeservers too, with `bridge.accept_federated_knocks`).
+- You're invited to the room, and it's filed in your Nostr space. Other local users (and users of other homeservers an admin has allowed) can knock and are let straight in; anyone else from another homeserver only with `bridge.accept_federated_knocks`.
 - **Backfill:** on following, the account's latest `nostr.backfill_on_follow` posts (20 by default) are brought in. `[backfill [N]` in its room brings in more.
 - **Leaving the room unfollows** the account from each of your IDs that followed it.
 

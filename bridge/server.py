@@ -302,6 +302,9 @@ def create_app(
 
                 tasks.append(asyncio.create_task(expiry_loop(app), name="community message expiry"))
                 run_in_background(app, refresh_all(app), name="community refresh")
+                from bridge.shadow_ids import shadow_profile_loop
+
+                tasks.append(asyncio.create_task(shadow_profile_loop(app), name="shadow profile sync"))
                 app.state.feeds.start()
                 from bridge.room_widget import add_missing_widgets
 

@@ -29,6 +29,7 @@ from bridge.repository import (
     RelayRefusal,
     RemoteAccount,
     RetiredName,
+    ThirdPartyAllow,
     UserRooms,
 )
 
@@ -222,6 +223,18 @@ CREATE TABLE IF NOT EXISTS relay_refusals (
 CREATE TABLE IF NOT EXISTS processed_events (
     event_id TEXT PRIMARY KEY,
     processed_at TEXT NOT NULL
+);
+
+-- Admin grants letting users of other homeservers use the bridge
+-- ([allow). rule_type: mxid, homeserver or room; tier: full, shadow, or
+-- banned (mxid rows only).
+CREATE TABLE IF NOT EXISTS third_party_allowlist (
+    rule_type TEXT NOT NULL,
+    value TEXT NOT NULL,
+    tier TEXT NOT NULL,
+    granted_by TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (rule_type, value)
 );
 
 CREATE TABLE IF NOT EXISTS bridge_state (
@@ -1026,6 +1039,58 @@ class SqliteBridgeRepository:
                 (refusal.relay, refusal.pubkey, refusal.until, refusal.reason),
             )
         )
+
+    # -- third-party access ----------------------------------------------
+
+    async def add_third_party_allow(self, rule_type: str, value: str, tier: str, *, granted_by: str, now: str) -> None:
+        await self._run(
+            lambda conn: conn.execute(
+                "INSERT INTO third_party_allowlist (rule_type, value, tier, granted_by, granted_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (rule_type, value) DO UPDATE SET tier = excluded.tier, granted_by = excluded.granted_by, "
+                "granted_at = excluded.granted_at",
+                (rule_type, value, tier, granted_by, now),
+            )
+        )
+
+    async def remove_third_party_allow(self, rule_type: str, value: str) -> None:
+        await self._run(
+            lambda conn: conn.execute(
+                "DELETE FROM third_party_allowlist WHERE rule_type = ? AND value = ?", (rule_type, value)
+            )
+        )
+
+    async def set_third_party_ban(self, mxid: str, *, granted_by: str, now: str) -> None:
+        await self.add_third_party_allow("mxid", mxid, "banned", granted_by=granted_by, now=now)
+
+    async def list_third_party_allows(self) -> list[ThirdPartyAllow]:
+        def query(conn: Any) -> list[ThirdPartyAllow]:
+            rows = conn.execute(
+                "SELECT rule_type, value, tier, granted_by, granted_at FROM third_party_allowlist ORDER BY rule_type, value"
+            ).fetchall()
+            return [ThirdPartyAllow(*row) for row in rows]
+
+        return await self._run(query)
+
+    async def resolve_third_party_tier(self, *, mxid: str, homeserver: str, room_id: str = "") -> str | None:
+        def query(conn: Any) -> str | None:
+            def tier(rule_type: str, value: str) -> str | None:
+                row = conn.execute(
+                    "SELECT tier FROM third_party_allowlist WHERE rule_type = ? AND value = ?", (rule_type, value)
+                ).fetchone()
+                return row[0] if row else None
+
+            found = tier("mxid", mxid)
+            if found is not None:
+                return None if found == "banned" else found
+            if homeserver:
+                found = tier("homeserver", homeserver)
+                if found is not None:
+                    return found
+            if room_id and tier("room", room_id) is not None:
+                return "shadow"
+            return None
+
+        return await self._run(query)
 
     # -- blobs -----------------------------------------------------------
 

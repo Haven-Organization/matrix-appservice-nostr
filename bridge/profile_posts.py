@@ -24,12 +24,12 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 
-from bridge import ids
+from bridge import ids, shadow_ids
 from bridge.commands import message_for_a_bot
 from bridge.media import MediaProblem, publish_matrix_media
 from bridge.messages import notice
 from bridge.inbound import index_tags
-from bridge.interactions import acting_id, extra_relays_for, find_quote, notify_local_author, reply_context
+from bridge.interactions import extra_relays_for, find_quote, notify_local_author, reply_context
 from bridge.notes import (
     CONVERTERS,
     DELETION_KIND,
@@ -48,7 +48,7 @@ from bridge.remote import pubkey_of_ghost
 from bridge.publishing import NotifyTarget, publish_in_background
 from bridge.repository import EventRow, NostrId
 from bridge.homeserver_client import HomeserverError
-from bridge.users import bot_mxid, is_bridge_user, is_local_user, is_other_bot
+from bridge.users import bot_mxid, is_bridge_user, is_other_bot
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ async def _mentions(app: FastAPI, content: dict[str, Any]) -> list[dict[str, str
         if ghost_key is not None:
             found[user_id] = ghost_key
             continue
-        if not is_local_user(config, user_id):
+        if is_bridge_user(config, user_id):
             continue
         active = await ids.active_id(app, user_id)
         if active is not None:
@@ -241,7 +241,7 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
     content = event.get("content") or {}
     repository = app.state.repository
     profile_id = await repository.get_id_for_profile_room(room_id)
-    if is_bridge_user(config, sender) or not is_local_user(config, sender):
+    if is_bridge_user(config, sender) or not sender.startswith("@"):
         return profile_id is not None
     if _is_edit(content) or message_for_a_bot(content, config):
         return profile_id is not None
@@ -258,12 +258,15 @@ async def maybe_publish_message(request: Request, event: dict[str, Any]) -> bool
             parent = row
     if profile_id is not None and sender == profile_id.matrix_user_id:
         author: NostrId | None = profile_id
+        if not await shadow_ids.may_post_from_profile_room(app, profile_id):
+            return True  # a third party's parked room: stays in Matrix
     elif parent is not None:
-        # Answering a post anywhere else is done as the replier's own ID.
-        author = await acting_id(app, sender, room_id)
+        # Answering a post anywhere else is done as the replier's own ID,
+        # a shadow one made for them if they have none.
+        author = await shadow_ids.ensure_shadow_id_and_tell(app, sender, room_id)
     else:
         return profile_id is not None  # conversation, not a post
-    if author is None:
+    if author is None or not await shadow_ids.still_allowed(app, author, room_id):
         return True
     if parent is None and social is None and _reply_targets(content):
         # Answering something that isn't on Nostr (in a thread or not): a
@@ -466,7 +469,7 @@ async def maybe_handle_edit(request: Request, event: dict[str, Any]) -> bool:
     app = request.app
     config = app.state.config
     sender = event.get("sender", "")
-    if not isinstance(target, str) or is_bridge_user(config, sender) or not is_local_user(config, sender):
+    if not isinstance(target, str) or is_bridge_user(config, sender) or not sender.startswith("@"):
         return False
     repository = app.state.repository
     row = await repository.get_event_by_matrix_event(target, include_copies=False)
@@ -476,6 +479,10 @@ async def maybe_handle_edit(request: Request, event: dict[str, Any]) -> bool:
     if author is None or author.matrix_user_id != sender:
         return False
     room_id = event.get("room_id", "")
+    if not await shadow_ids.still_allowed(app, author, room_id) or (
+        row.room_id == author.profile_room_id and not await shadow_ids.may_post_from_profile_room(app, author)
+    ):
+        return True  # access taken away: the edit stays in Matrix
     try:
         original = await app.state.homeserver.get_event(row.room_id or room_id, target, as_user_id=bot_mxid(config))
     except HomeserverError:

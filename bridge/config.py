@@ -55,6 +55,11 @@ class BridgeSection:
     # Synapse's Admin API. Synapse-only, so off by default; everything
     # else works on any homeserver. Needs homeserver.synapse_admin_token.
     use_synapse_admin_api: bool = False
+    # Master switch for users of OTHER homeservers. Who among them may use
+    # the bridge, and at which tier, is set by the [allow / [disallow
+    # grants (bridge.shadow_ids); this only says whether those grants count
+    # right now. Turning it off deletes nothing.
+    third_party_access: bool = True
     # Name and avatar (mxc://) of the space the bridge keeps for each user,
     # and of their notifications room. Without an avatar, the bot's is used.
     space_name: str = "Nostr"
@@ -413,6 +418,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         internal_base_url=(str(bridge_raw.get("internal_base_url") or "")).rstrip("/") or None,
         admins=[str(mxid) for mxid in bridge_raw.get("admins") or []],
         use_synapse_admin_api=bool(bridge_raw.get("use_synapse_admin_api", False)),
+        third_party_access=bool(bridge_raw.get("third_party_access", True)),
         space_name=str(bridge_raw.get("space_name") or "Nostr"),
         space_avatar_mxc=bridge_raw.get("space_avatar_mxc") or None,
         notifications_room_name=str(bridge_raw.get("notifications_room_name") or "Nostr Notifications"),

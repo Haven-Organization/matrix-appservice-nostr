@@ -65,6 +65,7 @@ class FakeHomeserver(HomeserverClient):
         self.openid_tokens: dict[str, str] = {}
         # Overrides for get_room_state: (room, type) -> content.
         self.room_state: dict[tuple[str, str], dict[str, Any]] = {}
+        self.aliases: dict[str, str] = {}
 
     def _room(self, room_id: str) -> dict[str, Any]:
         return self.rooms.setdefault(room_id, {"state": {}, "events": {}, "members": set()})
@@ -132,6 +133,14 @@ class FakeHomeserver(HomeserverClient):
             return self.room_state[(room_id, event_type)]
         event = self._room(room_id)["state"].get((event_type, state_key))
         return dict(event["content"]) if event else None
+
+    async def resolve_room_alias(self, alias):
+        if alias not in self.aliases:
+            raise HomeserverError(404, "M_NOT_FOUND", "Room alias not found")
+        return self.aliases[alias]
+
+    async def get_joined_rooms(self, *, as_user_id):
+        return sorted(room_id for room_id, room in self.rooms.items() if as_user_id in room["members"])
 
     async def get_full_state(self, room_id, *, as_user_id):
         return list(self._room(room_id)["state"].values())

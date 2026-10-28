@@ -77,6 +77,12 @@ async def maybe_publish_share(request: Request, event: dict[str, Any]) -> bool:
         shown_as = (content.get(PER_MESSAGE_PROFILE_FIELD) or {}).get("id")
         if shown_as is not None and shown_as != owner_id.matrix_user_id:
             return True
+    from bridge import shadow_ids
+
+    if not await shadow_ids.may_post_from_profile_room(app, owner_id) or not await shadow_ids.still_allowed(
+        app, owner_id, room_id
+    ):
+        return True  # a third party's parked room: stays in Matrix
     original_event = relation["event_id"]
     original_room = relation["room_id"]
     nostr_row = await repository.get_event_by_matrix_event(original_event)

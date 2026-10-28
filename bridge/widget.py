@@ -330,6 +330,63 @@ async def dm(request: Request) -> JSONResponse:
     return await _command(request, _handle_dm, lambda b: [str(b.get("account", ""))])
 
 
+# -- admin: third-party access (as matrix-appservice-activitypub's Access tab) ---------
+
+
+async def _admin(request: Request, room_id: str) -> str:
+    user = await _member(request, room_id)
+    if not await is_admin(request.app.state.config, request.app.state.homeserver, user):
+        raise HTTPException(403, "Only a bridge admin can manage third-party access.")
+    return user
+
+
+@router.get("/widget/api/admin/grants")
+async def admin_grants(request: Request, room_id: str) -> JSONResponse:
+    """Every grant, as "[allowed" lists them. Checked here as well as by
+    hiding the card: nothing stops a request straight at this endpoint."""
+    await _admin(request, room_id)
+    grants = await request.app.state.repository.list_third_party_allows()
+    return JSONResponse({
+        "third_party_access": request.app.state.config.bridge.third_party_access,
+        "grants": [{"rule_type": g.rule_type, "value": g.value, "tier": g.tier, "granted_by": g.granted_by,
+                    "granted_at": g.granted_at} for g in grants],
+    }, headers={"Cache-Control": "no-store"})
+
+
+def _grant_argument(body: dict[str, Any], *, with_tier: bool) -> str:
+    from bridge.commands import _ALLOW_RULE_TYPES
+
+    rule_type, value, tier = body.get("rule_type"), body.get("value"), body.get("tier")
+    if rule_type not in _ALLOW_RULE_TYPES or not isinstance(value, str) or not value.strip() or " " in value.strip():
+        raise HTTPException(400, f"rule_type must be one of {', '.join(_ALLOW_RULE_TYPES)}, and a value is required.")
+    argument = f"{rule_type} {value.strip()}"
+    if with_tier and rule_type != "room" and isinstance(tier, str) and tier.strip():
+        argument += f" {tier.strip()}"
+    return argument
+
+
+@router.post("/widget/api/admin/allow")
+async def admin_allow(request: Request) -> JSONResponse:
+    """The same as "[allow" (it answers in the room, a homeserver asking
+    for its confirm there)."""
+    from bridge.commands import _handle_allow
+
+    body = await _body(request)
+    user = await _admin(request, body["room_id"])
+    await _handle_allow(request.app, body["room_id"], user, _grant_argument(body, with_tier=True))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/widget/api/admin/disallow")
+async def admin_disallow(request: Request) -> JSONResponse:
+    from bridge.commands import _handle_disallow
+
+    body = await _body(request)
+    user = await _admin(request, body["room_id"])
+    await _handle_disallow(request.app, body["room_id"], user, _grant_argument(body, with_tier=False))
+    return JSONResponse({"ok": True})
+
+
 # -- keys ------------------------------------------------------------------------------
 
 
@@ -582,8 +639,39 @@ _PAGE = r"""<!doctype html>
         <div class="row"><input id="exportpw" type="password" placeholder="password to protect it (recommended)" autocomplete="off"></div>
         <div class="row"><button class="danger" id="export">Show key</button></div><div id="exported"></div></div>`;
     }
+    if (ctx.admin) {
+      out += `<div class="card"><h2>Third-party access</h2>
+        <p class="muted">Let a user, a homeserver, or a single already-bridged room's replies and reactions use this bridge. Mxid and homeserver grants are shadow (an identity made for them, mirroring their Matrix name and avatar) or full (their own profiles); a room is always shadow.</p>
+        <p class="muted" id="tpastatus"></p>
+        <div class="row"><select id="grantkind" style="flex:none"><option value="mxid">mxid</option><option value="homeserver">homeserver</option><option value="room">room</option></select>
+          <input id="grantvalue" placeholder="@user:example.org, example.org, !room:example.org or #alias:example.org">
+          <select id="granttier" style="flex:none"><option value="shadow">shadow</option><option value="full">full</option></select>
+          <button class="primary" id="grant">Grant</button></div>
+        <div id="grants"><p class="muted">Loading…</p></div></div>`;
+    }
     app.innerHTML = out;
     bind();
+    if (ctx.admin) loadGrants();
+  }
+
+  async function loadGrants() {
+    const list = document.getElementById("grants");
+    if (!list) return;
+    try {
+      const data = await api("/widget/api/admin/grants?room_id=" + encodeURIComponent(roomId));
+      document.getElementById("tpastatus").textContent = "Third-party access is currently " + (data.third_party_access ? "ON" : "OFF") + ".";
+      if (!data.grants.length) { list.innerHTML = `<p class="muted">No grants yet.</p>`; return; }
+      list.innerHTML = data.grants.map((g, n) => `<div class="item"><div><strong>${esc(g.rule_type)}: ${esc(g.value)}</strong>
+        <div class="muted">tier: ${esc(g.tier)} · granted by ${esc(g.granted_by)}</div></div>
+        <button class="danger" data-revoke="${n}">${g.tier === "banned" ? "Unban" : "Revoke"}</button></div>`).join("");
+      list.querySelectorAll("[data-revoke]").forEach((b) => { b.onclick = async () => {
+        const g = data.grants[Number(b.dataset.revoke)];
+        // A ban is lifted by granting again, as "[allow mxid" does.
+        const path = g.tier === "banned" ? "/widget/api/admin/allow" : "/widget/api/admin/disallow";
+        const body = g.tier === "banned" ? { rule_type: g.rule_type, value: g.value, tier: "shadow" } : { rule_type: g.rule_type, value: g.value };
+        await act(path, body, b, "Done: see the room for details.");
+      }; });
+    } catch (e) { list.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
   }
 
   function modeFields(p) {
@@ -608,6 +696,18 @@ _PAGE = r"""<!doctype html>
     const on = (id, fn) => { const n = document.getElementById(id); if (n) n.onclick = () => fn(n); };
     document.querySelectorAll("[data-switch]").forEach((b) => { b.onclick = () => act("/widget/api/switch", { id: b.dataset.switch }, b); });
     on("create", (b) => act("/widget/api/create", { name: document.getElementById("newname").value }, b));
+    const kind = document.getElementById("grantkind");
+    if (kind) {
+      const syncTier = () => { document.getElementById("granttier").style.display = kind.value === "room" ? "none" : ""; };
+      kind.onchange = syncTier; syncTier();
+      on("grant", (b) => {
+        const value = document.getElementById("grantvalue").value.trim();
+        if (!value) return;
+        const body = { rule_type: kind.value, value };
+        if (kind.value !== "room") body.tier = document.getElementById("granttier").value;
+        act("/widget/api/admin/allow", body, b, kind.value === "homeserver" ? "Reply \"confirm\" to my message in the room to go ahead." : "Done: see the room for details.");
+      });
+    }
     if (ctx.room.kind === "remote") {
       const account = ctx.room.npub;
       on("follow", (b) => act("/widget/api/follow", { account }, b));
