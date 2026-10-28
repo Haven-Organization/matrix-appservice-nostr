@@ -535,3 +535,26 @@ def test_a_room_grant_joins_a_guest_quietly(client, homeserver, relay_pool) -> N
     assert told.startswith(f"{bronze}: I've created a shadow Nostr identity for you: bronze_kitsunemimi.example@")
     [content] = [c for c in homeserver.sent_to(room) if c.get("body") == told]
     assert content["m.mentions"] == {"user_ids": [bronze]} and f"matrix.to/#/{bronze}" in content["formatted_body"]
+
+
+def test_a_slow_relay_doesnt_hold_up_the_homeservers_events(client, homeserver, relay_pool) -> None:
+    import asyncio
+
+    from tests.conftest import HS_TOKEN, settle
+
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    real = relay_pool.publish
+
+    async def slow(event, relays, timeout=None):
+        await asyncio.sleep(3)
+        return await real(event, relays, timeout)
+
+    relay_pool.publish = slow
+    event = homeserver._store(room, "m.room.message", {"msgtype": "m.text", "body": "quick"}, "@q:example.org")
+    started = time.monotonic()
+    response = client.put("/_matrix/app/v1/transactions/slow-1", json={"events": [event]},
+                          headers={"Authorization": f"Bearer {HS_TOKEN}"})
+    assert response.status_code == 200 and time.monotonic() - started < 1.5
+    settle(client)
+    wrap = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1]
+    assert concord.open_wrap(wrap.to_dict(), community.channel())["content"] == "quick"

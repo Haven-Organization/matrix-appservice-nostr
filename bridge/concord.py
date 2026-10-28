@@ -1415,8 +1415,19 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
     await app.state.repository.set_state(_MSG.format(rumor_id), json.dumps([room_id, matrix_event if kind != 5 else "", member.pubkey]))
     if kind != 5:
         await app.state.repository.set_state(_MX.format(matrix_event), json.dumps([rumor_id, member.pubkey, kind]))
-    await app.state.relay_pool.publish(wrap, community.relays)
+    # In the background: the homeserver sends the bridge one batch of events
+    # at a time, so waiting here on a slow relay (up to its timeout) held up
+    # every message behind this one.
+    from bridge.tasks import run_in_background
+
+    run_in_background(app, _send(app, wrap, community), name=f"concord send {wrap.id[:8]}")
     return True
+
+
+async def _send(app: FastAPI, wrap, community: Community) -> None:
+    for result in await app.state.relay_pool.publish(wrap, community.relays):
+        if not result.accepted:
+            logger.info("%s didn't take a message for %s: %s", result.relay, community.name, result.message)
 
 
 async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any], tags: list[list[str]]):

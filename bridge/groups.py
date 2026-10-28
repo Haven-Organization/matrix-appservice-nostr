@@ -691,13 +691,22 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
     await repository.set_state(_MSG.format(signed.id), json.dumps([room_id, matrix_event if kind != DELETION else "", member.pubkey]))
     if kind != DELETION:
         await repository.set_state(_MX.format(matrix_event), json.dumps([signed.id, member.pubkey, kind]))
+    # In the background, so a slow relay doesn't hold up the homeserver's
+    # next batch of events (see concord.maybe_publish).
+    from bridge.tasks import run_in_background
+
+    run_in_background(app, _send(app, group, signed, room_id, matrix_event), name=f"nip29 send {signed.id[:8]}")
+    return True
+
+
+async def _send(app: FastAPI, group: Group, signed, room_id: str, matrix_event: str) -> None:
     results = await app.state.relay_pool.publish(signed, [group.relay])
     refused = next((r for r in results if not r.accepted), None)
     if refused is not None:
+        logger.info("%s didn't take a message for %s: %s", group.relay, group.key, refused.message)
         reason = refused.message.split(":", 1)[-1].strip() or "no reason given"
         await notice(app, room_id, f"{group.host} didn't accept that: {reason}",
                      extra={"m.relates_to": {"m.in_reply_to": {"event_id": matrix_event}}} if matrix_event else None)
-    return True
 
 
 async def _outgoing(app: FastAPI, group: Group, event: dict[str, Any], content: dict[str, Any]):
