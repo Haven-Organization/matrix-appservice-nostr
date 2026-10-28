@@ -395,6 +395,34 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, reference: tuple[
     logger.info("Joined %s as %s; %d messages brought in", group.key, member.pubkey, brought)
 
 
+async def _join_quietly(app: FastAPI, group: Group, sender: str, room_id: str):
+    """Someone talking in a group's room whose ID isn't a member yet: if
+    they may send from this room (``bridge.shadow_ids``: a local user, or a
+    third party with a grant, a room grant included), the ID that acts for
+    them here (a shadow one made if they have none) asks the relay to join.
+    ``None`` if they may not, or the relay refuses (a closed group needs an
+    invite, which only "[join" can bring)."""
+    from bridge.shadow_ids import ensure_shadow_id_and_tell, still_allowed
+
+    member = await ensure_shadow_id_and_tell(app, sender, room_id)
+    if member is None or not await still_allowed(app, member, room_id):
+        return None
+    if member.pubkey not in group.present:
+        request = await app.state.signer.sign(member.pubkey, kind=JOIN_REQUEST, content="", created_at=int(time.time()),
+                                              tags=[["h", group.id]])
+        if request is None:
+            return None
+        [result] = await app.state.relay_pool.publish(request, [group.relay]) or [None]
+        if result is not None and not result.accepted and not result.message.startswith("duplicate:"):
+            logger.info("%s couldn't join %s from its room: %s", sender, group.key, result.message)
+            return None
+    if member.id not in group.members:
+        group.members.append(member.id)
+        await save(app, group)
+        logger.info("%s joined %s as %s from its room", sender, group.key, member.name)
+    return member
+
+
 def _esc(text: str) -> str:
     import html
 
@@ -638,7 +666,12 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
     if member is not None and not await still_allowed(app, member, room_id):
         return True  # a third party whose access was taken away: stays in Matrix
     if member is None:
-        await notice(app, room_id, f'Join the group first: "{config.appservice.command_prefix}join {group.host}\'{group.id}".')
+        member = await _join_quietly(app, group, sender, room_id)
+    if member is None:
+        from bridge.shadow_ids import may_use_bridge
+
+        if await may_use_bridge(app, sender):  # anyone else isn't told about commands they can't run
+            await notice(app, room_id, f'Join the group first: "{config.appservice.command_prefix}join {group.host}\'{group.id}".')
         return True
     built = await _outgoing(app, group, event, content)
     if built is None:

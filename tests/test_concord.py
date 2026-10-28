@@ -496,3 +496,31 @@ def test_the_icon_and_banner_go_on_the_space(client, homeserver, relay_pool) -> 
     bad["hash"] = "00" * 32
     run(client, concord.receive, client.app, community.edition("0", community.id, dict(meta, icon=bad), version=5))
     assert homeserver.media[homeserver.state_of(state.space, "m.room.avatar")["url"]] == (icon2, "image/png")
+
+
+def test_a_room_grant_joins_a_guest_quietly(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    from tests.test_federation import command, post
+
+    bronze = "@bronze:kitsunemimi.example"
+    # No grant: nothing goes out, and nobody is told to run a command they can't.
+    before = len(homeserver.sent_to(room))
+    post(client, homeserver, room, {"msgtype": "m.text", "body": "hi?"}, sender=bronze)
+    assert len(homeserver.sent_to(room)) == before
+    assert run(client, client.app.state.repository.list_ids_for_user, bronze) == []
+    command(client, "[allow room", sender="@admin:example.org", room=room)
+    post(client, homeserver, room, {"msgtype": "m.text", "body": "hello all"}, sender=bronze)
+    [shadow] = run(client, client.app.state.repository.list_ids_for_user, bronze)
+    assert shadow.name == "bronze_kitsunemimi.example" and shadow.profile_room_id is None
+    state = run(client, concord.load, client.app, community.id)
+    assert shadow.id in state.members
+    wraps = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk]
+    rumor = concord.open_wrap(wraps[-1].to_dict(), community.channel())
+    assert rumor["content"] == "hello all" and rumor["pubkey"] == shadow.pubkey
+    # The join was announced in the guestbook, as the shadow ID.
+    guestbook = concord.group_key("concord/guestbook", bytes.fromhex(community.root), bytes.fromhex(community.id), 0)
+    joins = [concord.open_wrap(e.to_dict(), guestbook) for e, _ in relay_pool.published if e.pubkey == guestbook.pk]
+    assert any(j["pubkey"] == shadow.pubkey for j in joins)
+    bodies = [c.get("body", "") for c in homeserver.sent_to(room)]
+    assert not any("Join the community first" in b for b in bodies)
+    assert any("shadow Nostr identity for you" in b for b in bodies)

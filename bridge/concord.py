@@ -736,6 +736,30 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
                  f"Its space: {room_link_html(community.space or '', community.name)}.")
 
 
+async def _join_quietly(app: FastAPI, community: Community, sender: str, room_id: str):
+    """Someone talking in a channel room whose ID isn't a member yet: if
+    they may send from this room (``bridge.shadow_ids``: a local user, or a
+    third party with a grant, a room grant included), they join as the ID
+    that acts for them here, a shadow one made if they have none. The
+    bridge already holds the community's keys, so joining is just the
+    guestbook entry. ``None`` if they may not (or the ID can't take part)."""
+    from bridge.shadow_ids import ensure_shadow_id_and_tell, still_allowed
+
+    member = await ensure_shadow_id_and_tell(app, sender, room_id)
+    if member is None or not await still_allowed(app, member, room_id):
+        return None
+    if member.key_origin == "bunker":
+        await notice(app, room_id, f"{member.name}@{app.state.config.bridge.domain} signs through a remote signer, "
+                                   "which Concord communities can't work with yet.")
+        return None
+    if member.id not in community.members:
+        community.members.append(member.id)
+        await save(app, community)
+        await _announce_join(app, community, member, {})
+        logger.info("%s joined %s as %s from its room", sender, community.id, member.name)
+    return member
+
+
 async def _announce_join(app: FastAPI, community: Community, member, bundle: dict[str, Any]) -> None:
     secret = await app.state.signer.secret_key(member.pubkey)
     if secret is None:
@@ -1365,7 +1389,12 @@ async def maybe_publish(request: Request, event: dict[str, Any]) -> bool:
     if member is not None and not await still_allowed(app, member, room_id):
         return True  # a third party whose access was taken away: stays in Matrix
     if member is None:
-        await notice(app, room_id, f'Join the community first: "{config.appservice.command_prefix}join <invite link>".')
+        member = await _join_quietly(app, community, sender, room_id)
+    if member is None:
+        from bridge.shadow_ids import may_use_bridge
+
+        if await may_use_bridge(app, sender):  # anyone else isn't told about commands they can't run
+            await notice(app, room_id, f'Join the community first: "{config.appservice.command_prefix}join <invite link>".')
         return True
     secret = await app.state.signer.secret_key(member.pubkey)
     if secret is None:
