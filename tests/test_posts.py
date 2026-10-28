@@ -207,6 +207,21 @@ def test_image_post(client, homeserver, relay_pool) -> None:
     assert rebuilt(client, index_row(client, message["event_id"])).status == "ok"
 
 
+def test_sticker_post(client, homeserver, relay_pool) -> None:
+    from tests.test_federation import transact
+
+    q = create_id(client)
+    homeserver.media["mxc://example.org/sticker"] = (_photo_with_gps(), "image/jpeg")
+    sticker = homeserver._store(q.profile_room_id, "m.sticker", {
+        "body": "made-it-political", "url": "mxc://example.org/sticker", "info": {"mimetype": "image/jpeg", "w": 120, "h": 90},
+    }, "@q:example.org")
+    transact(client, sticker)
+    [note] = notes(relay_pool)
+    assert note.content.startswith("https://nostr.example.org/") and "\n" not in note.content
+    assert any(t[0] == "imeta" for t in note.tags)
+    assert rebuilt(client, index_row(client, sticker["event_id"])).status == "ok"
+
+
 def test_file_post_without_caption(client, homeserver, relay_pool) -> None:
     q = create_id(client)
     homeserver.media["mxc://example.org/doc"] = (b"%PDF-1.4 tiny", "application/pdf")

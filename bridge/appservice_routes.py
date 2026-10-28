@@ -164,7 +164,11 @@ async def handle_event(request: Request, event: dict[str, Any]) -> None:
     ):
         return
     from bridge.messages import answering, done_answering
+    from bridge.notes import sticker_as_image
 
+    # A sticker goes everywhere an image does (posts, replies, DMs,
+    # communities, groups).
+    event = sticker_as_image(event)
     token = answering(event)  # the bot answers in the event's thread, if it's in one
     try:
         for handler in _HANDLERS:

@@ -268,6 +268,13 @@ def test_attachments_are_encrypted_both_ways(client, homeserver, relay_pool) -> 
     blob = homeserver.media[run(client, client.app.state.repository.get_blob, imeta["x"]).mxc][0]
     assert AESGCM(bytes.fromhex(imeta["decryption-key"])).decrypt(bytes.fromhex(imeta["decryption-nonce"]), blob, None) == buffer.getvalue()
     assert imeta["m"] == "image/png" and rumor["content"] == ""
+    # A sticker goes the same way: the image, its description not a caption.
+    sticker = homeserver._store(room, "m.sticker", {"body": "made-it-political", "url": "mxc://example.org/mine",
+                                                    "info": {"mimetype": "image/png", "w": 8, "h": 8}}, "@q:example.org")
+    transact(client, sticker)
+    wrap = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1]
+    rumor = concord.open_wrap(wrap.to_dict(), community.channel())
+    assert rumor["content"] == "" and any(t[0] == "imeta" for t in rumor["tags"])
 
 
 def test_an_echo_arriving_while_publishing_isnt_shown(client, homeserver, relay_pool) -> None:

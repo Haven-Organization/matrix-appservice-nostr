@@ -106,7 +106,11 @@ def _state_text(event: dict[str, Any] | None, key: str) -> str | None:
 async def _fetch(app: FastAPI, room_id: str, event_id: str | None) -> dict[str, Any] | None:
     if not event_id:
         return None
-    return await app.state.homeserver.get_event(room_id, event_id, as_user_id=bot_mxid(app.state.config))
+    from bridge.notes import sticker_as_image
+
+    # A sticker was published as the image it is (appservice_routes), so it
+    # is rebuilt as one too.
+    return sticker_as_image(await app.state.homeserver.get_event(room_id, event_id, as_user_id=bot_mxid(app.state.config)))
 
 
 def profile_content_v2(

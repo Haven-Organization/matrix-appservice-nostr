@@ -88,6 +88,17 @@ def pills(content: dict[str, Any]) -> list[tuple[str, str]]:
     return found
 
 
+def sticker_as_image(event: dict[str, Any]) -> dict[str, Any]:
+    """A sticker (``m.sticker``) as the image message it amounts to, so it
+    goes everywhere an image does. Its body is the sticker's description,
+    not a caption, and with no ``filename`` it isn't taken for one."""
+    if not isinstance(event, dict) or event.get("type") != "m.sticker":
+        return event
+    content = {**(event.get("content") or {}), "msgtype": "m.image"}
+    content.pop("filename", None)
+    return {**event, "type": "m.room.message", "content": content}
+
+
 def has_caption(content: dict[str, Any]) -> bool:
     """A media message has a caption when its body isn't just the file name
     (MSC2530: the name is then in ``filename``)."""
