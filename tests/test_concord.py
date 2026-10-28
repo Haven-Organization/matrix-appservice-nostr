@@ -523,4 +523,8 @@ def test_a_room_grant_joins_a_guest_quietly(client, homeserver, relay_pool) -> N
     assert any(j["pubkey"] == shadow.pubkey for j in joins)
     bodies = [c.get("body", "") for c in homeserver.sent_to(room)]
     assert not any("Join the community first" in b for b in bodies)
-    assert any("shadow Nostr identity for you" in b for b in bodies)
+    [told] = [b for b in bodies if "shadow Nostr identity for you" in b]
+    assert "create profile" not in told  # a room grant doesn't let him make one
+    assert told.startswith(f"{bronze}: I've created a shadow Nostr identity for you: bronze_kitsunemimi.example@")
+    [content] = [c for c in homeserver.sent_to(room) if c.get("body") == told]
+    assert content["m.mentions"] == {"user_ids": [bronze]} and f"matrix.to/#/{bronze}" in content["formatted_body"]

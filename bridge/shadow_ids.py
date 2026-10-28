@@ -43,6 +43,7 @@ mirror, since that profile is the user's own from before the bridge.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from typing import Literal, NamedTuple
@@ -247,24 +248,51 @@ async def _make_shadow_id(app: FastAPI, sender: str) -> NostrId | None:
     return nostr_id
 
 
-def shadow_created_notice(app: FastAPI, nostr_id: NostrId) -> str:
-    """Said once, wherever a shadow ID was just made."""
+async def may_create_profile(app: FastAPI, mxid: str) -> bool:
+    """Whether ``[create profile`` is open to ``mxid``: a local user (whom
+    ``bridge.id_allowed_users`` doesn't leave out), or a third party with a
+    full grant of their own. A room grant never is one."""
+    config = app.state.config
+    if not is_third_party(config, mxid):
+        return ids.user_allowed(config, mxid)
+    return config.bridge.third_party_access and await resolve_third_party_tier(app, mxid) == "full"
+
+
+async def shadow_created_notice(app: FastAPI, nostr_id: NostrId) -> tuple[str, str]:
+    """Said once, wherever a shadow ID was just made: ``(plain, html)``.
+    Addressed to its owner by name (a pill), since it's often said in a
+    room full of other people, and only offers ``[create profile`` to
+    someone who can run it."""
     config = app.state.config
     prefix = config.appservice.command_prefix
-    return (
-        f"I've created a shadow Nostr identity for you: {nostr_id.name}@{config.bridge.domain}. "
-        "It mirrors your Matrix display name/avatar automatically, and has no profile of its own yet. "
-        f'Run "{prefix}create profile" anytime to turn it into a full, customizable profile.'
+    owner = nostr_id.matrix_user_id
+    try:
+        name = (await app.state.homeserver.get_profile(owner)).get("displayname")
+    except HomeserverError:
+        name = None
+    name = name.strip() if isinstance(name, str) and name.strip() else owner
+    handle = f"{nostr_id.name}@{config.bridge.domain}"
+    rest = (
+        "It mirrors your Matrix display name/avatar automatically, and has no profile of its own yet."
     )
+    if await may_create_profile(app, owner):
+        rest += f' Run "{prefix}create profile" anytime to turn it into a full, customizable profile.'
+    plain = f"{name}: I've created a shadow Nostr identity for you: {handle}. {rest}"
+    rich = (
+        f'<a href="https://matrix.to/#/{html.escape(owner)}">{html.escape(name)}</a>: I\'ve created a shadow Nostr '
+        f"identity for you: <strong>{html.escape(handle)}</strong>. {html.escape(rest)}"
+    )
+    return plain, rich
 
 
 async def ensure_shadow_id_and_tell(app: FastAPI, sender: str, room_id: str) -> NostrId | None:
-    """``ensure_shadow_id``, sending the notice in ``room_id`` if one was made."""
+    """``ensure_shadow_id``, telling its owner in ``room_id`` if one was made."""
     from bridge.messages import notice
 
     resolution = await ensure_shadow_id(app, sender, room_id)
     if resolution.created and resolution.nostr_id is not None:
-        await notice(app, room_id, shadow_created_notice(app, resolution.nostr_id))
+        plain, rich = await shadow_created_notice(app, resolution.nostr_id)
+        await notice(app, room_id, plain, html_message=rich, extra={"m.mentions": {"user_ids": [sender]}})
     return resolution.nostr_id
 
 
