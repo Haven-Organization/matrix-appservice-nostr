@@ -63,6 +63,9 @@ INDEXED_TAG_LETTERS = frozenset("epaqkdiEPAK")
 # 34235/34236: NIP-71's addressable videos, shown like kinds 21 and 22.
 # 1063: a NIP-94 file (how Ditto posts webxdc games, among other files).
 POST_KINDS = frozenset({1, 20, 21, 22, 1063, 1111, 30023, 34235, 34236})
+# Reactions (NIP-25, and the generic kind 17): a reply to one goes in the
+# thread of what was reacted to.
+REACTION_KINDS = frozenset({7, 17})
 REACTION_KIND = 7
 REPOST_KINDS = frozenset({6, 16})
 ZAP_RECEIPT_KIND = 9735
@@ -894,7 +897,10 @@ async def _post(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
             parent = await _ensure_post_in_matrix(app, original)
 
     if parent is not None and parent.room_id and parent.matrix_event_id:
-        return await _reply_in_matrix(app, raw, parent, followed=followed, mentioned=mentioned)
+        reaction = await _reaction_context(app, parent) if parent.kind in REACTION_KINDS else None
+        if parent.kind in REACTION_KINDS and reaction is None:
+            return IngestResult(False, "restricted: the reaction it answers isn't in Matrix")
+        return await _reply_in_matrix(app, raw, parent, followed=followed, mentioned=mentioned, reaction=reaction)
     if followed:
         return await _followed_post(app, raw, parent_id=parent_id)
     if mentioned:
@@ -902,9 +908,62 @@ async def _post(app: FastAPI, raw: dict[str, Any]) -> IngestResult:
     return REJECTED
 
 
+@dataclass(frozen=True)
+class _Reacted:
+    """What a reply to a reaction is about: the Matrix event reacted to, and
+    the reaction as text ("👍", ":blobcat:") and, for a custom emoji, its
+    image."""
+
+    event_id: str
+    key: str
+    mxc: str | None
+
+
+async def _reaction_context(app: FastAPI, reaction: EventRow) -> _Reacted | None:
+    """For a reply to a reaction (a NIP-22 comment on a kind 7): the Matrix
+    event that was reacted to, which the reply threads under (a reaction
+    can't have a thread of its own), and the reaction."""
+    try:
+        event = await app.state.homeserver.get_event(reaction.room_id or "", reaction.matrix_event_id or "",
+                                                     as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        return None
+    content = (event or {}).get("content") or {}
+    relation = content.get("m.relates_to") or {}
+    target = relation.get("event_id")
+    if not isinstance(target, str):
+        return None
+    key = str(relation.get("key") or "")
+    mxc = key if key.startswith("mxc://") else None
+    # A custom emoji's name: MSC4027's "shortcode", or Beeper's field for it.
+    name = content.get("shortcode") or content.get("com.beeper.reaction.shortcode")
+    text = str(name) if isinstance(name, str) and name else ("a custom emoji" if mxc or not key else key)
+    return _Reacted(target, text, mxc)
+
+
+def _reaction_html(reaction: _Reacted) -> str:
+    """The reaction as shown: a custom emoji as its image, else its text."""
+    if reaction.mxc:
+        name = html.escape(reaction.key, quote=True)
+        return f'<img data-mx-emoticon height="32" src="{html.escape(reaction.mxc, quote=True)}" alt="{name}" title="{name}">'
+    return html.escape(f'"{reaction.key}"')
+
+
+async def _reacted_post_author(app: FastAPI, event_id: str, local: NostrId) -> str | None:
+    """Whose post a reaction was on, as a notification names them: None when
+    it's the reactor's own."""
+    row = await app.state.repository.get_event_by_matrix_event(event_id)
+    if row is None or row.pubkey == local.pubkey:
+        return None
+    return await _author_label(app, row.pubkey)
+
+
 async def _reply_in_matrix(
-    app: FastAPI, raw: dict[str, Any], parent: EventRow, *, followed: bool, mentioned: list[NostrId]
+    app: FastAPI, raw: dict[str, Any], parent: EventRow, *, followed: bool, mentioned: list[NostrId],
+    reaction: _Reacted | None = None,
 ) -> IngestResult:
+    """``reaction``: the parent is a reaction, so the reply goes in the thread
+    of what was reacted to, under a "Reply to X's reaction" line."""
     repository = app.state.repository
     parent_local = await repository.get_id_by_pubkey(parent.pubkey)
     if parent_local is not None and await repository.is_blocked_by_any(raw["pubkey"], [parent_local.id]):
@@ -912,13 +971,23 @@ async def _reply_in_matrix(
     remote = await remotes.get_or_create_remote(app, raw["pubkey"])
     assert parent.room_id and parent.matrix_event_id
     await remotes.ensure_ghost_in_room(app, remote.ghost_user_id, parent.room_id)
-    thread_root = await _thread_root_of(app, parent.room_id, parent.matrix_event_id)
-    content = await message_content(app, raw, as_user_id=remote.ghost_user_id)
+    anchor = reaction.event_id if reaction else parent.matrix_event_id
+    thread_root = await _thread_root_of(app, parent.room_id, anchor)
+    header_plain = header_html = ""
+    if reaction is not None:
+        reactor = await _author_label(app, parent.pubkey)
+        header_plain = f'⤵️ Reply to {reactor}\'s reaction "{reaction.key}":'
+        reactor_pill = _pill(await _author_mxid(app, parent.pubkey), reactor)
+        header_html = f"⤵️ Reply to {reactor_pill}'s reaction " + _reaction_html(reaction) + ":"
+    content = await message_content(app, raw, as_user_id=remote.ghost_user_id,
+                                    header_plain=header_plain, header_html=header_html)
     content["m.relates_to"] = {
         "rel_type": "m.thread",
         "event_id": thread_root,
-        "is_falling_back": False,
-        "m.in_reply_to": {"event_id": parent.matrix_event_id},
+        # A reply to a reaction is in the post's thread, not an answer to the
+        # post itself: the reply part is only for clients without threads.
+        "is_falling_back": reaction is not None,
+        "m.in_reply_to": {"event_id": anchor},
     }
     event_id = await _send(
         app, parent.room_id, _with_extras(app, content, raw, remote, link=event_url(app, raw)), sender=remote.ghost_user_id,
@@ -927,7 +996,11 @@ async def _reply_in_matrix(
     await _store(app, raw, room_id=parent.room_id, matrix_event_id=event_id, scope="public" if parent_local or mentioned else "followed")
     notified: set[int] = set()
     theirs = (parent.room_id, event_id)
-    if parent_local is not None:
+    if parent_local is not None and reaction is not None:
+        await notify_format.send(app, parent_local, "reaction_reply", raw["pubkey"], own=(parent.room_id, anchor),
+                                 theirs=theirs, post_author=await _reacted_post_author(app, anchor, parent_local))
+        notified.add(parent_local.id)
+    elif parent_local is not None:
         await notify_format.send(
             app, parent_local, "reply", raw["pubkey"], own=(parent.room_id, parent.matrix_event_id), theirs=theirs
         )
@@ -940,15 +1013,19 @@ async def _reply_in_matrix(
         remote = await remotes.ensure_room(app, remote)
         if remote.room_id and remote.room_id != parent.room_id:
             parent_author = await _author_label(app, parent.pubkey)
-            link = _event_link(parent.room_id, parent.matrix_event_id)
-            copy = await message_content(
-                app, raw, as_user_id=remote.ghost_user_id,
-                header_plain=f"⤵️ Reply to {parent_author}'s post:",
-                header_html=f'⤵️ Reply to {html.escape(parent_author)}\'s <a href="{link}">post</a>:',
-            )
+            link = _event_link(parent.room_id, anchor)
+            if reaction is not None:
+                header_plain = f'⤵️ Reply to {parent_author}\'s reaction "{reaction.key}":'
+                header_html = (f"⤵️ Reply to {_pill(await _author_mxid(app, parent.pubkey), parent_author)}'s "
+                               f"<a href=\"{link}\">reaction</a> " + _reaction_html(reaction) + ":")
+            else:
+                header_plain = f"⤵️ Reply to {parent_author}'s post:"
+                header_html = f'⤵️ Reply to {html.escape(parent_author)}\'s <a href="{link}">post</a>:'
+            copy = await message_content(app, raw, as_user_id=remote.ghost_user_id,
+                                         header_plain=header_plain, header_html=header_html)
             if app.state.config.bridge.set_msc4501_relates_to:
                 copy[SOCIAL_RELATES_TO_FIELD] = {
-                    "rel_type": "org.matrix.msc4501.social.reply", "event_id": parent.matrix_event_id,
+                    "rel_type": "org.matrix.msc4501.social.reply", "event_id": anchor,
                     "room_id": parent.room_id, "sender": await _author_mxid(app, parent.pubkey),
                     "via": [app.state.config.homeserver.server_name],
                 }

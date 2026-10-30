@@ -415,6 +415,38 @@ def test_outgoing_reaction_and_undo(client, homeserver, relay_pool) -> None:
     assert [list(t) for t in undo.tags] == [["e", like.id], ["k", "7"]]
 
 
+def test_reply_to_a_reaction_goes_in_the_reacted_posts_thread(client, homeserver, relay_pool) -> None:
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    transact(client, homeserver._store(remote.room_id, "m.reaction", {
+        "m.relates_to": {"rel_type": "m.annotation", "event_id": mirrored["event_id"], "key": "👍🏽"}}, "@q:example.org"))
+    [like] = [e for e, _ in relay_pool.published if e.kind == 7]
+    stranger = Stranger()
+    comment = stranger.event(1111, "so true fren", [
+        ["E", like.id, "", q.pubkey], ["K", "7"], ["P", q.pubkey], ["e", like.id, "", q.pubkey], ["k", "7"], ["p", q.pubkey]])
+    assert relay_send(client, comment)[2] is True
+    reply = homeserver.messages(remote.room_id)[-1]
+    assert reply["sender"] != "@q:example.org" and "so true fren" in reply["content"]["body"]
+    assert reply["content"]["body"].startswith('⤵️ Reply to q@example.org\'s reaction "👍🏽":')
+    relation = reply["content"]["m.relates_to"]
+    assert relation["rel_type"] == "m.thread" and relation["event_id"] == mirrored["event_id"]
+    assert relation["is_falling_back"] is True  # in the thread, not an answer to the post
+    assert '<a href="https://matrix.to/#/@q:example.org">q@example.org</a>\'s reaction' in reply["content"]["formatted_body"]
+    told = [b for b in notifications(client, homeserver) if "so true fren" in b]
+    assert len(told) == 1 and "replied to your reaction on Alice's post" in told[0]  # and not a mention too
+    [rich] = [c["formatted_body"] for _, c, _ in homeserver.sent if "replied to your reaction" in c.get("body", "")]
+    assert f"Alice&#x27;s <a href=\"https://matrix.to/#/{remote.room_id}/{mirrored['event_id']}" in rich
+    assert rich.split("</p>")[0].endswith(">post</a>")
+
+
+def test_reply_to_a_custom_emoji_reaction_shows_it(client, homeserver, relay_pool) -> None:
+    from bridge.inbound import _Reacted, _reaction_html
+
+    shown = _reaction_html(_Reacted("$post", ":blobcat:", "mxc://example.org/blobcat"))
+    assert shown.startswith("<img data-mx-emoticon") and 'src="mxc://example.org/blobcat"' in shown
+    assert 'alt=":blobcat:"' in shown
+    assert _reaction_html(_Reacted("$post", "🔥", None)) == "&quot;🔥&quot;"
+
+
 @pytest.mark.parametrize("kind", [1, 1111])
 def test_outgoing_reply(client, homeserver, relay_pool, kind) -> None:
     q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool, kind=kind)

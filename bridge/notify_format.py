@@ -29,7 +29,8 @@ PREVIEW_TEXT_LIMIT = 200
 PREVIEW_IMAGE_SIZE = 96
 PREVIEW_VIDEO_MAX_DIMENSION = 240
 
-TYPE_EMOJI = {"follow": "👤", "like": "👍", "repost": "🔁", "reply": "💬", "mention": "💬", "quote": "🔁", "zap": "⚡"}
+TYPE_EMOJI = {"follow": "👤", "like": "👍", "repost": "🔁", "reply": "💬", "reaction_reply": "💬", "mention": "💬",
+              "quote": "🔁", "zap": "⚡"}
 PHRASES = {
     "follow": "followed you",
     "like": "liked your post",
@@ -39,7 +40,7 @@ PHRASES = {
     "quote": "quoted your post",
 }
 # Whose words a notification quotes: the actor's own post, or yours.
-_THEIR_TEXT = ("reply", "mention", "quote")
+_THEIR_TEXT = ("reply", "reaction_reply", "mention", "quote")
 
 
 def event_link(app: FastAPI, room_id: str, event_id: str) -> str:
@@ -137,12 +138,19 @@ async def send(
     reaction_mxc: str | None = None,
     sats: int | None = None,
     extra: dict[str, Any] | None = None,
+    post_author: str | None = None,
 ) -> str | None:
     """Notify ``local``'s owner. ``own`` is (room, event) of their post the
     notification is about; ``theirs`` the actor's post in Matrix, if it has
-    one there. Returns the notification's event ID."""
+    one there. For a "reaction_reply" (a reply to their reaction), ``own``
+    is the post they reacted to and ``post_author`` whose it is (None:
+    their own). Returns the notification's event ID."""
     label, pill = await actor_parts(app, actor_pubkey)
-    if reaction is not None:
+    if reason == "reaction_reply":
+        emoji = TYPE_EMOJI[reason]
+        whose = f"{post_author}'s" if post_author else "your"
+        phrase = f"replied to your reaction on {whose} post"
+    elif reaction is not None:
         emoji = reaction
         phrase = f"reacted to your post with {reaction}"
     elif reason == "zap":
@@ -155,7 +163,10 @@ async def send(
 
     link = event_link(app, *own) if own else ""
     phrase_html = html.escape(phrase)
-    if link:
+    if link and reason == "reaction_reply":
+        # Only "post" is the link: to the post that was reacted to.
+        phrase_html = phrase_html[: -len("post")] + f'<a href="{html.escape(link, quote=True)}">post</a>'
+    elif link:
         phrase_html = phrase_html.replace("your post", f'<a href="{html.escape(link, quote=True)}">your post</a>')
     emoji_html = html.escape(emoji)
     if reaction_mxc:
