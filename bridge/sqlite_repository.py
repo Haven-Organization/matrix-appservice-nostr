@@ -24,6 +24,7 @@ from typing import Any, Callable
 from bridge.repository import (
     Blob,
     EventRow,
+    MediaCopy,
     NostrId,
     PendingPublish,
     RelayRefusal,
@@ -189,6 +190,17 @@ CREATE TABLE IF NOT EXISTS bans (
 );
 
 -- Files served at /<sha256>; the bytes are in the Matrix media repository.
+-- Remote files already copied into the Matrix media repository: where
+-- from, their hash and where they are. No bytes.
+CREATE TABLE IF NOT EXISTS media_copies (
+    url TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL,
+    mxc TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS blobs (
     sha256 TEXT PRIMARY KEY,
     mxc TEXT NOT NULL,
@@ -254,6 +266,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
 
 _INDEXES = """
 CREATE INDEX IF NOT EXISTS ids_matrix_user ON ids (matrix_user_id);
+CREATE INDEX IF NOT EXISTS media_copies_sha256 ON media_copies (sha256);
 CREATE INDEX IF NOT EXISTS nostr_events_author_kind ON nostr_events (pubkey, kind, d_tag, created_at);
 CREATE INDEX IF NOT EXISTS nostr_events_kind_time ON nostr_events (kind, created_at);
 CREATE INDEX IF NOT EXISTS nostr_events_matrix_event ON nostr_events (matrix_event_id);
@@ -278,6 +291,7 @@ _REMOTE_COLUMNS = (
     "avatar_url, avatar_mxc, checked_at"
 )
 _BLOB_COLUMNS = "sha256, mxc, mime_type, size, created_at"
+_MEDIA_COPY_COLUMNS = "url, sha256, mxc, mime_type, size, created_at"
 
 
 def _nostr_id(row: tuple) -> NostrId:
@@ -1106,6 +1120,32 @@ class SqliteBridgeRepository:
         def query(conn: Any) -> Blob | None:
             row = conn.execute(f"SELECT {_BLOB_COLUMNS} FROM blobs WHERE sha256 = ?", (sha256,)).fetchone()
             return Blob(*row) if row else None
+
+        return await self._run(query)
+
+    # -- remote media copied into Matrix ---------------------------------
+
+    async def put_media_copy(self, copy: MediaCopy) -> None:
+        await self._run(
+            lambda conn: conn.execute(
+                f"INSERT INTO media_copies ({_MEDIA_COPY_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                (copy.url, copy.sha256, copy.mxc, copy.mime_type, copy.size, copy.created_at),
+            )
+        )
+
+    async def get_media_copy(self, url: str) -> MediaCopy | None:
+        def query(conn: Any) -> MediaCopy | None:
+            row = conn.execute(f"SELECT {_MEDIA_COPY_COLUMNS} FROM media_copies WHERE url = ?", (url,)).fetchone()
+            return MediaCopy(*row) if row else None
+
+        return await self._run(query)
+
+    async def find_media_copy(self, sha256: str) -> MediaCopy | None:
+        def query(conn: Any) -> MediaCopy | None:
+            row = conn.execute(
+                f"SELECT {_MEDIA_COPY_COLUMNS} FROM media_copies WHERE sha256 = ? ORDER BY created_at LIMIT 1", (sha256,)
+            ).fetchone()
+            return MediaCopy(*row) if row else None
 
         return await self._run(query)
 

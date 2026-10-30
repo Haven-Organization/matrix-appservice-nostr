@@ -26,7 +26,9 @@ import html
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 
@@ -49,6 +51,22 @@ _MEDIA_EXTENSIONS = {
     ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".wav": "audio/wav",
 }
 _MATRIX_MSGTYPE = {"image": "m.image", "video": "m.video", "audio": "m.audio"}
+
+
+def media_type(declared: str | None, url: str) -> str | None:
+    """An attachment's MIME type: as declared when it's a real one, else
+    from a bare subtype some clients write ("jpeg"), else from the URL's
+    extension."""
+    declared = (declared or "").strip().lower()
+    if "/" in declared:
+        return declared
+    by_extension = next((m for ext, m in _MEDIA_EXTENSIONS.items() if url.lower().split("?", 1)[0].endswith(ext)), None)
+    if declared:
+        named = next((m for m in _MEDIA_EXTENSIONS.values() if m.split("/", 1)[1] == declared), None)
+        if named or by_extension:
+            return named or by_extension
+        return None
+    return by_extension
 
 
 @dataclass
@@ -85,7 +103,7 @@ def attachments_of(raw: dict[str, Any]) -> list[Attachment]:
                 flat.setdefault(tag[0], tag[1].strip())
         url = flat.get("url", "")
         if url.startswith(("https://", "http://")):
-            file = Attachment(url, flat.get("m"), flat.get("x"), flat.get("dim"), flat.get("alt"))
+            file = Attachment(url, media_type(flat.get("m"), url) or flat.get("m"), flat.get("x"), flat.get("dim"), flat.get("alt"))
             preview = flat.get("image") or flat.get("thumb") or ""
             if file.family not in ("image", "video") and preview.startswith(("https://", "http://")):
                 found.append(Attachment(preview, "image/" + (preview.rsplit(".", 1)[-1].lower() if "." in preview[-6:] else "png")))
@@ -103,7 +121,7 @@ def attachments_of(raw: dict[str, Any]) -> list[Attachment]:
         url = fields.get("url")
         if url and url.startswith(("https://", "http://")) and url not in seen:
             seen.add(url)
-            found.append(Attachment(url, fields.get("m"), fields.get("x"), fields.get("dim"), fields.get("alt")))
+            found.append(Attachment(url, media_type(fields.get("m"), url), fields.get("x"), fields.get("dim"), fields.get("alt")))
     for match in _URL_RE.finditer(raw.get("content") or ""):
         url = match.group(0).rstrip(_TRAILING)
         lower = url.lower().split("?", 1)[0]
@@ -230,10 +248,90 @@ async def _nostr_reference(app: FastAPI, bech: str, viewer: str) -> tuple[str, s
     return "post", f'<a href="{html.escape(viewer + bech, quote=True)}">post</a>'
 
 
+_AP_MEDIA_PATH = re.compile(r"/media/([A-Za-z0-9.:-]+)/([A-Za-z0-9_-]+)")
+
+
+def _media_message(attachment: Attachment, mxc: str, mime: str | None, size: int | None) -> dict[str, Any]:
+    info: dict[str, Any] = {"mimetype": mime or attachment.mime or "application/octet-stream"}
+    if size:
+        info["size"] = size
+    if attachment.dim and "x" in attachment.dim:
+        width, _, height = attachment.dim.partition("x")
+        if width.isdigit() and height.isdigit():
+            info["w"], info["h"] = int(width), int(height)
+    name = attachment.url.rsplit("/", 1)[-1].split("?", 1)[0] or "file"
+    return {"url": mxc, "info": info, "filename": name}
+
+
+async def _already_in_matrix(app: FastAPI, attachment: Attachment) -> dict[str, Any] | None:
+    """The attachment, if it's a file already in the Matrix media repository:
+    one this bridge published (its Blossom URL, or its hash), one the
+    ActivityPub bridge on this domain serves (``/media/<server>/<id>``,
+    which Mostr's copies of our fediverse posts carry), or one copied
+    before (same URL or same hash). None means it has to be downloaded."""
+    from bridge.media_routes import BLOB_PATH_RE
+
+    repository = app.state.repository
+    config = app.state.config
+    url = attachment.url
+    base = config.nostr.relay_http_base.rstrip("/")
+    if url.startswith(base + "/"):
+        match = BLOB_PATH_RE.match(url[len(base):].split("?", 1)[0])
+        blob = await repository.get_blob(match.group(1)) if match else None
+        if blob is not None:
+            return _media_message(attachment, blob.mxc, blob.mime_type, blob.size)
+    if attachment.sha256 and re.fullmatch(r"[0-9a-fA-F]{64}", attachment.sha256):
+        digest = attachment.sha256.lower()
+        blob = await repository.get_blob(digest)
+        if blob is not None:
+            return _media_message(attachment, blob.mxc, blob.mime_type, blob.size)
+        known = await repository.find_media_copy(digest)
+        if known is not None:
+            return _media_message(attachment, known.mxc, known.mime_type, known.size)
+    parts = urlsplit(url)
+    match = _AP_MEDIA_PATH.fullmatch(parts.path)
+    if (parts.scheme == "https" and (parts.hostname or "") == config.bridge.domain.lower() and not parts.query
+            and match and match.group(1) == config.homeserver.server_name):
+        return _media_message(attachment, f"mxc://{match.group(1)}/{match.group(2)}", None, None)
+    known = await repository.get_media_copy(url)
+    if known is not None:
+        return _media_message(attachment, known.mxc, known.mime_type, known.size)
+    return None
+
+
+async def upload_once(app: FastAPI, data: bytes, mime: str, name: str, *, source: str, as_user_id: str) -> str:
+    """``data`` in the Matrix media repository: an existing copy of the same
+    bytes when there is one, else a new upload. Remembers ``source`` (where
+    it came from) for ``known_upload``. Raises ``HomeserverError``."""
+    from bridge.repository import MediaCopy
+
+    repository = app.state.repository
+    digest = hashlib.sha256(data).hexdigest()
+    known = await repository.find_media_copy(digest)
+    blob = None if known else await repository.get_blob(digest)
+    mxc = known.mxc if known else blob.mxc if blob else None
+    if mxc is None:
+        mxc = await app.state.homeserver.upload_media(data, mime, name, as_user_id=as_user_id)
+    await repository.put_media_copy(MediaCopy(source, digest, mxc, mime, len(data), datetime.now(timezone.utc).isoformat()))
+    return mxc
+
+
+async def known_upload(app: FastAPI, source: str) -> str | None:
+    """The ``mxc://`` something from ``source`` was already stored at."""
+    known = await app.state.repository.get_media_copy(source)
+    return known.mxc if known else None
+
+
 async def copy_attachment(app: FastAPI, attachment: Attachment, *, as_user_id: str) -> dict[str, Any] | None:
-    """Download an attachment into the Matrix media repository. Returns the
-    ``url``/``info`` for a Matrix media message, or ``None`` if it can't be
+    """An attachment in the Matrix media repository, for a Matrix media
+    message (``url``/``info``/``filename``): the copy already there when
+    there is one, else downloaded and uploaded once. ``None`` if it can't be
     fetched, is too big, or its hash doesn't match its ``imeta``."""
+    from bridge.repository import MediaCopy
+
+    existing = await _already_in_matrix(app, attachment)
+    if existing is not None:
+        return existing
     limit = app.state.config.nostr.max_media_mb * 1024 * 1024
     try:
         fetched = await app.state.fetcher.get(attachment.url, max_bytes=limit)
@@ -242,22 +340,27 @@ async def copy_attachment(app: FastAPI, attachment: Attachment, *, as_user_id: s
         return None
     if fetched.status != 200 or not fetched.content:
         return None
-    if attachment.sha256 and hashlib.sha256(fetched.content).hexdigest() != attachment.sha256.lower():
+    digest = hashlib.sha256(fetched.content).hexdigest()
+    if attachment.sha256 and digest != attachment.sha256.lower():
         logger.info("Not copying %s: hash doesn't match its imeta", attachment.url)
         return None
     mime = (attachment.mime or fetched.content_type or "application/octet-stream").split(";")[0].strip()
-    name = attachment.url.rsplit("/", 1)[-1].split("?", 1)[0] or "file"
-    try:
-        mxc = await app.state.homeserver.upload_media(fetched.content, mime, name, as_user_id=as_user_id)
-    except HomeserverError:
-        logger.info("Could not store %s", attachment.url, exc_info=True)
-        return None
-    info: dict[str, Any] = {"mimetype": mime, "size": len(fetched.content)}
-    if attachment.dim and "x" in attachment.dim:
-        width, _, height = attachment.dim.partition("x")
-        if width.isdigit() and height.isdigit():
-            info["w"], info["h"] = int(width), int(height)
-    return {"url": mxc, "info": info, "filename": name}
+    repository = app.state.repository
+    # The same bytes from another URL: that copy will do.
+    known = await repository.find_media_copy(digest)
+    blob = None if known else await repository.get_blob(digest)
+    mxc = known.mxc if known else blob.mxc if blob else None
+    if mxc is None:
+        name = attachment.url.rsplit("/", 1)[-1].split("?", 1)[0] or "file"
+        try:
+            mxc = await app.state.homeserver.upload_media(fetched.content, mime, name, as_user_id=as_user_id)
+        except HomeserverError:
+            logger.info("Could not store %s", attachment.url, exc_info=True)
+            return None
+    await repository.put_media_copy(
+        MediaCopy(attachment.url, digest, mxc, mime, len(fetched.content), datetime.now(timezone.utc).isoformat())
+    )
+    return _media_message(attachment, mxc, mime, len(fetched.content))
 
 
 def _long_form(app: FastAPI, raw: dict[str, Any]) -> dict[str, Any]:
@@ -284,16 +387,22 @@ async def message_content(
     header_html: str = "",
     footer_plain: str = "",
     footer_html: str = "",
+    media: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A complete Matrix message for a Nostr post: its first image or video
     as the message (when it can be copied), the text as body/caption, and
     any further attachments listed as links. ``header_*`` go above the text
-    ("🔁 reposted X's post:"); ``footer_*`` below it (a quoted post)."""
+    ("🔁 reposted X's post:"); ``footer_*`` below it (a quoted post).
+    ``media``: that image or video already in Matrix (``url``/``info``/
+    ``filename``, from the post's own Matrix copy), used instead of
+    downloading it again."""
     if raw.get("kind") == 30023:
         raw = _long_form(app, raw)
     attachments = attachments_of(raw)
     main = next((a for a in attachments if a.family in _MATRIX_MSGTYPE), None)
-    copied = await copy_attachment(app, main, as_user_id=as_user_id) if main is not None else None
+    copied = None
+    if main is not None:
+        copied = media if media is not None else await copy_attachment(app, main, as_user_id=as_user_id)
     skip = {main.url} if copied is not None and main is not None else set()
     rendered = await render(app, raw, skip_urls=skip)
     others = [a for a in attachments if copied is None or a is not main]

@@ -266,6 +266,17 @@ class WebxdcSection:
 
 
 @dataclass(frozen=True)
+class EncryptedMediaSection:
+    """Files forwarded from end-to-end encrypted rooms (see DESIGN.md,
+    "Encrypted media"). ``bridges``: the bot MXIDs of this server's bridges
+    that share one decrypted copy, in the order they ask for confirmation,
+    this one included. Empty: this bridge asks on its own."""
+
+    bridges: tuple[str, ...] = ()
+    wait_seconds: float = 5.0
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     bridge: BridgeSection
     homeserver: HomeserverSection
@@ -276,6 +287,17 @@ class BridgeConfig:
     # The relay's spam rules (bridge.spam.SpamConfig); see CONFIG.md.
     spam: Any = None
     webxdc: WebxdcSection = field(default_factory=WebxdcSection)
+    encrypted_media: EncryptedMediaSection = field(default_factory=EncryptedMediaSection)
+
+
+def _encrypted_media_section(raw: dict[str, Any]) -> EncryptedMediaSection:
+    bridges = raw.get("bridges") or []
+    if not isinstance(bridges, list) or not all(isinstance(b, str) and _MXID_RE.match(b) for b in bridges):
+        raise ConfigError("encrypted_media.bridges must be a list of bot MXIDs (e.g. \"@nostr:example.org\")")
+    wait = float(raw.get("wait_seconds", 5))
+    if not 0 <= wait <= 60:
+        raise ConfigError("encrypted_media.wait_seconds must be between 0 and 60")
+    return EncryptedMediaSection(bridges=tuple(bridges), wait_seconds=wait)
 
 
 def _webxdc_section(raw: dict[str, Any], domain: str) -> WebxdcSection:
@@ -365,6 +387,7 @@ def _relay_list(section: dict[str, Any], key: str, default: tuple[str, ...]) -> 
 
 
 _DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$")
+_MXID_RE = re.compile(r"^@[^:\s]+:[^\s]+$")
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
@@ -546,6 +569,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
     return BridgeConfig(
         spam=spam_section,
         webxdc=_webxdc_section(_section(raw, "webxdc"), domain),
+        encrypted_media=_encrypted_media_section(_section(raw, "encrypted_media")),
         bridge=bridge_section,
         homeserver=homeserver_section,
         appservice=appservice_section,

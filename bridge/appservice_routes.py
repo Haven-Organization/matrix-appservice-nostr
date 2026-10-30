@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse
 
 from bridge.commands import maybe_handle_command
 from bridge.confirm import maybe_handle_confirmation
+from bridge.encrypted_media import maybe_claim_answer
 from bridge.dms import maybe_send_dm
 from bridge.interactions import maybe_handle_reaction
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave, maybe_handle_profile_state
@@ -130,6 +131,8 @@ _HANDLERS = (
     # Before commands: a bare "confirm" is recognized by what it replies
     # to, not by a prefix or a tag.
     maybe_handle_confirmation,
+    # A "confirm" or 👍 for a sibling bridge's encrypted-media question.
+    maybe_claim_answer,
     maybe_handle_command,
     # A Concord community's channel room: its messages, reactions, edits
     # and redactions go to the community.
@@ -150,6 +153,12 @@ _HANDLERS = (
 
 
 async def handle_event(request: Request, event: dict[str, Any]) -> None:
+    from bridge import encrypted_media
+
+    # Another bridge's decrypted copy of a forwarded encrypted file.
+    if event.get("type") == encrypted_media.ANNOUNCE_TYPE:
+        await encrypted_media.on_announce(request.app, event)
+        return
     # Other bots and bridges' ghosts: their messages, reactions, votes and
     # redactions are never acted on (they're not people with Nostr IDs, even
     # when they're on this server). Room state they set still counts: another
@@ -165,10 +174,18 @@ async def handle_event(request: Request, event: dict[str, Any]) -> None:
         return
     from bridge.messages import answering, done_answering
     from bridge.notes import sticker_as_image
+    from bridge.tasks import run_in_background
 
     # A sticker goes everywhere an image does (posts, replies, DMs,
     # communities, groups).
     event = sticker_as_image(event)
+    # A forwarded encrypted file that already has a decrypted copy: that copy.
+    # Announced too (unless a bridge already did), so the others needn't ask.
+    resolved = await encrypted_media.resolve(request.app, event)
+    if resolved is not event:
+        run_in_background(request.app, encrypted_media.announce_if_needed(request.app, event.get("room_id", ""), event),
+                          name="announce decrypted copy")
+        event = resolved
     token = answering(event)  # the bot answers in the event's thread, if it's in one
     try:
         for handler in _HANDLERS:

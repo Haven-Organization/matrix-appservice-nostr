@@ -498,10 +498,13 @@ class SpamGuard:
         tier: Tier,
         targets: Iterable[str] = (),
         interaction: bool = False,
+        fetched: bool = False,
     ) -> Verdict:
         """Whether to take ``event``. ``targets`` are the local pubkeys it is
         aimed at; ``interaction`` marks replies, reactions and the like, which
-        are refused when stale (backfill isn't)."""
+        are refused when stale (backfill isn't). ``fetched`` means the bridge
+        asked a relay for it: a followed account's events fetched that way
+        aren't rate-limited, since someone here chose to read all of them."""
         self._maybe_sweep()
         await self._lower_shields_if_quiet()
         targets = list(dict.fromkeys(targets))
@@ -513,8 +516,13 @@ class SpamGuard:
         if tier is Tier.LOCAL:
             return self._size_and_clock(event, interaction=False) or ACCEPT
 
-        if pubkey and await self.active_ban("pubkey", pubkey) is not None:
-            return Verdict(False, "blocked", "this key is banned here")
+        followed_feed = fetched and tier is Tier.TRUSTED
+        if pubkey:
+            ban = await self.active_ban("pubkey", pubkey)
+            # An automatic ban on a followed account came from its own feed
+            # outrunning the rate limit; only an admin's ban holds it back.
+            if ban is not None and not (followed_feed and ban.reason.startswith("automatic:")):
+                return Verdict(False, "blocked", "this key is banned here")
         if ip and await self.active_ban("ip", ip) is not None:
             return Verdict(False, "blocked", "this address is banned here")
 
@@ -527,6 +535,8 @@ class SpamGuard:
             if problem is not None:
                 return await self._reject(problem.prefix, problem.message, pubkey=pubkey, ip=ip)
 
+        if followed_feed:
+            return ACCEPT
         now = self._now()
         trusted = tier is Tier.TRUSTED
         if ip and not self._ip_events.take(ip, now):

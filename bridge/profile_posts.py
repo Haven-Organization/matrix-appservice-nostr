@@ -26,7 +26,7 @@ from fastapi import FastAPI, Request
 
 from bridge import ids, shadow_ids
 from bridge.commands import message_for_a_bot
-from bridge.media import MediaProblem, publish_matrix_media
+from bridge.media import EncryptedMedia, MediaProblem, publish_matrix_media
 from bridge.messages import notice
 from bridge.inbound import index_tags
 from bridge.interactions import extra_relays_for, find_quote, notify_local_author, reply_context
@@ -316,6 +316,11 @@ async def _publish_post(app: FastAPI, event: dict[str, Any], author: NostrId, pa
     if content.get("msgtype") in MEDIA_MSGTYPES:
         try:
             media = await publish_matrix_media(app, content)
+        except EncryptedMedia:
+            from bridge.encrypted_media import hold
+
+            hold(app, room_id, event)  # asked about, and published again once there's a copy
+            return None
         except MediaProblem as exc:
             await notice(
                 app,

@@ -740,7 +740,7 @@ async def _outgoing(app: FastAPI, group: Group, event: dict[str, Any], content: 
         if target is None:
             return None
         return DELETION, str(content.get("reason") or ""), [["e", target[0]], ["k", str(target[2])]]
-    from bridge.media import MediaProblem, publish_matrix_media
+    from bridge.media import EncryptedMedia, MediaProblem, publish_matrix_media
     from bridge.notes import MEDIA_MSGTYPES, message_body
 
     relates = content.get("m.relates_to") or {}
@@ -751,6 +751,11 @@ async def _outgoing(app: FastAPI, group: Group, event: dict[str, Any], content: 
     if content.get("msgtype") in MEDIA_MSGTYPES:
         try:
             media = await publish_matrix_media(app, content)
+        except EncryptedMedia:
+            from bridge.encrypted_media import hold
+
+            hold(app, event.get("room_id", ""), event)
+            return None
         except MediaProblem as exc:
             await notice(app, event.get("room_id", ""), f"That wasn't sent: {exc}.")
             return None

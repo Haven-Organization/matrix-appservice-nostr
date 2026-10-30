@@ -37,9 +37,11 @@ import dataclasses
 import html
 import json
 import logging
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 
@@ -343,6 +345,7 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
             # An old interaction written to the relay now is suspicious; one
             # the bridge fetched itself (catching up) is not.
             interaction=origin == "relay" and event.kind in (1, 6, 7, 16, 1111, ZAP_RECEIPT_KIND),
+            fetched=origin == "subscription",
         )
         if not verdict.ok:
             return IngestResult(False, verdict.reply)
@@ -643,23 +646,31 @@ async def _repost_card(
     original = await _original_of_repost(app, raw, target_id)
     if original is None:
         return IngestResult(False, "restricted: the reposted post couldn't be found")
-    original_row = await _ensure_post_in_matrix(app, original)
+    # Our own fediverse post, republished on Nostr (by Mostr): point at the
+    # Matrix post it came from rather than copying it to a ghost's room.
+    source = await matrix_source(app, original)
+    original_row = None if source else await _ensure_post_in_matrix(app, original)
     remote = await remotes.ensure_room(app, remote)
     assert remote.room_id is not None
-    author_label = await _author_label(app, original["pubkey"])
-    if original_row is not None and original_row.room_id and original_row.matrix_event_id:
-        link = _event_link(original_row.room_id, original_row.matrix_event_id)
+    target: tuple[str, str, str] | None = None
+    if source is not None:
+        target = source
+        author_label = await _matrix_name(app, source[2])
     else:
-        link = _viewer_link(app, original["id"])
+        author_label = await _author_label(app, original["pubkey"])
+        if original_row is not None and original_row.room_id and original_row.matrix_event_id:
+            target = (original_row.room_id, original_row.matrix_event_id, await _author_mxid(app, original["pubkey"]))
+    link = _event_link(target[0], target[1]) if target else _viewer_link(app, original["id"])
     content = await message_content(
         app, original, as_user_id=remote.ghost_user_id,
         header_plain=f"🔁 reposted {author_label}'s post:",
         header_html=f'🔁 reposted {html.escape(author_label)}\'s <a href="{link}">post</a>:',
+        media=await _matrix_media(app, target[0], target[1]) if target else None,
     )
-    if app.state.config.bridge.set_msc4501_relates_to and original_row is not None and original_row.matrix_event_id:
+    if app.state.config.bridge.set_msc4501_relates_to and target is not None:
         content[SOCIAL_RELATES_TO_FIELD] = {
-            "rel_type": "org.matrix.msc4501.social.repost", "event_id": original_row.matrix_event_id,
-            "room_id": original_row.room_id, "sender": await _author_mxid(app, original["pubkey"]),
+            "rel_type": "org.matrix.msc4501.social.repost", "event_id": target[1],
+            "room_id": target[0], "sender": target[2],
             "via": [app.state.config.homeserver.server_name],
             **({"content_inline": True} if app.state.config.bridge.use_msc4501_content_inline else {}),
         }
@@ -788,6 +799,63 @@ async def _author_mxid(app: FastAPI, pubkey: str) -> str:
     if local is not None:
         return local.matrix_user_id
     return remotes.ghost_user_id(app, pubkey)
+
+
+_OWN_NOTE_PATH = re.compile(r"/actor/[^/]+/notes/[0-9A-Za-z_-]+")
+_MATRIX_ID = {"room_id": "!", "event_id": "$", "sender": "@"}
+
+
+async def matrix_source(app: FastAPI, raw: dict[str, Any]) -> tuple[str, str, str] | None:
+    """For a post another bridge (Mostr) republished from this domain's
+    ActivityPub bridge (a ``proxy`` tag naming one of its notes): the
+    Matrix post it came from, as (room_id, event_id, sender), asked of the
+    ActivityPub bridge at ``<note>/matrix``. None for anything else."""
+    from bridge.safe_fetch import FetchError, UnsafeAddress
+
+    domain = app.state.config.bridge.domain.lower()
+    for tag in _tags(raw, "proxy"):
+        if len(tag) < 3 or tag[2] != "activitypub":
+            continue
+        parts = urlsplit(tag[1])
+        if parts.scheme != "https" or (parts.hostname or "") != domain or parts.query or not _OWN_NOTE_PATH.fullmatch(parts.path):
+            continue
+        try:
+            fetched = await app.state.fetcher.get(tag[1] + "/matrix", max_bytes=16 * 1024, accept="application/json")
+            found = json.loads(fetched.content) if fetched.status == 200 else None
+        except (FetchError, UnsafeAddress, ValueError):
+            return None
+        if not isinstance(found, dict) or not all(
+            isinstance(found.get(k), str) and found[k].startswith(p) and (k == "event_id" or ":" in found[k])
+            for k, p in _MATRIX_ID.items()
+        ):
+            return None
+        return found["room_id"], found["event_id"], found["sender"]
+    return None
+
+
+async def _matrix_media(app: FastAPI, room_id: str, event_id: str) -> dict[str, Any] | None:
+    """The image/video/audio of a post already in Matrix, for a repost card
+    to show without downloading it again (a big video can take longer than
+    the fetch allows a second time)."""
+    try:
+        event = await app.state.homeserver.get_event(room_id, event_id, as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        return None
+    content = (event or {}).get("content") or {}
+    url = content.get("url")
+    if content.get("msgtype") not in ("m.image", "m.video", "m.audio") or not isinstance(url, str) or not url.startswith("mxc://"):
+        return None
+    info = content.get("info") if isinstance(content.get("info"), dict) else {}
+    filename = content.get("filename") or content.get("body") or "file"
+    return {"url": url, "info": info, "filename": filename if isinstance(filename, str) else "file"}
+
+
+async def _matrix_name(app: FastAPI, user_id: str) -> str:
+    try:
+        name = (await app.state.homeserver.get_profile(user_id)).get("displayname")
+    except HomeserverError:
+        name = None
+    return name if isinstance(name, str) and name.strip() else user_id
 
 
 async def _ensure_post_in_matrix(app: FastAPI, raw: dict[str, Any]) -> EventRow | None:

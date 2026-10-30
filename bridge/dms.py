@@ -35,7 +35,7 @@ from bridge import remote as remotes
 from bridge.event_sources import EMBED_FIELD, embedded_source
 from bridge.homeserver_client import HomeserverError
 from bridge.inbound import IngestResult, REJECTED, index_tags
-from bridge.media import MediaProblem, blob_url
+from bridge.media import EncryptedMedia, MediaProblem, blob_url
 from bridge.messages import invite_to_room, notice
 from bridge.nostr import nip04, nip59
 from bridge.notes import MEDIA_MSGTYPES, message_body
@@ -267,13 +267,21 @@ async def maybe_send_dm(request: Request, event: dict[str, Any]) -> bool:
         return False
     try:
         await send_dm(app, local, info[1], event)
+    except EncryptedMedia:
+        from bridge.encrypted_media import hold
+
+        hold(app, room_id, event)
     except MediaProblem as exc:
         await notice(app, room_id, f"That wasn't sent: {exc}.", extra={"m.relates_to": {"m.in_reply_to": {"event_id": event.get("event_id", "")}}})
     return True
 
 
 async def _encrypted_file(app: FastAPI, content: dict[str, Any]) -> list[list[str]] | tuple[str, list[list[str]]]:
-    if "file" in content:
+    if "file" in content and not isinstance(content.get("url"), str):
+        from bridge.encrypted_media import encrypted_file
+
+        if encrypted_file(content) is not None:
+            raise EncryptedMedia()
         raise MediaProblem("it's end-to-end encrypted, and the bridge can't read encrypted files")
     download = await app.state.homeserver.download_media(content.get("url") or "")
     if download is None:

@@ -188,6 +188,14 @@ class MediaProblem(Exception):
     """A file that can't be published; the message is safe to show."""
 
 
+class EncryptedMedia(MediaProblem):
+    """The file is end-to-end encrypted and has no decrypted copy yet: not a
+    refusal, a question for its sender (bridge.encrypted_media.hold)."""
+
+    def __init__(self) -> None:
+        super().__init__("it's end-to-end encrypted, and the bridge can't read encrypted files")
+
+
 def format_size(size: int) -> str:
     for unit, scale in (("GB", 1 << 30), ("MB", 1 << 20), ("kB", 1 << 10)):
         if size >= scale:
@@ -199,7 +207,11 @@ async def publish_matrix_media(app: FastAPI, content: dict) -> PublishedImage:
     """Make the file a media message carries publicly fetchable. Images are
     cleaned (``publish_matrix_image``); video, audio and other files are
     served as they are. Raises ``MediaProblem``."""
-    if "file" in content:
+    if "file" in content and not isinstance(content.get("url"), str):
+        from bridge.encrypted_media import encrypted_file
+
+        if encrypted_file(content) is not None:
+            raise EncryptedMedia()
         raise MediaProblem("it's end-to-end encrypted, and the bridge can't read encrypted files")
     mxc = content.get("url")
     if not isinstance(mxc, str) or not mxc.startswith("mxc://"):

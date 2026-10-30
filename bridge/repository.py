@@ -107,6 +107,20 @@ class RemoteAccount:
 
 
 @dataclass(frozen=True)
+class MediaCopy:
+    """A remote file already copied into the Matrix media repository, so the
+    same file (by URL, or by hash from anywhere) isn't uploaded twice. Only
+    bookkeeping: the bytes are at ``mxc``."""
+
+    url: str
+    sha256: str
+    mxc: str
+    mime_type: str
+    size: int
+    created_at: str
+
+
+@dataclass(frozen=True)
 class Blob:
     """A file served at ``/<sha256>`` (Blossom style). The bytes are in the
     Matrix media repository at ``mxc``."""
@@ -273,6 +287,11 @@ class BridgeRepository(Protocol):
     # -- blobs -----------------------------------------------------------
     async def put_blob(self, blob: Blob) -> None: ...
     async def get_blob(self, sha256: str) -> Blob | None: ...
+
+    # -- remote media copied into Matrix ---------------------------------
+    async def put_media_copy(self, copy: MediaCopy) -> None: ...
+    async def get_media_copy(self, url: str) -> MediaCopy | None: ...
+    async def find_media_copy(self, sha256: str) -> MediaCopy | None: ...
 
     # -- AppService transactions -----------------------------------------
     async def claim_event(self, event_id: str, now: str) -> bool:

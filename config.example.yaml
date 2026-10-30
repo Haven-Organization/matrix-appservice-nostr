@@ -175,5 +175,12 @@ nostr:
 #   # relays (Ditto's and poster.place's).
 #   catalog_relays: ["wss://relay.ditto.pub", "wss://relay.poster.place/"]
 
+# Files forwarded from end-to-end encrypted rooms. With the sibling bridges
+# on this server, list all of their bots (this one included) in the order
+# they ask, so the sender is asked once and there's one decrypted copy.
+# encrypted_media:
+#   bridges: ["@fediverse:example.org", "@bluesky:example.org", "@nostr:example.org"]
+#   wait_seconds: 5
+
 logging:
   level: INFO

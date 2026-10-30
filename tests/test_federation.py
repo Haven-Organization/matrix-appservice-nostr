@@ -315,6 +315,90 @@ def _followed_post(client, homeserver, relay_pool, *, kind=1):
     return q, alice, raw, remote, mirrored
 
 
+@pytest.mark.parametrize("ours", [True, False])
+def test_repost_of_our_own_fediverse_post(client, homeserver, relay_pool, ours) -> None:
+    """Mostr republishes our ActivityPub bridge's notes on Nostr under its
+    own keys. A repost of one links to the Matrix post it came from (the
+    ActivityPub bridge says which, at <note>/matrix), not a ghost's copy."""
+    from bridge.safe_fetch import Fetched
+
+    _q, alice, _raw, remote, _mirrored = _followed_post(client, homeserver, relay_pool)
+    host = "example.org" if ours else "elsewhere.example"
+    note_url = f"https://{host}/actor/q/notes/bdbd800d"
+    asked = []
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            asked.append(url)
+            body = {"room_id": "!approfile:example.org", "event_id": "$original", "sender": "@q:example.org"}
+            return Fetched(url, 200, json.dumps(body).encode(), "application/json")
+
+        async def aclose(self):
+            pass
+
+    client.app.state.fetcher = Fetcher()
+    homeserver.profiles["@q:example.org"] = {"displayname": "Q"}
+    mostr = Stranger()
+    relay_pool.network.append(mostr.event(0, json.dumps({"name": "q (via Mostr)"}), created_at=1000))
+    original = mostr.event(1, "from the fediverse", [["proxy", note_url, "activitypub"]])
+    repost = alice.event(6, json.dumps(original), [["e", original["id"]], ["p", mostr.pubkey]])
+    assert run(client, ingest, client.app, repost, origin="subscription").stored
+
+    card = homeserver.messages(remote.room_id)[-1]
+    relation = card["content"]["org.matrix.msc4501.social.relates_to"]
+    ghost = run(client, client.app.state.repository.get_remote_account, mostr.pubkey)
+    if ours:
+        assert asked == [note_url + "/matrix"]
+        assert card["content"]["body"].startswith("🔁 reposted Q's post:")
+        assert (relation["room_id"], relation["event_id"], relation["sender"]) == ("!approfile:example.org", "$original", "@q:example.org")
+        assert ghost is None or ghost.room_id is None
+    else:
+        assert asked == [] and ghost is not None and ghost.room_id and relation["room_id"] == ghost.room_id
+
+
+def test_repost_card_reuses_the_originals_media(client, homeserver, relay_pool) -> None:
+    """A repost card shows the original's video/image from its Matrix copy,
+    not a second download (which a big video can fail)."""
+    from bridge.safe_fetch import Fetched
+
+    _q, alice, _raw, remote, _mirrored = _followed_post(client, homeserver, relay_pool)
+    fetched = []
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            fetched.append(url)
+            return Fetched(url, 200, b"\x00" * 64, "video/mp4")
+
+        async def aclose(self):
+            pass
+
+    client.app.state.fetcher = Fetcher()
+    video = "https://cdn.example/clip.mp4"
+    carol = Stranger()
+    original = carol.event(1, video, [["imeta", f"url {video}", "m video/mp4"]])
+    repost = alice.event(6, json.dumps(original), [["e", original["id"]], ["p", carol.pubkey]])
+    assert run(client, ingest, client.app, repost, origin="subscription").stored
+
+    carols_room = run(client, client.app.state.repository.get_remote_account, carol.pubkey).room_id
+    copy = homeserver.messages(carols_room)[-1]["content"]
+    card = homeserver.messages(remote.room_id)[-1]["content"]
+    assert copy["msgtype"] == card["msgtype"] == "m.video" and card["url"] == copy["url"]
+    assert card["body"].startswith("🔁 reposted ")
+    assert fetched.count(video) == 1
+
+
+def test_media_types_clients_write_loosely() -> None:
+    from bridge.render import attachments_of
+
+    raw = {"kind": 1, "content": "", "tags": [
+        ["imeta", "url https://blossom.example/abc.jpg", "m jpeg"],
+        ["imeta", "url https://blossom.example/def", "m png"],
+        ["imeta", "url https://blossom.example/ghi.mp4"],
+        ["imeta", "url https://blossom.example/jkl", "m nonsense"],
+    ]}
+    assert [a.mime for a in attachments_of(raw)] == ["image/jpeg", "image/png", "video/mp4", None]
+
+
 def test_outgoing_reaction_and_undo(client, homeserver, relay_pool) -> None:
     q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
     reaction = homeserver._store(remote.room_id, "m.reaction",

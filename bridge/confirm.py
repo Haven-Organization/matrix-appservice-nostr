@@ -22,8 +22,17 @@ from bridge.users import bot_mxid
 
 logger = logging.getLogger(__name__)
 
-# On the bot's message: {"action": ..., "user": who may confirm, "args": {...}}.
+# On the bot's message: {"action": ..., "user": who may confirm, "args": {...}},
+# and "reactions": true when a 👍 counts as well as a reply.
 CONFIRM_FIELD = "software.haven.nostr.confirm"
+
+# Reactions that confirm, where a message allows them: a thumbs up, any skin
+# tone, compared without the emoji variation selector (U+FE0F).
+CONFIRM_REACTIONS = frozenset({"👍", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿"})
+
+
+def is_confirm_reaction(key: str) -> bool:
+    return key.replace("\ufe0f", "").strip() in CONFIRM_REACTIONS
 
 # (app, room id, sender, args)
 Executor = Callable[[FastAPI, str, str, dict[str, Any]], Awaitable[None]]
@@ -59,10 +68,15 @@ async def ask(
     plain: str,
     rich: str,
     add_instruction: bool = True,
+    reactions: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> str | None:
-    """Post a message that a later "confirm" reply from ``user`` acts on.
-    ``plain``/``rich`` say what will happen; the instruction to reply is
-    added here unless the text already says it (``add_instruction``)."""
+    """Post a message that a later "confirm" reply from ``user`` acts on
+    (or, with ``reactions``, a 👍 from them on it: only for actions
+    that are easy to live with, never a deletion). ``plain``/``rich`` say
+    what will happen; the instruction to reply is added here unless the
+    text already says it (``add_instruction``). ``extra``: more content
+    fields (a thread, say)."""
     instruction = 'Reply "confirm" to THIS message to go ahead.'
     if add_instruction:
         plain = f"{plain}\n\n{instruction}"
@@ -72,7 +86,8 @@ async def ask(
         room_id,
         plain,
         html_message=rich,
-        extra={CONFIRM_FIELD: {"action": action, "user": user, "args": args}},
+        extra={**(extra or {}),
+               CONFIRM_FIELD: {"action": action, "user": user, "args": args, **({"reactions": True} if reactions else {})}},
         msgtype="m.text",
     )
 
@@ -82,12 +97,17 @@ async def maybe_handle_confirmation(request: Request, event: dict) -> bool:
     pending actions (handled, whether or not it went through). Only the
     person it was meant for can confirm; anyone else's "confirm" is
     claimed and ignored."""
-    if event.get("type") != "m.room.message":
-        return False
     content = event.get("content") or {}
-    if _first_line_after_fallback(content).strip().lower() != "confirm":
+    reaction = event.get("type") == "m.reaction"
+    if reaction:
+        relation = content.get("m.relates_to") or {}
+        if relation.get("rel_type") != "m.annotation" or not is_confirm_reaction(str(relation.get("key") or "")):
+            return False
+        target = relation.get("event_id") if isinstance(relation.get("event_id"), str) else None
+    elif event.get("type") == "m.room.message" and _first_line_after_fallback(content).strip().lower() == "confirm":
+        target = _reply_target(content)
+    else:
         return False
-    target = _reply_target(content)
     room_id = event.get("room_id", "")
     sender = event.get("sender", "")
     if not target or not room_id or not sender:
@@ -101,6 +121,8 @@ async def maybe_handle_confirmation(request: Request, event: dict) -> bool:
     pending = ((pending_event or {}).get("content") or {}).get(CONFIRM_FIELD)
     if (pending_event or {}).get("sender") != bot or not isinstance(pending, dict):
         return False
+    if reaction and not pending.get("reactions"):
+        return False  # a 👍 on a warning about something drastic is just a reaction
     if pending.get("user") != sender:
         return True
     args = pending.get("args") if isinstance(pending.get("args"), dict) else {}

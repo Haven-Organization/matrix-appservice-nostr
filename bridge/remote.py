@@ -159,12 +159,19 @@ async def _fetch_image(app: FastAPI, url: str) -> tuple[bytes, str] | None:
 
 
 async def _upload_image(app: FastAPI, url: str, ghost: str) -> str | None:
+    from bridge.render import known_upload, upload_once
+
+    # Avatars are resized, so their copies are kept apart from the file's own.
+    source = url + "#avatar"
+    known = await known_upload(app, source)
+    if known is not None:
+        return known
     image = await _fetch_image(app, url)
     if image is None:
         return None
     data, mime = image
     try:
-        return await app.state.homeserver.upload_media(data, mime, "avatar", as_user_id=ghost)
+        return await upload_once(app, data, mime, "avatar", source=source, as_user_id=ghost)
     except HomeserverError:
         logger.info("Could not store an avatar from %s", url, exc_info=True)
         return None

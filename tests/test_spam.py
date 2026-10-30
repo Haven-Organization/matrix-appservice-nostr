@@ -227,6 +227,29 @@ async def test_target_limit_and_trusted_multiplier() -> None:
     assert not (await guard.check_event(note(friend, "hi 5"), tier=Tier.TRUSTED, targets=[TARGET])).ok
 
 
+async def test_a_followed_feed_is_never_rate_limited() -> None:
+    guard, _, store = make_guard(events_per_pubkey=RateSpec(2, 1, 3600), trusted_multiplier=1.0, strikes_to_ban=3)
+    secret = key("prolific")
+    pubkey = secp256k1.public_key(secret).hex()
+    # Fetched by the bridge from someone followed here: all of it, no strikes.
+    for i in range(20):
+        assert (await guard.check_event(note(secret, f"post {i}"), tier=Tier.TRUSTED, fetched=True)).ok
+    assert store.bans == {}
+    # Pushed to the bridge's relay, the same key is still limited, and banned.
+    for i in range(5):
+        await guard.check_event(note(secret, f"pushed {i}"), tier=Tier.TRUSTED, ip="198.51.100.9")
+    assert store.bans[("pubkey", pubkey)].reason.startswith("automatic:")
+    assert not (await guard.check_event(note(secret, "pushed again"), tier=Tier.TRUSTED)).ok
+    # That automatic ban doesn't hold back its feed; an admin's ban does.
+    assert (await guard.check_event(note(secret, "still read"), tier=Tier.TRUSTED, fetched=True)).ok
+    await guard.ban("pubkey", pubkey, None, "spam account")
+    assert not (await guard.check_event(note(secret, "now not"), tier=Tier.TRUSTED, fetched=True)).ok
+    # Strangers fetched (a mention, say) are limited as before.
+    stranger = key("fetched stranger")
+    results = [(await guard.check_event(note(stranger, f"m {i}"), tier=Tier.STRANGER, fetched=True)).ok for i in range(4)]
+    assert results[:2] == [True, True] and not all(results)
+
+
 async def test_connection_and_req_limits() -> None:
     guard, clock, _ = make_guard(connections=RateSpec(2, 1, 300), reqs=RateSpec(1, 1, 60))
     assert (await guard.check_connection("5.5.5.5")).ok

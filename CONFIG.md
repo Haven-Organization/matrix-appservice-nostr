@@ -140,6 +140,15 @@ Games: webxdc mini apps over Nostr (NIP-DC). See [FEATURES.md](FEATURES.md#games
 | `max_update_kb` | `128` | The largest move accepted, in KB (the webxdc default for `sendUpdateMaxSize`). |
 | `max_app_mb` | `100` | The largest game the bridge downloads for a player whose browser can't download it from where it was posted (a host without CORS). It's passed through, never stored. |
 
+## `encrypted_media`
+
+Files forwarded from end-to-end encrypted rooms: posting one needs a decrypted copy, made once the sender agrees. See [DESIGN.md](DESIGN.md#encrypted-media).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `bridges` | `[]` | The bot MXIDs of this server's bridges that share one decrypted copy (this one, matrix-appservice-activitypub, matrix-appservice-atproto), in the order they ask. Include this bridge. Empty: this bridge asks on its own. Every bridge listed should have the same list. |
+| `wait_seconds` | `5` | How long each bridge waits after the one before it, before asking itself. |
+
 ## `logging`
 
 | Setting | Default | Meaning |

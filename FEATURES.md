@@ -81,8 +81,10 @@ A user of a **different** Matrix homeserver needs a bridge admin's grant to do a
 - commands, and anything else addressed to the bot
 - notices
 - empty messages
-- encrypted files (the bridge can't read encrypted rooms)
+- files forwarded from end-to-end encrypted rooms, until you agree to a decrypted copy (below)
 - files over the size limit (the bot tells you why)
+
+**Files forwarded from encrypted rooms** are encrypted with a key that's in the message itself. Posting one needs a decrypted copy on your homeserver, so the bot asks first, in the post's thread: reply "confirm", or react with 👍 (any skin tone), and it's decrypted, uploaded once and posted. With the ActivityPub and ATProto bridges on the same server (`encrypted_media.bridges`), you're asked once, by one of them, and they all post the same copy. Forward the same file again and it goes straight out.
 
 **Other people in your Profile Room:** someone who replies to one of your posts publishes that reply from *their own* active ID, as a reply to your post: a shadow ID is made for them if they have none (for a user of another homeserver, only with a grant). Anything else they say there is conversation and stays in Matrix.
 

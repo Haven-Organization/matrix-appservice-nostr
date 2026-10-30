@@ -1072,6 +1072,41 @@ relays omit `self`; NIP-11 `pubkey` is the operator's and may differ).
 - **Moderation** kinds (9000, 9001, 9005) count only from listed admins or
   the relay key; the relay is the real enforcer.
 
+## Encrypted media
+
+A file forwarded out of an end-to-end encrypted room arrives as an ordinary
+message whose file is encrypted on its own (`content.file`, Matrix's
+EncryptedFile), with the key in the message. Publishing it means a decrypted
+copy in the media repository, so it waits for the sender to agree
+(`bridge.encrypted_media`). The siblings do the same, and on one server they
+share it: one question, one copy.
+
+- **Turns.** `encrypted_media.bridges` lists the bridges' bots in the order
+  they ask. A bridge that would publish such a file and has no copy waits
+  `wait_seconds` times its place, then reads the post's relations: a
+  question from a bridge before it (`software.haven.encrypted_media:
+  {"prompt_for": <post>}` on a thread reply), or a copy already announced,
+  and it leaves it at that. Otherwise it asks.
+- **Confirming.** The sender replies "confirm" to the question, or reacts 👍
+  (any skin tone). Only the bridge that asked acts on it. Only
+  this question takes reactions; a 👍 on any other warning is just a reaction.
+- **The copy.** The bridge that asked downloads the file, checks it against
+  `hashes.sha256`, decrypts it (AES-256-CTR), uploads it once and announces
+  it: a `software.haven.decrypted_media` event related to the post
+  (`rel_type` the same), with `url`, `encrypted_url` and `info`. Clients don't
+  show it. A bridge that already had a copy announces it for a new post too,
+  unless one is announced already.
+- **Trust.** A bridge using another's copy re-encrypts it with the post's own
+  key and IV: CTR mode gives back the original ciphertext, whose hash is in
+  the post. A copy that doesn't match is ignored, so no bridge trusts
+  another's word.
+- **Then** the post is handled again with the copy as its `url`, so every
+  usual check (is the room bridged, may this sender publish, was it already)
+  applies as before.
+
+The copy is remembered as a `media_copies` row with the source
+`encrypted:<mxc>`: bookkeeping, like the other copies.
+
 ## Bookkeeping tables
 
 Following the siblings' schema style. One SQLite/Postgres schema, one
@@ -1084,6 +1119,7 @@ migration command.
 | `retired_ids` | name, former owner, the ID it belonged to, why (deleted/renamed), `resolves_until` (the rename grace period; null for deletions) |
 | `nostr_events`, `nostr_event_tags` | the relay index (above) |
 | `blobs` | sha256 → mxc, mime type, size, Matrix event |
+| `media_copies` | Remote files already copied into the media repository, and decrypted copies of encrypted ones: source (a URL, or `encrypted:<mxc>`), sha256, mxc, mime type, size. No content. |
 | `remote_accounts` | `pubkey`, `ghost_user_id`, `room_id`, cached relay lists, cached NIP-05 |
 | `follows`, `blocks` | local ID pubkey → remote pubkey |
 | `mirrored_events` | Matrix event → Nostr event id (for cross-posted copies that aren't the canonical one) |

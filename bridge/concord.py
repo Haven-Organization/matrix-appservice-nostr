@@ -596,10 +596,15 @@ async def _fetch_image(app: FastAPI, ref: dict[str, str]) -> tuple[bytes, str]:
 
 
 async def _upload_image(app: FastAPI, ref: dict[str, str], name: str) -> str | None:
+    from bridge.render import upload_once
+
     try:
         data, mime = await _fetch_image(app, ref)
-        return await app.state.homeserver.upload_media(data, mime, f"{name}.{mime.split('/')[1]}",
-                                                        as_user_id=bot_mxid(app.state.config))
+        filename, bot = f"{name}.{mime.split('/')[1]}", bot_mxid(app.state.config)
+        if ref.get("key"):
+            # Sealed for the community: kept out of the shared copy records.
+            return await app.state.homeserver.upload_media(data, mime, filename, as_user_id=bot)
+        return await upload_once(app, data, mime, filename, source=str(ref.get("url") or ""), as_user_id=bot)
     except Exception as exc:
         logger.info("Could not fetch a community %s from %s: %s", name, ref.get("url"), exc)
         return None
@@ -1479,10 +1484,15 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
         # Encrypted for the community, as Armada does: a plain link would make
         # the file public.
         from bridge.dms import _encrypted_file
-        from bridge.media import MediaProblem
+        from bridge.media import EncryptedMedia, MediaProblem
 
         try:
             url, file_tags = await _encrypted_file(app, content)
+        except EncryptedMedia:
+            from bridge.encrypted_media import hold
+
+            hold(app, event.get("room_id", ""), event)
+            return None
         except MediaProblem:
             return None
         fields = {t[0]: t[1] for t in file_tags}
