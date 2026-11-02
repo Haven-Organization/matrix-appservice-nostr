@@ -29,7 +29,7 @@ from fastapi import FastAPI, Request
 
 from bridge import ids, shadow_ids
 from bridge import remote as remotes
-from bridge.event_sources import rebuild
+from bridge.event_sources import rebuild, with_client
 from bridge.inbound import index_tags, reply_targets
 from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
 from bridge.notes import reaction_v1, repost_kind, repost_v1
@@ -95,7 +95,7 @@ async def _sign_and_store(
         return None
     row = EventRow(
         id=event.id, pubkey=event.pubkey, kind=kind, created_at=created_at, sig=event.sig,
-        source=json.dumps(recipe, ensure_ascii=False, separators=(",", ":")),
+        source=json.dumps(with_client(recipe, tags, event.tags), ensure_ascii=False, separators=(",", ":")),
         room_id=room_id, matrix_event_id=matrix_event_id, tags=index_tags(tags),
     )
     await app.state.repository.put_event(row)

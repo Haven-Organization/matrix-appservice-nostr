@@ -109,6 +109,7 @@ def test_text_post(client, homeserver, relay_pool) -> None:
     message = post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "gm nostr\nfrom matrix"})
     [note] = notes(relay_pool)
     assert note.content == "gm nostr\nfrom matrix" and note.pubkey == q.pubkey
+    assert ["client", "matrix-appservice-nostr"] in [list(tag) for tag in note.tags]  # NIP-89
     assert note.created_at == message["origin_server_ts"] // 1000
     assert nostr_event.verify(note.to_dict()) == note
     assert relay_pool.published[-1][1] == [RELAY_ONE, RELAY_TWO]
@@ -146,7 +147,7 @@ def test_mentions_become_nostr_references(client, homeserver, relay_pool) -> Non
     })
     [note] = notes(relay_pool)
     assert note.content == f"nostr:{nip19.npub_encode(admin.pubkey)}: and @nobody"
-    assert [list(t) for t in note.tags] == [["p", admin.pubkey]]
+    assert [list(t) for t in note.tags] == [["p", admin.pubkey], ["client", "matrix-appservice-nostr"]]
 
 
 def test_replies_thread_on_nostr(client, homeserver, relay_pool) -> None:
@@ -159,11 +160,12 @@ def test_replies_thread_on_nostr(client, homeserver, relay_pool) -> None:
     third = post(client, homeserver, room, {"msgtype": "m.text", "body": "> <@q:example.org> two\n\nthree",
                                             "m.relates_to": {"m.in_reply_to": {"event_id": second["event_id"]}}})
     root_note, second_note, third_note = notes(relay_pool)
-    assert [list(t) for t in second_note.tags] == [["e", root_note.id, "wss://nostr.example.org", "root", q.pubkey]]
+    assert [list(t) for t in second_note.tags] == [["e", root_note.id, "wss://nostr.example.org", "root", q.pubkey], ["client", "matrix-appservice-nostr"]]
     assert third_note.content == "three"
     assert [list(t) for t in third_note.tags] == [
         ["e", root_note.id, "wss://nostr.example.org", "root", q.pubkey],
         ["e", second_note.id, "wss://nostr.example.org", "reply", q.pubkey],
+        ["client", "matrix-appservice-nostr"],
     ]
     # Indexed for #e queries later.
     assert ("e", root_note.id) in index_row(client, third["event_id"]).tags

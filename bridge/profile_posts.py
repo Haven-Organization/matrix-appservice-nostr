@@ -28,6 +28,7 @@ from bridge import ids, shadow_ids
 from bridge.commands import message_for_a_bot
 from bridge.media import EncryptedMedia, MediaProblem, publish_matrix_media
 from bridge.messages import notice
+from bridge.event_sources import with_client
 from bridge.inbound import index_tags
 from bridge.interactions import extra_relays_for, find_quote, notify_local_author, reply_context
 from bridge.notes import (
@@ -215,7 +216,7 @@ async def _store_and_send(
         kind=kind,
         created_at=created_at,
         sig=event.sig,
-        source=json.dumps(recipe, ensure_ascii=False, separators=(",", ":")),
+        source=json.dumps(with_client(recipe, tags, event.tags), ensure_ascii=False, separators=(",", ":")),
         room_id=room_id,
         matrix_event_id=matrix_event_id,
         tags=index_tags(tags),

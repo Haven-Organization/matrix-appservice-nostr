@@ -35,6 +35,11 @@ exist under a version it must never change; converting differently means
 adding a new version and keeping the old one for as long as its events
 exist.
 
+A note, comment, repost, reaction or poll signed with a NIP-89 "client"
+tag (``bridge.client_name``) has ``client``: the name, appended as the
+last tag after the converter's own (``with_client``). Recipes without it
+are unchanged.
+
 Rebuilding has four outcomes, and they must not be confused:
 
 - ``ok``: the event, exactly as signed.
@@ -202,6 +207,19 @@ async def _rebuild_embedded(app: FastAPI, row: EventRow) -> "Rebuilt":
 # -- rebuilding ----------------------------------------------------------------
 
 
+def with_client(recipe: dict[str, Any], tags: list[list[str]], event_tags) -> dict[str, Any]:
+    """The recipe, noting the "client" tag the signer appended, if it did."""
+    extra = [list(tag) for tag in event_tags][len(tags):]
+    if extra and extra[-1][:1] == ["client"] and len(extra[-1]) == 2:
+        return {**recipe, "client": extra[-1][1]}
+    return recipe
+
+
+def _client_tag(source: dict[str, Any]) -> list[list[str]]:
+    client = source.get("client")
+    return [["client", client]] if isinstance(client, str) and client else []
+
+
 async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
     try:
         source = json.loads(row.source)
@@ -222,6 +240,7 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
             if record is None or is_redacted(record) or original is None or is_redacted(original):
                 return Rebuilt("gone")
             content, tags = SHARE_CONVERTERS[source["v"]](record, original, source)
+            tags = tags + _client_tag(source)
             event_kind = event_kind_of(source)
         elif (kind, source.get("v")) in CONVERTERS:
             if source.get("edit"):
@@ -236,6 +255,7 @@ async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:
                 return Rebuilt("gone")
             assert matrix_event is not None
             content, tags = CONVERTERS[(kind, source["v"])](matrix_event, source)
+            tags = tags + _client_tag(source)
             event_kind = event_kind_of(source)
         else:
             logger.error("Event %s has unknown source kind %r", row.id, kind)

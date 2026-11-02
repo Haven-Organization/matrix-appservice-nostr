@@ -23,7 +23,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 
 from bridge import remote as remotes
-from bridge.event_sources import EMBED_FIELD
+from bridge.event_sources import EMBED_FIELD, with_client
 from bridge.homeserver_client import HomeserverError
 from bridge.inbound import REJECTED, IngestResult, _store, event_url, index_tags
 from bridge import shadow_ids
@@ -48,7 +48,7 @@ async def _sign_store_send(app: FastAPI, author, *, kind: int, content: str, tag
         return None
     row = EventRow(
         id=event.id, pubkey=event.pubkey, kind=kind, created_at=created_at, sig=event.sig,
-        source=json.dumps(recipe, ensure_ascii=False, separators=(",", ":")), room_id=room_id,
+        source=json.dumps(with_client(recipe, tags, event.tags), ensure_ascii=False, separators=(",", ":")), room_id=room_id,
         matrix_event_id=matrix_event_id, tags=index_tags(tags),
     )
     await app.state.repository.put_event(row)

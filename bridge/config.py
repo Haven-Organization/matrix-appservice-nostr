@@ -78,6 +78,10 @@ class BridgeSection:
     # that doesn't know MSC4027 shows the mxc:// text itself, so turn it on
     # once your users' clients support it. Off, the reaction is ":name:".
     msc4027_custom_reactions: bool = False
+    # Name put in a NIP-89 "client" tag on public events (posts, replies,
+    # reposts, reactions, polls), which clients like Ditto show next to the
+    # time. Empty: no tag. Never added to DMs or other private events.
+    client_name: str = "matrix-appservice-nostr"
     # Join rule of a Remote User Room: "knock" (default: anyone may ask, and
     # is let straight in), "invite" or "public".
     ghost_room_join_rule: str = "knock"
@@ -449,6 +453,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         local_profile_room_join_rule=local_profile_room_join_rule,
         msc4503_external_handle=msc4503_external_handle,
         msc4027_custom_reactions=bool(bridge_raw.get("msc4027_custom_reactions", False)),
+        client_name=str(bridge_raw.get("client_name", "matrix-appservice-nostr") or "").strip()[:100],
         ghost_room_join_rule=_choice(bridge_raw, "ghost_room_join_rule", ("public", "invite", "knock"), "knock"),
         world_readable_remote_rooms=bool(bridge_raw.get("world_readable_remote_rooms", False)),
         accept_federated_knocks=bool(bridge_raw.get("accept_federated_knocks", False)),

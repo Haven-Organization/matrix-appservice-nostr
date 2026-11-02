@@ -257,6 +257,7 @@ def create_app(
         app.state.repository = repository or open_repository(config)
         app.state.vault = KeyVault(config.nostr.key_encryption_secret)
         app.state.signer = Signer(app.state.repository, app.state.vault)
+        app.state.signer.client_name = config.bridge.client_name
         from bridge.widget import load_sessions
 
         await load_sessions(app)  # widgets stay signed in through a restart

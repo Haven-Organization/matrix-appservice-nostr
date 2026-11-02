@@ -52,6 +52,8 @@ bridge:
   # Custom-emoji reactions as MSC4027 image reactions (clients without
   # MSC4027 show the mxc:// text, hence off by default).
   # msc4027_custom_reactions: false
+  # Shown by clients like Ditto next to a post's time (NIP-89); "" for none.
+  # client_name: "matrix-appservice-nostr"
   # quote_import_policy: known            # known | always | never
 
   # Nostr IDs.

@@ -26,6 +26,11 @@ from bridge.repository import BridgeRepository
 
 BOT_KEY_NAME = "bot"
 
+# Public kinds that get a NIP-89 "client" tag: notes, reposts, reactions,
+# pictures and videos, polls, comments, long-form. Never DMs, seals, gift
+# wraps or group/Concord traffic, where it would say more than it should.
+CLIENT_TAG_KINDS = frozenset({1, 6, 7, 16, 17, 20, 21, 22, 1068, 1111, 30023})
+
 
 def server_key_purpose(name: str) -> str:
     return f"server:{name}"
@@ -57,6 +62,8 @@ class Signer:
         self.pool = None
         self._remotes: dict[tuple[int, str], object] = {}
         self.last_error: dict[str, str] = {}
+        # Name for the NIP-89 "client" tag (bridge.client_name); empty: none.
+        self.client_name = ""
 
     async def remote_signer(self, nostr_id):
         """The NIP-46 client for an ID whose key is in a signer app."""
@@ -148,6 +155,8 @@ class Signer:
 
         secret = await self._secret_for(pubkey)
         tag_list = [list(tag) for tag in tags]
+        if self.client_name and kind in CLIENT_TAG_KINDS and not any(tag[:1] == ["client"] for tag in tag_list):
+            tag_list.append(["client", self.client_name])
         if secret is not None:
             return nostr_event.build(secret, kind=kind, content=content, created_at=created_at, tags=tag_list)
         remote = await self._remote_for_pubkey(pubkey)
