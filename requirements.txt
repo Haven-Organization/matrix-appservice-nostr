@@ -5,6 +5,8 @@ PyYAML>=6.0,<7.0
 cryptography>=42.0
 Pillow>=10.0
 websockets>=15.0
+# DM request language filters ([dmfilter language). Without it they are skipped.
+langdetect>=1.0.9
 # Only used with storage.backend: postgresql.
 psycopg2-binary>=2.9.10
 # Optional: much faster Nostr signing and verification via libsecp256k1.

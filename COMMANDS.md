@@ -7,7 +7,7 @@ A message is a command when it starts with the command prefix (`[` by default, `
 
 The same sections are shown by `[help`, laid out like matrix-appservice-activitypub's. Keep this file and `_help_sections` in `bridge/commands.py` in sync.
 
-Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1…`, a 64-character hex key, a handle (`name@domain`, or a bare `domain` for `_@domain`), or a link to a profile on a Nostr website. In a Nostr account's room, or a DM room with one, the account can be left out: `[follow`, `[unfollow`, `[block`, `[unblock` and `[dm` then mean that account.
+Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1…`, a 64-character hex key, a handle (`name@domain`, or a bare `domain` for `_@domain`), or a link to a profile on a Nostr website. Or a mention (pill) of the account's user, or of a local user (their Active ID). Left out, the account is the one whose message the command replies to (a reply, not just a message in its thread), or in a Nostr account's room, or a DM room with one, that account: `[follow`, `[unfollow`, `[block`, `[unblock` and `[dm` then mean it.
 
 ## Contents
 
@@ -30,6 +30,7 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[backfill [N]`](#backfill-n)
   - [`[block <account>`](#block-account)
   - [`[unblock <account>`](#unblock-account)
+  - [`[dmfilter`](#dmfilter)
   - [`[widget`](#widget)
   - [`[import key`](#import-key)
   - [`[export key`](#export-key)
@@ -174,6 +175,17 @@ Blocks an account for the ID: its replies, mentions, reactions, reposts and DMs 
 ### `[unblock <account>`
 
 Unblocks it.
+
+### `[dmfilter`
+
+Screens DM requests: a first private message from an account the identity doesn't follow and has no DM room with yet, the kind that opens a new room and invites you. The settings are yours, for all your identities. Open conversations, and accounts you follow, are never filtered. A filtered request is dropped quietly: no room, no invite, nothing stored, and the sender isn't told.
+
+- `[dmfilter`: show your filters and how many requests they've caught.
+- `[dmfilter keyword add|remove <word or phrase>`: filter messages containing it (whole words, any case).
+- `[dmfilter language <codes>|any`: only let through these languages, e.g. `en de`. Judged only when a message is long enough to tell (about 25 letters) and the guess is confident; anything shorter passes.
+- `[dmfilter noname on|off`: filter senders whose Nostr profile has no display name (or no profile at all).
+- `[dmfilter domain add|remove <domain>`: filter senders whose profile claims a NIP-05 handle at that domain or a subdomain of it.
+- `[dmfilter clear`: remove every filter.
 
 ### `[widget`
 

@@ -21,6 +21,7 @@ the same breakdown: keep both in sync when adding a command.
 
 from __future__ import annotations
 
+import contextvars
 import html
 import logging
 import re
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "profiles|create|switch|rename|unlink|link|delete|play|join|id|unfollow|following|follow|unblock|block|backfill|dm|unban|bans|ban|"
+    "profiles|create|switch|rename|unlink|link|delete|play|join|id|unfollow|following|follow|unblock|block|backfill|dmfilter|dm|unban|bans|ban|"
     "allowed|allow|disallow|widget|import|export|status|help"
 )
 
@@ -222,6 +223,12 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                 (f"{p}block [<account>]",
                  "Block an account for your Active identity: its replies, mentions and reactions stop reaching "
                  f'you. "{p}unblock" undoes it.'),
+                (f"{p}dmfilter [...]",
+                 "Screen DM requests (first messages from accounts you don't follow) for all your identities: "
+                 f'"{p}dmfilter keyword add|remove <word or phrase>", "{p}dmfilter language en de|any" (only '
+                 f'these languages), "{p}dmfilter noname on|off" (senders with no display name), "{p}dmfilter '
+                 f'domain add|remove <domain>" (senders with a NIP-05 handle there), "{p}dmfilter clear". On its '
+                 "own, shows your filters. Filtered requests are dropped quietly."),
                 (f"{p}widget",
                  "Add the bridge's widget to this room: buttons for your identities, following, and bringing "
                  "your own key, for clients that support Matrix widgets."),
@@ -621,13 +628,74 @@ async def _actor(app: FastAPI, room_id: str, sender: str) -> NostrId | None:
     return actor
 
 
+# The command message being handled, for what its text alone doesn't say:
+# the pills behind an account's display name, and what it replies to.
+_command_content: contextvars.ContextVar[dict | None] = contextvars.ContextVar("command_content", default=None)
+
+
+async def _pubkey_of_user(app: FastAPI, user_id: str) -> str | None:
+    """A ghost's account, or a local user's Active ID."""
+    from bridge.remote import pubkey_of_ghost
+
+    ghost = pubkey_of_ghost(app, user_id)
+    if ghost is not None:
+        return ghost
+    if is_bridge_user(app.state.config, user_id):
+        return None
+    active = await ids.active_id(app, user_id)
+    return active.pubkey if active is not None else None
+
+
+async def _named_by_pill(app: FastAPI, argument: str, content: dict) -> str | None:
+    """The account a pill names, when the argument is that pill (its text is
+    a display name, which says nothing by itself), or a bare MXID."""
+    from bridge.notes import pills
+
+    text = argument.strip()
+    for user_id, label in pills(content):
+        label = label.strip()
+        if text == user_id or (label and (text == label or text.startswith(label + " "))):
+            pubkey = await _pubkey_of_user(app, user_id)
+            if pubkey is not None:
+                return pubkey
+    first = text.split()[0] if text else ""
+    if first.startswith("@") and ":" in first:
+        return await _pubkey_of_user(app, first)
+    return None
+
+
+async def _replied_to_account(app: FastAPI, room_id: str, content: dict) -> str | None:
+    """The account whose message the command answers: a real reply, not a
+    thread's fallback link to its latest message."""
+    relation = content.get("m.relates_to") or {}
+    if relation.get("rel_type") == "m.thread" and relation.get("is_falling_back", True):
+        return None
+    target = reply_target_event_id(content)
+    if target is None:
+        return None
+    try:
+        replied = await app.state.homeserver.get_event(room_id, target, as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        return None
+    from bridge.remote import pubkey_of_ghost
+
+    return pubkey_of_ghost(app, (replied or {}).get("sender", ""))
+
+
 async def _resolve(app: FastAPI, room_id: str, argument: str):
-    """The account a command names, or with none named, the one the room is
-    about: a Nostr account's room, or the other side of a DM room."""
+    """The account a command names (as an npub, handle, link, or a pill), or
+    with none named, the one whose message it replies to, or the one the room
+    is about: a Nostr account's room, or the other side of a DM room."""
     from bridge.follows import Reference, ReferenceError, resolve_reference
 
+    content = _command_content.get() or {}
+    repository = app.state.repository
+    pubkey = (await _named_by_pill(app, argument, content) if argument.strip()
+              else await _replied_to_account(app, room_id, content))
+    if pubkey is not None:
+        remote = await repository.get_remote_account(pubkey)
+        return Reference(pubkey, remote.write_relays if remote else (), remote.nip05 if remote else None)
     if not argument.strip():
-        repository = app.state.repository
         remote = await repository.get_remote_account_for_room(room_id)
         if remote is not None:
             return Reference(remote.pubkey, remote.write_relays, remote.nip05)
@@ -635,8 +703,9 @@ async def _resolve(app: FastAPI, room_id: str, argument: str):
         if dm is not None:
             remote = await repository.get_remote_account(dm[1])
             return Reference(dm[1], remote.write_relays if remote else (), remote.nip05 if remote else None)
-        await notice(app, room_id, "Which account? Give an npub, an nprofile, a handle (name@domain) or a profile link, "
-                                   "or run this in that account's room.")
+        await notice(app, room_id, "Which account? Give an npub, an nprofile, a handle (name@domain), a profile link "
+                                   "or a mention (pill) of them, reply to one of their messages, or run this in that "
+                                   "account's room.")
         return None
     try:
         return await resolve_reference(app, argument.split()[0])
@@ -1226,11 +1295,22 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         return True
 
     keyword, argument = parsed
+    token = _command_content.set(content)
+    try:
+        await _run_command(app, room_id, sender, keyword, argument, content)
+    finally:
+        _command_content.reset(token)
+    return True
+
+
+async def _run_command(app: FastAPI, room_id: str, sender: str, keyword: str, argument: str, content: dict) -> None:
+    config = app.state.config
+    prefix = config.appservice.command_prefix
     if keyword == "help":
         await _handle_help(app, room_id, argument, sender)
-        return True
+        return
     if await _third_party_refused(app, room_id, sender, keyword, argument):
-        return True
+        return
     if keyword == "allow":
         await _handle_allow(app, room_id, sender, argument)
     elif keyword == "disallow":
@@ -1275,6 +1355,10 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_block(app, room_id, sender, argument, blocked=keyword == "block")
     elif keyword == "backfill":
         await _handle_backfill(app, room_id, sender, argument, content)
+    elif keyword == "dmfilter":
+        from bridge.dm_filters import handle_command
+
+        await handle_command(app, room_id, sender, argument)
     elif keyword == "dm":
         await _handle_dm(app, room_id, sender, argument)
     elif keyword in ("ban", "unban"):
@@ -1297,4 +1381,4 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
             f"Keys never go through chat messages: a homeserver stores those unencrypted. Open the Nostr Bridge widget "
             f'(add it with "{prefix}widget" if this room doesn\'t have it) to {"import a key or connect a remote signer" if keyword == "import" else "export a key"}.',
         )
-    return True
+    return

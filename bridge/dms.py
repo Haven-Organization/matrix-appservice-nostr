@@ -3,7 +3,8 @@ wrapped), and legacy NIP-04 DMs received.
 
 One DM room per (local ID, remote account), created by the bot with the
 user and the account's ghost. A DM from a stranger arrives as an invite to
-a new room: the user can just decline.
+a new room: the user can just decline, or have such requests screened
+(``bridge.dm_filters``, ``[dmfilter``).
 
 Sending: the owner's message becomes a kind 14 rumor (kind 15 for a file,
 encrypted with AES-GCM; the encrypted bytes go into the Matrix media
@@ -139,6 +140,8 @@ async def _deliver(app: FastAPI, raw: dict[str, Any], rumor: dict[str, Any], sen
         return False
     if await repository.get_id_by_pubkey(sender) is not None:
         return False  # between two IDs on this server: that's a Matrix DM
+    if await _filtered_request(app, local, sender, str(rumor.get("content") or "")):
+        return True  # dropped quietly, answered as delivered: the filter can't be probed
     remote = await remotes.get_or_create_remote(app, sender)
     room_id = await ensure_dm_room(app, local, remote)
     content = await _rumor_content(app, rumor, as_user_id=remote.ghost_user_id)
@@ -170,6 +173,23 @@ async def _deliver(app: FastAPI, raw: dict[str, Any], rumor: dict[str, Any], sen
     hub = getattr(app.state, "relay_hub", None)
     if hub is not None:
         hub.broadcast(raw, "dm")
+    return True
+
+
+async def _filtered_request(app: FastAPI, local: NostrId, sender: str, text: str) -> bool:
+    """A DM request (no room with the sender yet, sender not followed) that
+    its owner's ``[dmfilter`` settings drop."""
+    from bridge import dm_filters
+
+    repository = app.state.repository
+    if await repository.get_dm_room(local.id, sender) is not None:
+        return False
+    if sender in await repository.list_follows(local.id):
+        return False
+    reason = await dm_filters.screen(app, local.matrix_user_id, sender, text)
+    if reason is None:
+        return False
+    logger.info("Filtered a DM request to %s from %s: %s", local.name, sender, reason)
     return True
 
 
