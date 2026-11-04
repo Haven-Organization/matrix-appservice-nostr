@@ -352,7 +352,26 @@ async def on_announce(app: FastAPI, event: dict[str, Any]) -> None:
             _source(file["url"]), hashlib.sha256(download.content).hexdigest(), mxc,
             (media.get("info") or {}).get("mimetype") or download.content_type or "application/octet-stream",
             len(download.content), datetime.now(timezone.utc).isoformat()))
+    repository = app.state.repository
+    if await repository.get_event_by_matrix_event(event_id) is not None:
+        return  # announced twice, or seen both live and on looking back
     await republish(app, post)
+    if await repository.get_event_by_matrix_event(event_id) is not None:
+        await _sent_after_sibling(app, room_id, event_id)
+
+
+async def _sent_after_sibling(app: FastAPI, room_id: str, event_id: str) -> None:
+    """Published with a copy another bridge made after its question was
+    answered: say so too, under that question, so each bridge's outcome
+    shows. A file that was simply known already (nobody asked) stays quiet,
+    as it does at the bridge that made the copy."""
+    for related in await _related(app, room_id, event_id):
+        asked = ((related.get("content") or {}).get(PROMPT_FIELD) or {}).get("prompt_for")
+        if related.get("type") == "m.room.message" and asked == event_id:
+            await notice(app, room_id, "✅ Sent.", extra={"m.relates_to": {
+                "rel_type": "m.thread", "event_id": event_id, "is_falling_back": True,
+                "m.in_reply_to": {"event_id": related.get("event_id", event_id)}}})
+            return
 
 
 async def republish(app: FastAPI, post: dict[str, Any]) -> None:

@@ -157,6 +157,33 @@ def test_waits_for_the_bridge_before_it(config, repository, homeserver, relay_po
         [note] = notes(relay_pool)
         assert note.pubkey == q.pubkey
         assert [mxc for mxc, (data, _) in homeserver.media.items() if data == picture] == ["mxc://example.org/plain"]
+        # Said here too, under the other bridge's question, once.
+        sent = [c for c in homeserver.sent_to(room) if c.get("body") == "✅ Sent."]
+        assert len(sent) == 1
+        assert sent[0]["m.relates_to"]["event_id"] == message["event_id"]
+        assert sent[0]["m.relates_to"]["m.in_reply_to"] == {"event_id": question["event_id"]}
+        # Announced again: already published, nothing more.
+        transact(client, homeserver._store(room, ANNOUNCE_TYPE, {
+            "m.relates_to": {"rel_type": ANNOUNCE_TYPE, "event_id": message["event_id"]},
+            "url": "mxc://example.org/plain", "encrypted_url": content["file"]["url"], "info": {"mimetype": "image/png"}}, AP))
+        assert len(notes(relay_pool)) == 1
+        assert len([c for c in homeserver.sent_to(room) if c.get("body") == "✅ Sent."]) == 1
+
+
+def test_a_known_copy_from_another_bridge_is_posted_quietly(config, repository, homeserver, relay_pool) -> None:
+    with _shared_client(config, repository, homeserver, relay_pool, [AP, NOSTR]) as client:
+        q = create_id(client)
+        room = q.profile_room_id
+        picture = _png()
+        content = _encrypted(homeserver, picture)
+        message = homeserver._store(room, "m.room.message", content, "@q:example.org")
+        homeserver.media["mxc://example.org/plain"] = (picture, "image/png")
+        homeserver._store(room, ANNOUNCE_TYPE, {
+            "m.relates_to": {"rel_type": ANNOUNCE_TYPE, "event_id": message["event_id"]},
+            "url": "mxc://example.org/plain", "encrypted_url": content["file"]["url"], "info": {"mimetype": "image/png"}}, AP)
+        transact(client, message)
+        assert len(notes(relay_pool)) == 1
+        assert not any(c.get("body") == "✅ Sent." for c in homeserver.sent_to(room))
 
 
 def test_asks_when_no_bridge_before_it_did(config, repository, homeserver, relay_pool) -> None:
