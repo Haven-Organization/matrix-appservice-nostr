@@ -213,3 +213,41 @@ def test_a_known_copy_is_announced_for_a_new_post(config, repository, homeserver
         assert len(notes(relay_pool)) == 2
         announced = [e["content"]["m.relates_to"]["event_id"] for e in homeserver.messages(room, ANNOUNCE_TYPE)]
         assert announced == [first["event_id"], forwarded["event_id"]]
+
+
+def _all_refuse(client, relay_pool):
+    for relay in client.app.state.config.nostr.publish_relays:
+        relay_pool.answers[relay] = (False, "blocked: not in web of trust")
+
+
+def test_no_sent_when_no_relay_took_it(client, homeserver, relay_pool) -> None:
+    q = create_id(client)
+    room = q.profile_room_id
+    _all_refuse(client, relay_pool)
+    post(client, homeserver, room, _encrypted(homeserver, _png()))
+    [prompt] = _prompts(homeserver, room)
+    _reply(client, homeserver, room, prompt["event_id"])
+    assert len(notes(relay_pool)) == 1
+    bodies = [c.get("body", "") for c in homeserver.sent_to(room)]
+    assert "✅ Sent." not in bodies
+    assert any("onto any public Nostr relay" in b for b in bodies)
+
+
+def test_no_sent_after_a_sibling_when_no_relay_took_it(config, repository, homeserver, relay_pool) -> None:
+    with _shared_client(config, repository, homeserver, relay_pool, [AP, NOSTR]) as client:
+        q = create_id(client)
+        room = q.profile_room_id
+        picture = _png()
+        content = _encrypted(homeserver, picture)
+        message = homeserver._store(room, "m.room.message", content, "@q:example.org")
+        homeserver._store(room, "m.room.message", {
+            "msgtype": "m.text", "body": "⚠️q, this message is encrypted. ...", PROMPT_FIELD: {"prompt_for": message["event_id"]},
+            "m.relates_to": {"rel_type": "m.thread", "event_id": message["event_id"], "is_falling_back": True}}, AP)
+        transact(client, message)
+        _all_refuse(client, relay_pool)
+        homeserver.media["mxc://example.org/plain"] = (picture, "image/png")
+        transact(client, homeserver._store(room, ANNOUNCE_TYPE, {
+            "m.relates_to": {"rel_type": ANNOUNCE_TYPE, "event_id": message["event_id"]},
+            "url": "mxc://example.org/plain", "encrypted_url": content["file"]["url"], "info": {"mimetype": "image/png"}}, AP))
+        assert len(notes(relay_pool)) == 1
+        assert not any(c.get("body") == "✅ Sent." for c in homeserver.sent_to(room))

@@ -313,7 +313,8 @@ async def _confirmed(app: FastAPI, room_id: str, sender: str, args: dict[str, An
     if _bridges(app):
         await announce(app, room_id, event_id, content, file, mxc)
     await republish(app, post)
-    await _thread_notice(app, room_id, event_id, "✅ Sent.")
+    if await _went_out(app, event_id):
+        await _thread_notice(app, room_id, event_id, "✅ Sent.")
 
 
 confirm.register(ACTION, _confirmed)
@@ -356,8 +357,20 @@ async def on_announce(app: FastAPI, event: dict[str, Any]) -> None:
     if await repository.get_event_by_matrix_event(event_id) is not None:
         return  # announced twice, or seen both live and on looking back
     await republish(app, post)
-    if await repository.get_event_by_matrix_event(event_id) is not None:
+    if await repository.get_event_by_matrix_event(event_id) is not None and await _went_out(app, event_id):
         await _sent_after_sibling(app, room_id, event_id)
+
+
+async def _went_out(app: FastAPI, event_id: str) -> bool:
+    """Whether to say "Sent" for the post ``event_id``: not when its Nostr
+    event was turned away by every public relay (the user is told that
+    instead). Waits for the first relay to take it."""
+    from bridge.publishing import reached
+
+    row = await app.state.repository.get_event_by_matrix_event(event_id)
+    if row is None:
+        return True  # not a post for Nostr (a Matrix-only reply, say): nothing to wait for
+    return await reached(app, row.id) is not False
 
 
 async def _sent_after_sibling(app: FastAPI, room_id: str, event_id: str) -> None:

@@ -433,15 +433,20 @@ class RelayPool:
     def connections(self) -> list[RelayConnection]:
         return list(self._connections.values())
 
-    async def publish(self, event: Event, relays: list[str], timeout: float | None = None) -> list[PublishResult]:
+    async def publish(self, event: Event, relays: list[str], timeout: float | None = None,
+                      on_accept: Callable[[PublishResult], None] | None = None) -> list[PublishResult]:
         """Send ``event`` to every relay in ``relays`` at once and collect
-        their answers. Never raises for a relay's failure."""
+        their answers. Never raises for a relay's failure. ``on_accept`` is
+        told of each acceptance as it comes, without waiting for the rest."""
         urls = list(dict.fromkeys(normalize_relay_url(url) for url in relays))
-        return list(
-            await asyncio.gather(
-                *(self.connection(url).publish(event, timeout or self.publish_timeout) for url in urls)
-            )
-        )
+
+        async def one(url: str) -> PublishResult:
+            result = await self.connection(url).publish(event, timeout or self.publish_timeout)
+            if result.accepted and on_accept is not None:
+                on_accept(result)
+            return result
+
+        return list(await asyncio.gather(*(one(url) for url in urls)))
 
     def subscribe(
         self,

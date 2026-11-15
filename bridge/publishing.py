@@ -110,11 +110,46 @@ async def _record_policy_refusals(
         )
 
 
+# How long whether an event reached a relay is kept for someone to ask.
+_REACH_KEPT_SECONDS = 120.0
+REACH_WAIT_SECONDS = 20.0
+
+
+def _reach(app: FastAPI) -> dict[str, asyncio.Future]:
+    waiting = getattr(app.state, "publish_reach", None)
+    if waiting is None:
+        waiting = app.state.publish_reach = {}
+    return waiting
+
+
+async def reached(app: FastAPI, event_id: str, timeout: float = REACH_WAIT_SECONDS) -> bool | None:
+    """Whether a public relay took the event just published in the
+    background: True as soon as one accepts, False once none did on the
+    first round, None if that isn't known (not sent from here lately, or no
+    answer in ``timeout``)."""
+    future = _reach(app).get(event_id)
+    if future is None:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.shield(future), timeout)
+    except TimeoutError:
+        return None
+
+
+def _settle(future: asyncio.Future | None, value: bool) -> None:
+    if future is not None and not future.done():
+        future.set_result(value)
+
+
 async def _attempt(app: FastAPI, event: Event, relays: list[str], attempts: int, notify: NotifyTarget | None) -> None:
     """One round of sending ``event`` to ``relays``, and the bookkeeping
     that follows from the answers."""
     repository = app.state.repository
-    results: list[PublishResult] = await app.state.relay_pool.publish(event, relays) if relays else []
+    reach = _reach(app).get(event.id) if attempts == 1 else None
+    results: list[PublishResult] = (
+        await app.state.relay_pool.publish(event, relays, on_accept=lambda _result: _settle(reach, True))
+        if relays else [])
+    _settle(reach, any(r.accepted for r in results))
     accepted = [r for r in results if r.accepted]
     retry = [r.relay for r in results if r.retryable]
     policy = [r for r in results if not r.accepted and r.message.startswith(_POLICY_PREFIXES)]
@@ -165,6 +200,7 @@ async def publish(
         await _attempt(app, event, targets, 1, notify)
     except Exception:
         logger.exception("Publishing %s failed", event.id)
+        _settle(_reach(app).get(event.id), False)
 
 
 def publish_in_background(
@@ -181,6 +217,10 @@ def publish_in_background(
     hub = getattr(app.state, "relay_hub", None)
     if hub is not None:
         hub.broadcast(event.to_dict(), scope)
+    loop = asyncio.get_running_loop()
+    waiting = _reach(app)
+    waiting[event.id] = loop.create_future()
+    loop.call_later(_REACH_KEPT_SECONDS, waiting.pop, event.id, None)
     run_in_background(
         app, publish(app, event, notify=notify, relays=relays, extra_relays=extra_relays), name=f"publish {event.id[:8]}"
     )

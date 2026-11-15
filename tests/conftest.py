@@ -234,11 +234,16 @@ class FakeRelayPool:
         self.handlers: list[tuple[str, list[dict], Any]] = []
         self.publish_hooks: list[Any] = []
 
-    async def publish(self, event: Event, relays: list[str], timeout: float | None = None) -> list[PublishResult]:
+    async def publish(self, event: Event, relays: list[str], timeout: float | None = None,
+                      on_accept=None) -> list[PublishResult]:
         self.published.append((event, list(relays)))
         for hook in self.publish_hooks:
             hook(event, relays)
-        return [PublishResult(relay, *self.answers.get(relay, (True, ""))) for relay in relays]
+        results = [PublishResult(relay, *self.answers.get(relay, (True, ""))) for relay in relays]
+        for result in results:
+            if result.accepted and on_accept is not None:
+                on_accept(result)
+        return results
 
     def of_kind(self, kind: int) -> list[Event]:
         return [event for event, _ in self.published if event.kind == kind]
