@@ -175,6 +175,7 @@ Outside your Profile Rooms and DM rooms, these are done as your active ID.
 
 - **Sending:** your messages go out as NIP-17 private DMs (NIP-44 encrypted, gift wrapped), to the account's DM relays (kind 10050), with a copy for your own Nostr apps. Files are sent encrypted (kind 15), up to `nostr.max_media_mb`. Edits can't be sent.
 - **Receiving:** NIP-17 DMs, and old-style NIP-04 DMs, arrive in the DM room from the ghost. A DM from someone new arrives as an invite to a new room, which you can just decline.
+- **Filtering DM requests** (`[dmfilter`): a first DM from someone you don't follow can be dropped quietly by keywords in it, its language, the sender having no display name, or their NIP-05 domain. Conversations already open, and accounts you follow, are never filtered.
 - On the bridge's relay, DMs are readable only by their recipient, after logging in (NIP-42).
 - DMs between two IDs on this server aren't bridged: message each other in Matrix.
 - DM rooms aren't flagged as Matrix direct chats unless `bridge.dm_rooms_as_direct` is on.
@@ -296,7 +297,10 @@ Concord is the end-to-end encrypted, Discord-style community protocol of Armada,
 - **Rekeys and refoundings** (CORD-06): when a community re-founds or a channel's key changes, the bridge picks up the new keys, checked against the key it holds and against the rotator's authority. If every part of a rotation is in and none has a key for you, you've been removed, and you're told.
 - **Disappearing messages** (CORD-08): expired messages aren't brought in, and messages with an expiry are redacted in Matrix when it passes. Messages sent from Matrix carry the community's timer. Timer changes are shown when they come from staff.
 - **Custom emoji reactions** (NIP-30) both ways, as image reactions with `bridge.msc4027_custom_reactions` on, as on posts.
-- **Not yet:** moderation from Matrix, voice and video. Identities on a remote signer can't join.
+- **Making your own** (`[concord create <name>`): a community owned by your identity, with a Space and `#general`, listed in your Concord community list for your other apps.
+- **Existing rooms as channels** (`[concord channel <name>`): a Matrix room becomes a new channel, keeping its own name, avatar, join rules and power levels; its topic becomes the channel's and follows changes. Works in your own communities, and in joined ones where your identity has a role that can manage channels (communities from before Concord's staff keys). `[concord rename` renames a channel.
+- **Invites:** links (`[concord link`, listed with `[concord links`, retired with `[concord revoke`) that open in Armada, Vector and poster.place, and direct invites to one person (`[concord invite <npub, name@domain or a mention>`, or inviting their ghost to the community's rooms in Matrix), delivered encrypted over Nostr.
+- **Not yet:** moderation from Matrix, roles and private channels in communities you own, voice and video. Identities on a remote signer can't join.
 
 ## Groups (NIP-29)
 

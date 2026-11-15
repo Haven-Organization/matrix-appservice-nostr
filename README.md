@@ -16,7 +16,7 @@ See [FEATURES.md](FEATURES.md) for how things work, [COMMANDS.md](COMMANDS.md) f
 
 ## Controlling the bridge
 
-Tag the bot or type a `[`-prefixed command: `[create profile` to get a Nostr ID, `[follow <account>`, `[dm <account>`, `[block <account>`, `[widget`, `[status`, `[help`. See [COMMANDS.md](COMMANDS.md).
+Tag the bot or type a `[`-prefixed command: `[create profile` to get a Nostr ID, `[follow <account>`, `[dm <account>`, `[block <account>`, `[join <invite link>`, `[concord create <name>`, `[widget`, `[status`, `[help`. See [COMMANDS.md](COMMANDS.md).
 
 ## Setup
 

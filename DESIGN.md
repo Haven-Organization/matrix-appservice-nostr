@@ -1045,6 +1045,21 @@ a member needs:
   refused. Others get a `concord:exp:<ts>:<event>` entry, and
   `expiry_loop` redacts them when due. Outgoing rumors carry the folded
   timer. A 1740 notice is shown only from MANAGE_METADATA holders.
+- **Owning** (`bridge.concord_owner`, `[concord`): a community made here
+  keeps its `owner_salt` and `control_root` in its (vault-encrypted)
+  state. Genesis is the vsk 0 metadata and a public `#general` (vsk 2),
+  unmarked, then the owner's `@everyone` (vsk 13, marked), which puts it on
+  Roles v2; every later edition is marked (`eh`/`eb`). Editions are signed
+  by the owner inside a plaintext seal and wrapped by the
+  `concord/control-signer` key; `Community.mine` keeps each chain's head
+  (version and hash) for the next `ep`. Relays: the stock dictionary set.
+  A channel made from an existing room is marked `attached`: its name,
+  topic, avatar, join rules and other users' power levels are left alone.
+  Links: a fresh link signer per link, the bundle at `(33301, signer, "")`,
+  recorded in the owner's Invite List (13303, read-merge-write, refused if
+  a copy won't open) before it's published, and listed in the Registry
+  (vsk 8). Direct invites are standard NIP-59 wraps (`k` 3313) to the
+  recipient's 10050 relays. Retiring the last link doesn't refound.
 - **Later:** moderation from Matrix, channel-scoped roles, voice (CORD-07).
 
 ## Groups: NIP-29

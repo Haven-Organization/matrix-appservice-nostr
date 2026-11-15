@@ -41,6 +41,7 @@ from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.shares import maybe_publish_share, repost_relation
 from bridge.concord import maybe_publish as maybe_publish_concord
+from bridge.concord_owner import maybe_invite_ghost, maybe_sync_topic
 from bridge.games_room import maybe_handle_card_reaction
 from bridge.groups import maybe_publish as maybe_publish_group
 from bridge.users import bot_mxid, is_local_user, is_other_bot
@@ -116,6 +117,9 @@ async def maybe_accept_invite(request: Request, event: dict) -> bool:
 
 _HANDLERS = (
     maybe_accept_invite,
+    # A Nostr account's ghost invited to a Concord community's rooms: a
+    # Direct Invite on Nostr.
+    maybe_invite_ghost,
     maybe_handle_knock,
     maybe_handle_join,
     maybe_handle_leave,
@@ -123,6 +127,9 @@ _HANDLERS = (
     # reactions and redactions go to Nostr).
     maybe_handle_card_reaction,
     maybe_handle_redaction,
+    # An attached channel room's topic changed: the channel's too (never
+    # claims the event).
+    maybe_sync_topic,
     maybe_handle_profile_state,
     # Before anything that could act on (or publish) the message.
     maybe_catch_secret,

@@ -24,6 +24,7 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[following`](#following)
   - [`[dm <account>`](#dm-account)
   - [`[join <invite link>`](#join-invite-link)
+  - [`[concord`](#concord)
   - [`[play [<link>]`](#play-link)
   - [`[import <link|nevent|note|naddr>`](#import-linkneventnotenaddr)
 - [Advanced/Maintenance](#advancedmaintenance)
@@ -136,9 +137,34 @@ Opens a DM room with the account, as the ID, and invites you to it. Run it again
 
 Joins a Concord community (the encrypted, Discord-style communities of Armada, Vector and other apps) from its invite link (`https://armada.buzz/invite/naddr1…#…`, or any other site's), as your Active identity. The bridge makes a Space for the community and a room for each channel you can read, invites you, and brings in each channel's recent messages. What you say in those rooms goes to the community, encrypted for it.
 
-Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet.
+Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet. To make a community of your own, add channels, or invite people, see [`[concord`](#concord).
 
 It also joins NIP-29 groups (the relay-hosted groups of Flotilla, Chachi, 0xchat and others), by their `naddr1…` link (with `?invite=<code>` for a closed group) or as `relay.example'groupid`. The bridge sends the relay your join request, makes a room for the group in a Space for its relay, and brings in its recent messages. What you say there goes to the group as you.
+
+### `[concord`
+
+Making and running Concord communities (the encrypted, Discord-style communities of Armada, Vector and poster.place), and inviting people to them. `[concord` on its own lists the communities you own and these commands.
+
+**`[concord create <name>`** makes a community owned by your Active identity: a Space with a `#general` room, readable in Armada, Vector and other Concord apps. It's also added to your Concord community list, so those apps, signed in as the same identity, show it.
+
+**`[concord channel <name> [in <community>]`**, run in an existing room, adds a channel to a community and makes that room its Matrix side. `<name>` is what the channel is called in Concord apps.
+
+- It works in a community you made here, and in one you joined where your identity has a role that can manage channels. A joined community has to be one from before Concord's staff keys, as made by older versions of Armada; newer ones aren't supported yet.
+- `in <community>` names the community, by its full name (any case). Leave it out if you manage channels in only one, or if the room is already in the community's Space.
+- The room keeps its name, avatar, join rules and power levels, and is added to the community's Space. Its topic becomes the channel's topic.
+- Messages from then on go to the channel; earlier ones stay in Matrix. Anyone on this homeserver who talks there joins the community with their Nostr identity (a shadow one is made for anyone without one). People from other homeservers need [`[allow room`](#allow-mxidhomeserverroom-value-fullshadow) there too.
+- The community's members on this homeserver are invited to the room, as for any channel.
+- The room can't be end-to-end encrypted, or already bridged as something else.
+
+**`[concord rename <new name>`**, run in a channel's room, renames the channel in the community. It needs the same right as adding one. A room you attached keeps its own Matrix name.
+
+**`[concord topic`**, run in a room you attached, gives the channel the room's current topic. It happens on its own too: when someone who can manage the community's channels changes the room's topic in Matrix, the channel's topic follows. (Not every Concord app shows channel topics: poster.place shows the community's description instead.)
+
+**`[concord link [label] [in <community>]`** makes an invite link to a community you own (`https://armada.buzz/invite/naddr1…#…`), which opens in Armada, Vector, poster.place, or here with `[join`. Anyone with it can join. **`[concord links`** lists the live ones by number, and **`[concord revoke <number>`** retires one; people who already joined with it stay members.
+
+**`[concord invite <who> [in <community>]`** invites one person directly, to a community you own or joined. `<who>` is an npub, a NIP-05 name (`name@domain`), a mention (pill) of their Matrix ghost, or a reply to one of their messages. The invite goes to them over Nostr, encrypted for them, and shows up in their Concord app. Inviting their ghost to the community's Space or one of its rooms from your Matrix client does the same. Someone with an identity on this server is invited to the Space and rooms in Matrix instead.
+
+Not supported yet: roles, bans, private channels and rekeys. A community you joined before this bridge kept its owner's details can't be invited to with `[concord invite` until you `[join` it again.
 
 ### `[play [<link>]`
 

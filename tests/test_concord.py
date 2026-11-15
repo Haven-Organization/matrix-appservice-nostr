@@ -123,6 +123,9 @@ def test_join_makes_a_space_with_a_room_per_channel(client, homeserver, relay_po
     assert space["room_type"] == "m.space" and (state.space, "@q:example.org") in homeserver.invites
     assert homeserver.state_of(room, "m.room.name") == {"name": "#general"}
     assert (room, "@q:example.org") in homeserver.invites
+    # Joinable by the Space's members, so it stays listed there if declined.
+    assert homeserver.state_of(room, "m.room.join_rules") == {
+        "join_rule": "restricted", "allow": [{"type": "m.room_membership", "room_id": state.space}]}
     # The recent messages came in, from the author's ghost.
     shown = homeserver.messages(room)[-1]
     assert shown["content"]["body"] == "hello from Armada" and shown["sender"].startswith("@nostr_")
@@ -503,6 +506,21 @@ def test_the_icon_and_banner_go_on_the_space(client, homeserver, relay_pool) -> 
     bad["hash"] = "00" * 32
     run(client, concord.receive, client.app, community.edition("0", community.id, dict(meta, icon=bad), version=5))
     assert homeserver.media[homeserver.state_of(state.space, "m.room.avatar")["url"]] == (icon2, "image/png")
+    # A new channel's room is made with the icon, so the invite shows it.
+    git = secrets.token_hex(32)
+    run(client, concord.receive, client.app, community.edition("2", git, {"name": "Git", "private": False}))
+    made = run(client, concord.load, client.app, community.id).channels[git]["room"]
+    created = next(r for r in homeserver.created if r["room_id"] == made)
+    assert created["avatar_mxc"] == homeserver.state_of(state.space, "m.room.avatar")["url"]
+    assert len(homeserver.messages(made, "m.room.avatar")) <= 1  # not set again after
+
+
+def test_a_renamed_channel_gets_a_new_topic(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    run(client, concord.receive, client.app, community.edition("2", community.general, {"name": "lobby", "private": False},
+                                                                version=2))
+    assert homeserver.state_of(room, "m.room.name") == {"name": "#lobby"}
+    assert homeserver.state_of(room, "m.room.topic")["topic"].startswith("#lobby in PosterChan.")
 
 
 def test_a_room_grant_joins_a_guest_quietly(client, homeserver, relay_pool) -> None:
@@ -558,3 +576,15 @@ def test_a_slow_relay_doesnt_hold_up_the_homeservers_events(client, homeserver, 
     settle(client)
     wrap = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1]
     assert concord.open_wrap(wrap.to_dict(), community.channel())["content"] == "quick"
+
+
+def test_rooms_from_before_are_opened_to_the_space(client, homeserver, relay_pool) -> None:
+    """Invite-only rooms made by older versions: a declined one vanished
+    from the Space. Space members may join them now."""
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    homeserver._store(room, "m.room.join_rules", {"join_rule": "invite"}, "@nostrbot:example.org", "")
+    del state.channels[community.general]["open"]
+    run(client, concord.save, client.app, state)
+    run(client, concord.refresh_all, client.app)
+    assert homeserver.state_of(room, "m.room.join_rules")["join_rule"] == "restricted"
+    assert run(client, concord.load, client.app, community.id).channels[community.general]["open"] is True

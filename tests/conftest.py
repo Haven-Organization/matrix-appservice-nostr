@@ -91,7 +91,8 @@ class FakeHomeserver(HomeserverClient):
         room_id = f"!room{next(self._ids)}:example.org"
         self.created.append({"room_id": room_id, "name": name, "invite": invite, "room_type": room_type,
                              "power_level_users": power_level_users, "power_level_events": power_level_events,
-                             "join_rule": join_rule, "is_direct": is_direct, "initial_state": initial_state})
+                             "join_rule": join_rule, "is_direct": is_direct, "initial_state": initial_state,
+                             "avatar_mxc": avatar_mxc})
         room = self._room(room_id)
         room["members"].add(as_user_id)
         self._store(room_id, "m.room.create", {"type": room_type} if room_type else {}, as_user_id, "")

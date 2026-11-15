@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "profiles|create|switch|rename|unlink|link|delete|play|join|id|unfollow|following|follow|unblock|block|backfill|dmfilter|dm|unban|bans|ban|"
+    "profiles|create|switch|rename|unlink|link|delete|play|join|concord|id|unfollow|following|follow|unblock|block|backfill|dmfilter|dm|unban|bans|ban|"
     "allowed|allow|disallow|widget|import|export|status|help"
 )
 
@@ -202,6 +202,11 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                  "Space with a room per channel. Its messages are stored readable on this homeserver. Or a NIP-29 "
                  "group (Flotilla, Chachi, 0xchat, …) by its naddr link or as relay.example'groupid: a room in "
                  "a Space for its relay."),
+                (f"{p}concord create <name> | channel <name> | rename <name> | topic | link [label] | links | revoke <n> | invite <who>",
+                 "Own a Concord community: make one (a Space with #general), make the room you're in one of its "
+                 "channels (or rename the one you're in), and make, list or retire invite links that open in Armada, Vector or here. Invite "
+                 "someone directly (an npub, name@domain, a mention or a reply; or invite their Matrix ghost to "
+                 "the community's rooms) to any community you're in."),
                 *([(f"{p}play [<link>]",
                     "Reply to a game post (a webxdc mini app, marked 🎮), or give a link to one, to open it in "
                     "your Games room. Games need a Matrix client with widgets, such as Element Web or Desktop.")]
@@ -1336,6 +1341,10 @@ async def _run_command(app: FastAPI, room_id: str, sender: str, keyword: str, ar
             await groups.handle_join(app, room_id, sender, reference)
         else:
             await handle_join(app, room_id, sender, argument)
+    elif keyword == "concord":
+        from bridge.concord_owner import handle_command as handle_concord
+
+        await handle_concord(app, room_id, sender, argument)
     elif keyword == "play":
         from bridge.games_room import handle_play
 

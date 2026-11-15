@@ -12,6 +12,8 @@ Spec: https://github.com/concord-protocol/concord (CORD-01..08). Phase 1:
   the community's relays, decrypted and shown by the authors' ghosts; what
   members post in a channel room goes out the same way, sealed and signed
   with their identity's key and wrapped with the channel's.
+- Owning one, made here, and inviting people: ``bridge.concord_owner``
+  (``[concord``).
 - Not yet: rekeys and refoundings (CORD-06: a community that re-founds stops
   being readable here until re-joined), roles, moderation, voice (CORD-07),
   disappearing messages (CORD-08).
@@ -162,16 +164,21 @@ async def fetch_bundle(app: FastAPI, invite: Invite) -> dict[str, Any]:
     found = await app.state.relay_pool.query(relays, [{"kinds": [INVITE_KIND], "authors": [invite.signer], "#d": [""]}],
                                              timeout=10.0)
     newest = None
+    revoked = False
     for raw in found:
         try:
             nostr_event.verify(raw)
         except nostr_event.InvalidEvent:
             continue
-        if raw.get("pubkey") == invite.signer and (newest is None or raw["created_at"] > newest["created_at"]):
+        if raw.get("pubkey") != invite.signer:
+            continue
+        # A tombstone at any created_at revokes the link (CORD-05 §2).
+        revoked = revoked or ["vsk", "9"] in [list(t) for t in raw.get("tags") or []]
+        if newest is None or raw["created_at"] > newest["created_at"]:
             newest = raw
     if newest is None:
         raise ConcordProblem("I couldn't find that invite on its relays.")
-    if ["vsk", "9"] in [list(t) for t in newest.get("tags") or []]:
+    if revoked:
         raise ConcordProblem("That invite link has been revoked.")
     try:
         bundle = json.loads(nip44.decrypt(newest["content"], hkdf(invite.token, "concord/invite-key")))
@@ -231,6 +238,13 @@ class Community:
     # What's been put in Matrix of those: "icon"/"banner" -> the image it
     # was, "icon_mxc" -> its upload, "rooms" -> room -> the icon it shows.
     shown: dict[str, Any] = field(default_factory=dict)
+    # For a community made here (bridge.concord_owner): what proves and
+    # lets the owner write. ``mine``: entity id -> {"v", "h"}, the head of
+    # each chain written here; ``links``: the invite links minted.
+    owner_salt: str = ""
+    control_root: str = ""
+    mine: dict[str, dict[str, Any]] = field(default_factory=dict)
+    links: list[dict[str, Any]] = field(default_factory=list)
 
     # -- the roster (CORD-04 §3) --
     def rank(self, pubkey: str) -> int:
@@ -506,16 +520,26 @@ def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
         channel["deleted"] = bool(content.get("deleted"))
 
 
-async def read_control(app: FastAPI, community: Community) -> None:
+async def control_rumors(app: FastAPI, community: Community) -> list[dict[str, Any]]:
     control = community.control()
     wraps = await app.state.relay_pool.query(
         community.relays, [{"kinds": [WRAP_KIND], "authors": [community.control_address()]}], timeout=12.0
     )
-    rumors = [r for w in wraps if (r := open_wrap(w, control)) is not None]
-    fold_control(community, rumors)
+    return [r for w in wraps if (r := open_wrap(w, control)) is not None]
+
+
+async def read_control(app: FastAPI, community: Community) -> None:
+    fold_control(community, await control_rumors(app, community))
 
 
 # -- Matrix rooms -------------------------------------------------------------------------
+
+
+def _space_members(space: str) -> dict[str, Any]:
+    """Join rules for a channel room: anyone in the community's Space may
+    join. Without this, a room someone declined is invite-only to them, so
+    their homeserver leaves it out of the Space and they can't find it."""
+    return {"join_rule": "restricted", "allow": [{"type": "m.room_membership", "room_id": space}]}
 
 
 async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], again: str | None = None) -> None:
@@ -535,28 +559,52 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
             preset="private_chat", history_visibility="shared",
         )
         made.add(community.space)
+    # The icon, if already uploaded, goes in with each new room so the invite
+    # shows it: a client keeps what it saw in an invite it declined.
+    shown = community.shown
+    icon_mxc = shown.get("icon_mxc")
     for channel_id in community.readable():
         info = community.channels[channel_id]
         name = f"#{info.get('name') or 'channel'}"
+        topic = f"{name} in {community.name}. {WARNING.lstrip('⚠️ ')}"
         if not info.get("room"):
             info["room"] = await homeserver.create_room(
-                as_user_id=bot, name=name, topic=f"{name} in {community.name}. {WARNING.lstrip('⚠️ ')}", invite=users,
+                as_user_id=bot, name=name, topic=topic, invite=users, avatar_mxc=icon_mxc,
                 preset="private_chat", history_visibility="shared",
-                initial_state=[{"type": "m.space.parent", "state_key": community.space, "content": {"via": [server], "canonical": True}}],
+                initial_state=[{"type": "m.space.parent", "state_key": community.space, "content": {"via": [server], "canonical": True}},
+                               {"type": "m.room.join_rules", "state_key": "", "content": _space_members(community.space)}],
             )
+            if icon_mxc:
+                shown.setdefault("rooms", {})[info["room"]] = shown["icon"]
+            info["open"] = True
             await homeserver.send_state_event(community.space, "m.space.child", {"via": [server], "suggested": True},
                                               as_user_id=bot, state_key=info["room"])
             made.add(info["room"])
             await app.state.repository.set_state(_ROOM.format(info["room"]), f"{community.id}|{channel_id}")
+        elif info.get("attached"):
+            pass  # a room that was there before: its name and topic are its own
         else:
             current = await homeserver.get_room_state(info["room"], "m.room.name", as_user_id=bot)
             if (current or {}).get("name") != name:
                 await homeserver.send_state_event(info["room"], "m.room.name", {"name": name}, as_user_id=bot)
+            current = await homeserver.get_room_state(info["room"], "m.room.topic", as_user_id=bot)
+            if (current or {}).get("topic") != topic:
+                await homeserver.send_state_event(info["room"], "m.room.topic", {"topic": topic}, as_user_id=bot)
+            if not info.get("open"):
+                # Rooms from before: invite-only, so hidden from the Space
+                # for anyone who declined. Space members may join now.
+                try:
+                    await homeserver.send_state_event(info["room"], "m.room.join_rules", _space_members(community.space),
+                                                      as_user_id=bot)
+                    info["open"] = True
+                except HomeserverError:
+                    logger.info("Could not open %s to its Space", info["room"], exc_info=True)
     from bridge.messages import invite_to_room
     from bridge.spaces import add_room_to_space
 
     rooms = [community.space, *(community.channels[c]["room"] for c in community.readable())]
-    await _show_images(app, community, rooms)
+    await _show_images(app, community, [community.space, *(community.channels[c]["room"] for c in community.readable()
+                                                           if not community.channels[c].get("attached"))])
     for room in rooms:
         if room not in community.invited:
             # Made just now (everyone was invited with it), or from before
@@ -703,7 +751,7 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
             epoch=int(bundle.get("root_epoch") or 0), control_pk=bundle.get("control_pk") or None,
             relays=[r for r in bundle.get("relays") or invite.relays if isinstance(r, str)][:_MAX_RELAYS] or list(invite.relays),
             name=str(bundle.get("name") or "Community")[:64], description="", picture="",
-            channels={}, space=None, members=[],
+            channels={}, space=None, members=[], owner_salt=str(bundle.get("owner_salt") or ""),
         )
     for channel in bundle.get("channels") or []:
         if isinstance(channel, dict) and len(str(channel.get("id", ""))) == 64:
@@ -803,7 +851,7 @@ async def receive(app: FastAPI, wrap: dict[str, Any]) -> None:
         return
     if plane == "control":
         if open_wrap(wrap, key) is not None:
-            await _refresh(app, community)
+            await _refresh(app, community, reload=True)
     elif plane == "guestbook":
         rumor = open_wrap(wrap, key)
         if rumor is not None and await apply_guestbook(app, community, [rumor]):
@@ -816,9 +864,16 @@ async def receive(app: FastAPI, wrap: dict[str, Any]) -> None:
         await _receive_chat(app, community, plane[5:], key, wrap)
 
 
-async def _refresh(app: FastAPI, community: Community) -> None:
-    """The Control Plane changed: the roster, channels and metadata again."""
-    await read_control(app, community)
+async def _refresh(app: FastAPI, community: Community, *, reload: bool = False) -> None:
+    """The Control Plane changed: the roster, channels and metadata again.
+    ``reload``: folded into the community as saved once the relays have
+    answered, not the copy passed in, which a command may have changed
+    meanwhile (a channel given an existing room just before its edition
+    went out, whose echo brings us here)."""
+    rumors = await control_rumors(app, community)
+    if reload:
+        community = await load(app, community.id) or community
+    fold_control(community, rumors)
     users = sorted({m.matrix_user_id for i in community.members if (m := await app.state.repository.get_id(i))})
     try:
         await _ensure_rooms(app, community, users)
@@ -879,8 +934,8 @@ async def _power_levels(app: FastAPI, community: Community) -> None:
               for pk in {community.owner, *community.grants} if (level := _power_for(community, pk))}
     for channel_id in community.readable():
         room = community.channels[channel_id].get("room")
-        if not room:
-            continue
+        if not room or community.channels[channel_id].get("attached"):
+            continue  # a room that was there before keeps its own levels
         levels = await homeserver.get_room_state(room, "m.room.power_levels", as_user_id=bot) or {}
         users = dict(levels.get("users") or {})
         changed = False
