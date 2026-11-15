@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from bridge.app_handler import client_tag
 from bridge import publishing
 from bridge.event_sources import rebuild
 from bridge.nostr import nip19
@@ -109,7 +110,7 @@ def test_text_post(client, homeserver, relay_pool) -> None:
     message = post(client, homeserver, q.profile_room_id, {"msgtype": "m.text", "body": "gm nostr\nfrom matrix"})
     [note] = notes(relay_pool)
     assert note.content == "gm nostr\nfrom matrix" and note.pubkey == q.pubkey
-    assert ["client", "matrix-appservice-nostr"] in [list(tag) for tag in note.tags]  # NIP-89
+    assert client_tag(client.app) in [list(tag) for tag in note.tags]  # NIP-89
     assert note.created_at == message["origin_server_ts"] // 1000
     assert nostr_event.verify(note.to_dict()) == note
     assert relay_pool.published[-1][1] == [RELAY_ONE, RELAY_TWO]
@@ -147,7 +148,7 @@ def test_mentions_become_nostr_references(client, homeserver, relay_pool) -> Non
     })
     [note] = notes(relay_pool)
     assert note.content == f"nostr:{nip19.npub_encode(admin.pubkey)}: and @nobody"
-    assert [list(t) for t in note.tags] == [["p", admin.pubkey], ["client", "matrix-appservice-nostr"]]
+    assert [list(t) for t in note.tags] == [["p", admin.pubkey], client_tag(client.app)]
 
 
 def test_replies_thread_on_nostr(client, homeserver, relay_pool) -> None:
@@ -160,12 +161,12 @@ def test_replies_thread_on_nostr(client, homeserver, relay_pool) -> None:
     third = post(client, homeserver, room, {"msgtype": "m.text", "body": "> <@q:example.org> two\n\nthree",
                                             "m.relates_to": {"m.in_reply_to": {"event_id": second["event_id"]}}})
     root_note, second_note, third_note = notes(relay_pool)
-    assert [list(t) for t in second_note.tags] == [["e", root_note.id, "wss://nostr.example.org", "root", q.pubkey], ["client", "matrix-appservice-nostr"]]
+    assert [list(t) for t in second_note.tags] == [["e", root_note.id, "wss://nostr.example.org", "root", q.pubkey], client_tag(client.app)]
     assert third_note.content == "three"
     assert [list(t) for t in third_note.tags] == [
         ["e", root_note.id, "wss://nostr.example.org", "root", q.pubkey],
         ["e", second_note.id, "wss://nostr.example.org", "reply", q.pubkey],
-        ["client", "matrix-appservice-nostr"],
+        client_tag(client.app),
     ]
     # Indexed for #e queries later.
     assert ("e", root_note.id) in index_row(client, third["event_id"]).tags
@@ -368,3 +369,28 @@ def test_a_cross_posted_reply_to_a_nostr_post_is_a_nostr_reply(client, homeserve
         "displayname": "Alice"}})
     reply = notes(relay_pool)[-1]
     assert reply.content == "agreed" and ("e", raw["id"]) in [tuple(t[:2]) for t in reply.tags]
+
+
+def test_app_announcement(client, relay_pool) -> None:
+    """The client tag points at the bridge's NIP-89 app announcement, which
+    is published once and served by the bridge's relay."""
+    import json as _json
+
+    from bridge.app_handler import HANDLER_KIND, publish_handler
+
+    app = client.app
+    run(client, publish_handler, app)
+    run(client, publish_handler, app)  # the same again: not republished
+    settle(client)
+    [announcement] = [e for e, _ in relay_pool.published if e.kind == HANDLER_KIND]
+    assert announcement.pubkey == app.state.bot_identity.pubkey
+    assert [list(t) for t in announcement.tags] == [["d", "matrix-appservice-nostr"]]
+    metadata = _json.loads(announcement.content)
+    assert metadata["name"] == "matrix-appservice-nostr"
+    assert metadata["picture"].endswith("/assets/logo_512.png")
+    assert metadata["website"] == "https://github.com/Haven-Organization/matrix-appservice-nostr"
+    tag = client_tag(app)
+    assert tag[2] == f"{HANDLER_KIND}:{announcement.pubkey}:matrix-appservice-nostr"
+    assert tag[3] == app.state.config.nostr.relay_url
+    row = run(client, app.state.repository.get_latest_event, announcement.pubkey, HANDLER_KIND)
+    assert rebuilt(client, row).event == announcement.to_dict()

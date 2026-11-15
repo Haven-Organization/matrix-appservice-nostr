@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from bridge.app_handler import client_tag
 from bridge.event_sources import EMBED_FIELD
 from bridge.inbound import ingest
 from bridge.nostr import event as nostr_event
@@ -407,7 +408,7 @@ def test_outgoing_reaction_and_undo(client, homeserver, relay_pool) -> None:
     transact(client, reaction)
     [like] = [e for e, _ in relay_pool.published if e.kind == 7]
     assert like.pubkey == q.pubkey and like.content == "+"
-    assert [list(t) for t in like.tags] == [["e", raw["id"], "wss://nostr.example.org", alice.pubkey], ["p", alice.pubkey], ["k", "1"], ["client", "matrix-appservice-nostr"]]
+    assert [list(t) for t in like.tags] == [["e", raw["id"], "wss://nostr.example.org", alice.pubkey], ["p", alice.pubkey], ["k", "1"], client_tag(client.app)]
     redaction = homeserver._store(remote.room_id, "m.room.redaction", {"redacts": reaction["event_id"]}, "@q:example.org")
     redaction["redacts"] = reaction["event_id"]
     transact(client, redaction)

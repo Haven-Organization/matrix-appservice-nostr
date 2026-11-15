@@ -62,8 +62,8 @@ class Signer:
         self.pool = None
         self._remotes: dict[tuple[int, str], object] = {}
         self.last_error: dict[str, str] = {}
-        # Name for the NIP-89 "client" tag (bridge.client_name); empty: none.
-        self.client_name = ""
+        # The NIP-89 "client" tag (bridge.app_handler.client_tag); empty: none.
+        self.client_tag: list[str] = []
 
     async def remote_signer(self, nostr_id):
         """The NIP-46 client for an ID whose key is in a signer app."""
@@ -155,8 +155,8 @@ class Signer:
 
         secret = await self._secret_for(pubkey)
         tag_list = [list(tag) for tag in tags]
-        if self.client_name and kind in CLIENT_TAG_KINDS and not any(tag[:1] == ["client"] for tag in tag_list):
-            tag_list.append(["client", self.client_name])
+        if self.client_tag and kind in CLIENT_TAG_KINDS and not any(tag[:1] == ["client"] for tag in tag_list):
+            tag_list.append(list(self.client_tag))
         if secret is not None:
             return nostr_event.build(secret, kind=kind, content=content, created_at=created_at, tags=tag_list)
         remote = await self._remote_for_pubkey(pubkey)

@@ -257,11 +257,13 @@ def create_app(
         app.state.repository = repository or open_repository(config)
         app.state.vault = KeyVault(config.nostr.key_encryption_secret)
         app.state.signer = Signer(app.state.repository, app.state.vault)
-        app.state.signer.client_name = config.bridge.client_name
         from bridge.widget import load_sessions
 
         await load_sessions(app)  # widgets stay signed in through a restart
         app.state.bot_identity = await app.state.signer.load_bot_identity()
+        from bridge.app_handler import client_tag
+
+        app.state.signer.client_tag = client_tag(app)
         app.state.fetcher = SafeFetcher(allow_private=config.nostr.allow_private_addresses)
         app.state.relay_pool = relay_pool or RelayPool(
             allow_private=config.nostr.allow_private_addresses,
@@ -319,6 +321,9 @@ def create_app(
                     await repair_repost_cards(app)
 
                 run_in_background(app, converge(), name="remote accounts")
+                from bridge.app_handler import publish_handler
+
+                run_in_background(app, publish_handler(app), name="app announcement")
             logger.info(
                 "Bridge identity: _@%s (%s)", config.bridge.domain, app.state.bot_identity.pubkey
             )

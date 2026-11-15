@@ -36,8 +36,10 @@ adding a new version and keeping the old one for as long as its events
 exist.
 
 A note, comment, repost, reaction or poll signed with a NIP-89 "client"
-tag (``bridge.client_name``) has ``client``: the name, appended as the
-last tag after the converter's own (``with_client``). Recipes without it
+tag (``bridge.client_name``) has ``client``: the name (or, for a tag
+pointing at the bridge's app announcement, the tag's values after
+"client"), appended as the last tag after the converter's own
+(``with_client``). Recipes without it
 are unchanged.
 
 Rebuilding has four outcomes, and they must not be confused:
@@ -208,16 +210,21 @@ async def _rebuild_embedded(app: FastAPI, row: EventRow) -> "Rebuilt":
 
 
 def with_client(recipe: dict[str, Any], tags: list[list[str]], event_tags) -> dict[str, Any]:
-    """The recipe, noting the "client" tag the signer appended, if it did."""
+    """The recipe, noting the "client" tag the signer appended, if it did:
+    the name alone for a bare tag, else the whole tag."""
     extra = [list(tag) for tag in event_tags][len(tags):]
-    if extra and extra[-1][:1] == ["client"] and len(extra[-1]) == 2:
-        return {**recipe, "client": extra[-1][1]}
+    if extra and extra[-1][:1] == ["client"] and len(extra[-1]) >= 2:
+        return {**recipe, "client": extra[-1][1] if len(extra[-1]) == 2 else extra[-1][1:]}
     return recipe
 
 
 def _client_tag(source: dict[str, Any]) -> list[list[str]]:
     client = source.get("client")
-    return [["client", client]] if isinstance(client, str) and client else []
+    if isinstance(client, str) and client:
+        return [["client", client]]
+    if isinstance(client, list) and client and all(isinstance(part, str) for part in client):
+        return [["client", *client]]
+    return []
 
 
 async def rebuild(app: FastAPI, row: EventRow) -> Rebuilt:

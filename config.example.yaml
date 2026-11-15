@@ -54,6 +54,9 @@ bridge:
   # msc4027_custom_reactions: false
   # Shown by clients like Ditto next to a post's time (NIP-89); "" for none.
   # client_name: "matrix-appservice-nostr"
+  # Icon and link in the bridge's NIP-89 app announcement (kind 31990).
+  # client_picture: "https://raw.githubusercontent.com/Haven-Organization/haven-desktop/HEAD/assets/logo_512.png"
+  # client_website: "https://github.com/Haven-Organization/matrix-appservice-nostr"
   # quote_import_policy: known            # known | always | never
 
   # Nostr IDs.

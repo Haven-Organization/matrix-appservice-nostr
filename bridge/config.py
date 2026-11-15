@@ -82,6 +82,10 @@ class BridgeSection:
     # reposts, reactions, polls), which clients like Ditto show next to the
     # time. Empty: no tag. Never added to DMs or other private events.
     client_name: str = "matrix-appservice-nostr"
+    # The icon and link apps show for that client, in the bridge's NIP-89
+    # app announcement (kind 31990, signed by _@<domain>). Empty: left out.
+    client_picture: str = "https://raw.githubusercontent.com/Haven-Organization/haven-desktop/HEAD/assets/logo_512.png"
+    client_website: str = "https://github.com/Haven-Organization/matrix-appservice-nostr"
     # Join rule of a Remote User Room: "knock" (default: anyone may ask, and
     # is let straight in), "invite" or "public".
     ghost_room_join_rule: str = "knock"
@@ -454,6 +458,8 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         msc4503_external_handle=msc4503_external_handle,
         msc4027_custom_reactions=bool(bridge_raw.get("msc4027_custom_reactions", False)),
         client_name=str(bridge_raw.get("client_name", "matrix-appservice-nostr") or "").strip()[:100],
+        client_picture=str(bridge_raw.get("client_picture", BridgeSection.client_picture) or "").strip(),
+        client_website=str(bridge_raw.get("client_website", BridgeSection.client_website) or "").strip(),
         ghost_room_join_rule=_choice(bridge_raw, "ghost_room_join_rule", ("public", "invite", "knock"), "knock"),
         world_readable_remote_rooms=bool(bridge_raw.get("world_readable_remote_rooms", False)),
         accept_federated_knocks=bool(bridge_raw.get("accept_federated_knocks", False)),
