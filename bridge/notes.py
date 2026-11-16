@@ -115,6 +115,28 @@ def spoiler_reason(content: dict[str, Any]) -> str | None:
     return html.unescape(match.group(1) or "")
 
 
+_MD_PILL_RE = re.compile(r"\[([^\]\n]*)\]\(https://matrix\.to/#/([^)\s?]+)[^)\s]*\)")
+
+
+def npub_mentions(text: str, content: dict[str, Any], keys: dict[str, str]) -> str:
+    """``text`` with each user pill as ``nostr:npub...`` (NIP-27) when
+    ``keys`` has the user's key, or as its plain name when it doesn't.
+    Pills are found as Markdown links to matrix.to, which some clients put
+    in the plain body, or else by their text, in order."""
+
+    def markdown(match: re.Match[str]) -> str:
+        user_id = unquote(match.group(2))
+        if not user_id.startswith("@"):
+            return match.group(0)
+        pubkey = keys.get(user_id)
+        return "nostr:" + nip19.npub_encode(pubkey) if pubkey else (match.group(1) or user_id)
+
+    replaced = _MD_PILL_RE.sub(markdown, text)
+    if replaced != text:
+        return replaced
+    return _replace_pills_v1(text, content, [{"user_id": u, "pubkey": k} for u, k in keys.items()])
+
+
 # -- kind 1, version 1 -------------------------------------------------------
 
 

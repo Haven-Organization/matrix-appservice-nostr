@@ -62,7 +62,7 @@ def test_create_publishes_a_genesis_others_can_read(client, homeserver, relay_po
     assert json.loads(everyone["content"]) == {"permissions": "541057024", "legacy": [_tags(general)["eid"][0]]}
     # A Space and #general, the owner invited; the owner's Join announced.
     room = community.channels[_tags(general)["eid"][0]]["room"]
-    assert (community.space, "@q:example.org") in homeserver.invites and (room, "@q:example.org") in homeserver.invites
+    assert (community.space, "@q:example.org") in homeserver.invites and (room, "@q:example.org") not in homeserver.invites
     joins = [e for e, _ in relay_pool.published if e.pubkey == community.guestbook().pk]
     assert concord.open_wrap(joins[0].to_dict(), community.guestbook())["content"] == "join"
     # A reader holding only what an invite carries folds the same community.

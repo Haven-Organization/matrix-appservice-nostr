@@ -33,7 +33,7 @@ messages. This is the owner's side, for a community made here:
   pill or MXID of a Nostr account's ghost, or a reply to one of its
   messages. Inviting a ghost to the community's Space or a channel room
   in Matrix does the same. Someone with an ID on this server is invited
-  to the rooms in Matrix instead.
+  to the Space in Matrix instead.
 
 Not here: roles, bans, private channels, rekeys. Retiring the last link
 should refound a private community (CORD-05 §2, CORD-06); this bridge
@@ -479,8 +479,6 @@ async def add_channel(app: FastAPI, room_id: str, sender: str, argument: str) ->
     except HomeserverError:
         pass  # only a pointer back; the Space lists the room without it
     users = sorted({m.matrix_user_id for i in community.members if (m := await app.state.repository.get_id(i))})
-    # Who's here already needs no invite.
-    community.invited[room_id] = sorted(set(users) & set(await _joined(app, room_id)))
     try:
         await concord._ensure_rooms(app, community, users)
         await concord._power_levels(app, community)
@@ -488,7 +486,7 @@ async def add_channel(app: FastAPI, room_id: str, sender: str, argument: str) ->
         logger.info("Could not update the rooms of %s", community.id, exc_info=True)
     await save_and_follow(app, community)
     await notice(app, room_id,
-                 f"This room is now #{name} in {community.name}: what's said here from now on goes to the community "
+                 f"This room is now #{name} in {community.name}, in its Space: what's said here from now on goes to the community "
                  "(earlier messages stay in Matrix). Anyone on this homeserver who talks here joins the community "
                  f'with their Nostr identity, or a shadow one made for them. For people from other homeservers, '
                  f'"{p}allow room" here lets them in too. {concord.WARNING}')
@@ -900,16 +898,16 @@ async def send_direct_invite(app: FastAPI, community: Community, inviter, pubkey
 
     local = await app.state.repository.get_id_by_pubkey(pubkey)
     if local is not None:
-        # An ID on this server: its owner is invited in Matrix. They join
-        # the community by talking in its rooms.
-        rooms = [community.space, *(community.channels[c].get("room") for c in community.readable())]
-        for room in [r for r in rooms if r]:
-            await invite_to_room(app, room, local.matrix_user_id)
-            done = community.invited.setdefault(room, [])
+        # An ID on this server: its owner is invited to the Space in Matrix.
+        # They join the channels they want from there, and the community by
+        # talking in one.
+        if community.space:
+            await invite_to_room(app, community.space, local.matrix_user_id)
+            done = community.invited.setdefault(community.space, [])
             if local.matrix_user_id not in done:
                 done.append(local.matrix_user_id)
         await concord.save(app, community)
-        return f"{local.matrix_user_id} is on this server, so I invited them to its Space and rooms in Matrix instead."
+        return f"{local.matrix_user_id} is on this server, so I invited them to its Space in Matrix instead."
     if pubkey in community.banned:
         raise ConcordProblem("they're banned from it")
     secret = await app.state.signer.secret_key(inviter.pubkey)

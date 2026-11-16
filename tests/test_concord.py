@@ -122,7 +122,8 @@ def test_join_makes_a_space_with_a_room_per_channel(client, homeserver, relay_po
     space = next(r for r in homeserver.created if r["room_id"] == state.space)
     assert space["room_type"] == "m.space" and (state.space, "@q:example.org") in homeserver.invites
     assert homeserver.state_of(room, "m.room.name") == {"name": "#general"}
-    assert (room, "@q:example.org") in homeserver.invites
+    assert (room, "@q:example.org") not in homeserver.invites  # joined from the Space, if wanted
+    assert homeserver.state_of(room, "m.room.join_rules")["join_rule"] == "restricted"
     # Joinable by the Space's members, so it stays listed there if declined.
     assert homeserver.state_of(room, "m.room.join_rules") == {
         "join_rule": "restricted", "allow": [{"type": "m.room_membership", "room_id": state.space}]}
@@ -432,24 +433,25 @@ def test_disappearing_messages_and_timer_notices(client, homeserver, relay_pool)
     assert homeserver.messages(room)[-1]["content"]["body"].endswith("set disappearing messages to 30 days.")
 
 
-def test_a_declined_room_isnt_invited_to_again(client, homeserver, relay_pool) -> None:
-    """Rooms someone left or declined stay that way when the community
-    changes; "[join" again invites them back."""
+def test_only_the_space_is_invited_to(client, homeserver, relay_pool) -> None:
+    """Members are invited to the Space once, never to channel rooms (they
+    join the ones they want from it), not even ones made later; "[join"
+    again invites them back to the Space."""
     q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
 
-    def invites():
-        return homeserver.invites.count((room, "@q:example.org"))
+    def invites(target):
+        return homeserver.invites.count((target, "@q:example.org"))
 
-    assert invites() == 1  # q never accepts: as if declined
+    assert invites(state.space) == 1 and invites(room) == 0
     git = secrets.token_hex(32)
     run(client, concord.receive, client.app, community.edition("2", git, {"name": "Git", "private": False}))
     state = run(client, concord.load, client.app, community.id)
-    assert invites() == 1  # not again for #general
-    assert (state.channels[git]["room"], "@q:example.org") in homeserver.invites  # but the new #Git, once
+    assert invites(state.channels[git]["room"]) == 0  # listed in the Space, no invite
+    assert homeserver._room(state.space)["state"][("m.space.child", state.channels[git]["room"])]["content"]["via"]
     run(client, concord.receive, client.app, community.edition("0", community.id, {"name": "PosterChan 2"}, version=2))
-    assert homeserver.invites.count((state.channels[git]["room"], "@q:example.org")) == 1
+    assert invites(state.space) == 1  # not again on a change
     send(client, message(f"[join {community.link()}"))
-    assert invites() == 2
+    assert invites(state.space) == 2 and invites(room) == 0
 
 
 def test_the_icon_and_banner_go_on_the_space(client, homeserver, relay_pool) -> None:
@@ -588,3 +590,33 @@ def test_rooms_from_before_are_opened_to_the_space(client, homeserver, relay_poo
     run(client, concord.refresh_all, client.app)
     assert homeserver.state_of(room, "m.room.join_rules")["join_rule"] == "restricted"
     assert run(client, concord.load, client.app, community.id).channels[community.general]["open"] is True
+
+
+def test_mentions_go_out_as_npubs(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    from bridge.remote import ghost_user_id
+    from tests.test_federation import post
+
+    ghost = ghost_user_id(client.app, alice.pubkey)
+    npub = "nostr:" + nip19.npub_encode(alice.pubkey)
+
+    def last():
+        wraps = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk]
+        return concord.open_wrap(wraps[-1].to_dict(), community.channel())
+
+    # The body as some clients send it: a Markdown link to matrix.to.
+    post(client, homeserver, room, {
+        "msgtype": "m.text", "body": f"[{ghost}](https://matrix.to/#/{ghost}) and [@sylven:elsewhere.org](https://matrix.to/#/@sylven:elsewhere.org)",
+        "format": "org.matrix.custom.html",
+        "formatted_body": f'<a href="https://matrix.to/#/{ghost}">{ghost}</a> and '
+                          '<a href="https://matrix.to/#/@sylven:elsewhere.org">@sylven:elsewhere.org</a>'})
+    rumor = last()
+    # A Nostr account is tagged; a Matrix user with no Nostr ID is just named.
+    assert rumor["content"] == f"{npub} and @sylven:elsewhere.org"
+    assert ["p", alice.pubkey] in rumor["tags"]
+    # As Element sends it: the pill's text in the body.
+    post(client, homeserver, room, {
+        "msgtype": "m.text", "body": "Alice: hi", "format": "org.matrix.custom.html",
+        "formatted_body": f'<a href="https://matrix.to/#/{ghost}">Alice</a>: hi'})
+    rumor = last()
+    assert rumor["content"] == f"{npub}: hi" and ["p", alice.pubkey] in rumor["tags"]

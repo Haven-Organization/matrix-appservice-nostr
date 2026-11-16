@@ -543,16 +543,17 @@ def _space_members(space: str) -> dict[str, Any]:
 
 
 async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], again: str | None = None) -> None:
-    """The community's Space and a room for every channel the bridge can read,
-    each user invited to each once. ``again``: a user who asked ("[join"),
-    invited again wherever they aren't."""
+    """The community's Space and a room for every channel the bridge can read.
+    Each user is invited to the Space once, never to the channels: they join
+    the ones they want from the Space (its members may). ``again``: a user
+    who asked ("[join"), invited to the Space again if they aren't in it."""
     homeserver = app.state.homeserver
     config = app.state.config
     bot = bot_mxid(config)
     server = config.homeserver.server_name
     topic = (community.description + "\n\n" if community.description else "") + (
         "A Concord community, bridged from Nostr. " + WARNING.lstrip("⚠️ "))
-    made: set[str] = set()  # rooms made now, everyone invited with them
+    made: set[str] = set()  # rooms made now
     if community.space is None:
         community.space = await homeserver.create_room(
             as_user_id=bot, name=community.name, topic=topic, invite=users, room_type="m.space",
@@ -569,7 +570,7 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
         topic = f"{name} in {community.name}. {WARNING.lstrip('⚠️ ')}"
         if not info.get("room"):
             info["room"] = await homeserver.create_room(
-                as_user_id=bot, name=name, topic=topic, invite=users, avatar_mxc=icon_mxc,
+                as_user_id=bot, name=name, topic=topic, avatar_mxc=icon_mxc,
                 preset="private_chat", history_visibility="shared",
                 initial_state=[{"type": "m.space.parent", "state_key": community.space, "content": {"via": [server], "canonical": True}},
                                {"type": "m.room.join_rules", "state_key": "", "content": _space_members(community.space)}],
@@ -605,17 +606,14 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
     rooms = [community.space, *(community.channels[c]["room"] for c in community.readable())]
     await _show_images(app, community, [community.space, *(community.channels[c]["room"] for c in community.readable()
                                                            if not community.channels[c].get("attached"))])
-    for room in rooms:
-        if room not in community.invited:
-            # Made just now (everyone was invited with it), or from before
-            # invites were remembered (everyone here had theirs).
-            community.invited[room] = list(users)
+    if community.space not in community.invited:
+        # Made just now (everyone was invited with it), or from before
+        # invites were remembered (everyone here had theirs).
+        community.invited[community.space] = list(users)
     for user in users:
-        for room in rooms:
-            done = community.invited.setdefault(room, [])
-            if user in done and (user != again or room in made):
-                continue
-            await invite_to_room(app, room, user)
+        done = community.invited.setdefault(community.space, [])
+        if user not in done or (user == again and community.space not in made):
+            await invite_to_room(app, community.space, user)
             if user not in done:
                 done.append(user)
         await add_room_to_space(app, user, community.space)
@@ -783,10 +781,11 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     app.state.feeds.changed()
     names = ", ".join(f"#{community.channels[c].get('name')}" for c in community.readable())
     await notice(app, room_id, f"Joined {community.name} as {member.name}@{app.state.config.bridge.domain}: {names}. "
-                               f"Its space: {community.space}.",
+                               f"Its space: {community.space}. Join the channels you want from there.",
                  html_message=f"Joined <strong>{html.escape(community.name)}</strong> as "
                  f"{html.escape(member.name)}@{html.escape(app.state.config.bridge.domain)}: {html.escape(names)}. "
-                 f"Its space: {room_link_html(community.space or '', community.name)}.")
+                 f"Its space: {room_link_html(community.space or '', community.name)}. Join the channels you want "
+                 "from there.")
 
 
 async def _join_quietly(app: FastAPI, community: Community, sender: str, room_id: str):
@@ -1532,8 +1531,11 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
         new = content.get("m.new_content") or {}
         if target is None or not isinstance(new.get("body"), str):
             return None
-        return EDIT_KIND, new["body"], [*tags, ["e", target[0]]]
+        text, tags = await _with_mentions(app, new["body"], new, tags)
+        return EDIT_KIND, text, [*tags, ["e", target[0]]]
     text = message_body(content)
+    if content.get("msgtype") not in MEDIA_MSGTYPES or content.get("filename") not in (None, content.get("body")):
+        text, tags = await _with_mentions(app, text, content, tags)
     has_media = False
     if content.get("msgtype") in MEDIA_MSGTYPES:
         # Encrypted for the community, as Armada does: a plain link would make
@@ -1567,6 +1569,22 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
     root = await rumor_of(thread_root) or parent
     return 1111, text, [*tags, ["K", str(root[2])], ["E", root[0], "", root[1]], ["P", root[1]],
                         ["k", str(parent[2])], ["e", parent[0], "", parent[1]], ["p", parent[1]]]
+
+
+async def _with_mentions(app: FastAPI, text: str, content: dict[str, Any], tags: list[list[str]]):
+    """Pills of Nostr accounts as nostr:npub references with p tags (the
+    key a local user's ID in a community would post with may differ, but
+    their active ID is who they are on Nostr); other pills as names."""
+    from bridge.notes import npub_mentions, pills
+    from bridge.profile_posts import _mentions
+
+    if not pills(content) and "https://matrix.to/#/@" not in text:
+        return text, tags
+    keys = {m["user_id"]: m["pubkey"] for m in await _mentions(app, content)}
+    text = npub_mentions(text, content, keys)
+    have = {t[1] for t in tags if len(t) > 1 and t[0] == "p"}
+    extra = [["p", k] for k in dict.fromkeys(keys.values()) if k not in have]
+    return text, [*tags, *extra]
 
 
 # -- subscriptions ----------------------------------------------------------------------------------
