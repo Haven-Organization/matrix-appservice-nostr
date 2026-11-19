@@ -310,6 +310,20 @@ async def _tier(app: FastAPI, pubkey: str):
     return Tier.STRANGER
 
 
+async def _aimed_here(app: FastAPI, raw: dict[str, Any], targets: list[str]) -> bool:
+    """Whether an event involves anyone here: it tags a local ID, or refers
+    to an event this relay holds (a reply, reaction, quote or repost)."""
+    repository = app.state.repository
+    for pubkey in targets[:20]:
+        if await repository.get_id_by_pubkey(pubkey) is not None:
+            return True
+    referenced = [t[1] for t in raw["tags"] if len(t) >= 2 and t[0] in ("e", "E", "q")]
+    for event_id in referenced[:20]:
+        if await repository.get_event(event_id) is not None:
+            return True
+    return False
+
+
 async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *, origin: str, ip: str | None, authed: frozenset[str]) -> IngestResult:
     repository = app.state.repository
     raw = event.to_dict()
@@ -349,6 +363,7 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
             # the bridge fetched itself (catching up) is not.
             interaction=origin == "relay" and event.kind in (1, 6, 7, 16, 1111, ZAP_RECEIPT_KIND),
             fetched=origin == "subscription",
+            aimed_here=await _aimed_here(app, raw, targets),
         )
         if not verdict.ok:
             return IngestResult(False, verdict.reply)

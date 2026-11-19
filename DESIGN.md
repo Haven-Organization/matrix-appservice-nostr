@@ -563,7 +563,10 @@ Admins can act directly:
 
 Bot waves usually show up as many **never-seen pubkeys** acting within a few
 minutes. The relay counts distinct stranger pubkeys whose events pass
-checks 1 and 2. Above `nostr.wave_threshold` (default 30 within 5 minutes),
+checks 1 and 2 and reach for someone here: they tag a local ID, or refer
+(`e`, `E`, `q`) to an event the relay holds. Strangers' posts that only pass
+through (services that copy every public post to every relay send dozens a
+minute) don't count. Above `nostr.wave_threshold` (default 30 within 5 minutes),
 it switches automatically to the stricter of `pow` or the configured
 `nostr.wave_policy` (default `pow`) for strangers. It then tells bridge admins
 in their bot DM ("🛡️ Shields up: 47 new accounts in 5 minutes; strangers now

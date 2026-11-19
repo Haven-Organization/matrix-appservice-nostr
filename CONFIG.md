@@ -126,7 +126,7 @@ A rate limit is a token bucket: `{burst: <most at once>, tokens: <added back>, p
 | `strike_window_seconds` | `600` | Window strikes are counted in. |
 | `ban_durations_seconds` | `[3600, 86400, 604800]` | Length of a first, second, third (and later) automatic ban. |
 | `escalation_memory_days` | `30` | A new ban within this long of the last one is the next step up. |
-| `wave_threshold` | `30` | That many never-seen strangers within `wave_window_seconds` raises the shields. |
+| `wave_threshold` | `30` | That many never-seen strangers reaching for someone here (tagging a local user, or referring to an event the relay holds) within `wave_window_seconds` raises the shields. |
 | `wave_window_seconds` | `300` | Window for counting them. |
 | `wave_policy` | `pow` | Policy while the shields are up (`open`, `pow` or `web_of_trust`). Only ever tightens `inbound_policy`. |
 | `wave_cooldown_seconds` | `3600` | The shields come down after this long without a wave. |

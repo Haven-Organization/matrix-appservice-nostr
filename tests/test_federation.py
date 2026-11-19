@@ -778,3 +778,18 @@ def test_an_at_sign_before_a_mention_belongs_to_the_pill(client) -> None:
     assert shown.html.count("matrix.to/#/@q:example.org") == 2
     kept = run(client, render, client.app, Stranger().event(1, f"see @nostr:{note}"))
     assert kept.body.startswith("see @")
+
+
+def test_only_strangers_reaching_someone_here_count_toward_a_wave(client, homeserver, relay_pool) -> None:
+    from tests.test_ids import ids_of, message, send
+
+    send(client, message("[create profile"))
+    [q] = ids_of(client)
+    guard = client.app.state.spam
+    passing = [Stranger().event(1, f"just passing {i}") for i in range(3)]
+    for raw in passing:
+        run(client, ingest, client.app, raw, origin="relay")
+    assert len(guard._wave) == 0
+    mention = Stranger().event(1, "hi q", tags=[["p", q.pubkey]])
+    run(client, ingest, client.app, mention, origin="relay")
+    assert len(guard._wave) == 1

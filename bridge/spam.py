@@ -499,6 +499,7 @@ class SpamGuard:
         targets: Iterable[str] = (),
         interaction: bool = False,
         fetched: bool = False,
+        aimed_here: bool = True,
     ) -> Verdict:
         """Whether to take ``event``. ``targets`` are the local pubkeys it is
         aimed at; ``interaction`` marks replies, reactions and the like, which
@@ -554,7 +555,11 @@ class SpamGuard:
                 )
 
         if tier is Tier.STRANGER and pubkey:
-            await self._note_stranger(pubkey)
+            # Only strangers reaching for someone here make a wave: services
+            # that copy every public post to every relay bring dozens of new
+            # accounts a minute, none of which the bridge keeps.
+            if aimed_here:
+                await self._note_stranger(pubkey)
             return self._policy(event)
         return ACCEPT
 

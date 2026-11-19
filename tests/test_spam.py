@@ -404,6 +404,14 @@ async def test_shields_up_and_down() -> None:
     assert (await guard.check_event(note(key("w10"), "calm again"), tier=Tier.STRANGER)).ok
 
 
+async def test_strangers_not_aimed_here_make_no_wave() -> None:
+    guard, _, _ = make_guard(wave_threshold=3, wave_window_seconds=300)
+    for i in range(10):
+        verdict = await guard.check_event(note(key(f"r{i}"), f"passing {i}"), tier=Tier.STRANGER, aimed_here=False)
+        assert verdict.ok
+    assert not guard.shields_up and guard.memory_sizes()["wave"] == 0
+
+
 async def test_wave_policy_never_loosens() -> None:
     guard, _, _ = make_guard(inbound_policy="web_of_trust", wave_policy="pow", wave_threshold=1)
     await guard.check_event(note(key("x"), "first"), tier=Tier.STRANGER)
