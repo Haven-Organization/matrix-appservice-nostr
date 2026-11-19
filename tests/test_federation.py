@@ -214,7 +214,12 @@ def test_mention_and_deletion(client, homeserver, relay_pool) -> None:
     stranger = Stranger()
     mention = stranger.event(1, f"hey nostr:{nip19.npub_encode(q.pubkey)}", [["p", q.pubkey]])
     assert relay_send(client, mention)[2] is True
-    assert any("mentioned you" in b for b in notifications(client, homeserver))
+    assert any("mentioned you in a post" in b for b in notifications(client, homeserver))
+    # Not in Matrix but in the notification itself: "post" links to the web.
+    room = run(client, client.app.state.repository.get_user_rooms, "@q:example.org").notifications_room_id
+    [shown] = [c for c in homeserver.sent_to(room) if "mentioned you" in c["body"]]
+    viewer = client.app.state.config.nostr.web_viewer_url
+    assert f'mentioned you in a <a href="{viewer}nevent1' in shown["formatted_body"]
     events, _ = relay_req(client, {"#p": [q.pubkey], "kinds": [1]})
     assert mention in events
     # Its author deletes it: the notification carrying it is redacted.

@@ -1140,6 +1140,7 @@ async def _mention(app: FastAPI, raw: dict[str, Any], mentioned: list[NostrId], 
         own = (quoted_local.room_id, quoted_local.matrix_event_id) if is_quote and quoted_local.room_id and quoted_local.matrix_event_id else None
         event_id = await notify_format.send(
             app, local, "quote" if is_quote else "mention", raw["pubkey"], own=own, their_text=rendered.body,
+            their_url=event_url(app, raw),
             extra={EMBED_FIELD: raw} if not stored else None,
         )
         if event_id and not stored:

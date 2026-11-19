@@ -36,7 +36,7 @@ PHRASES = {
     "like": "liked your post",
     "repost": "reposted your post",
     "reply": "replied to your post",
-    "mention": "mentioned you",
+    "mention": "mentioned you in a post",
     "quote": "quoted your post",
 }
 # Whose words a notification quotes: the actor's own post, or yours.
@@ -139,10 +139,12 @@ async def send(
     sats: int | None = None,
     extra: dict[str, Any] | None = None,
     post_author: str | None = None,
+    their_url: str = "",
 ) -> str | None:
     """Notify ``local``'s owner. ``own`` is (room, event) of their post the
     notification is about; ``theirs`` the actor's post in Matrix, if it has
-    one there. For a "reaction_reply" (a reply to their reaction), ``own``
+    one there; ``their_url`` where a mention's post can be seen on the web
+    when it isn't in Matrix. For a "reaction_reply" (a reply to their reaction), ``own``
     is the post they reacted to and ``post_author`` whose it is (None:
     their own). Returns the notification's event ID."""
     label, pill = await actor_parts(app, actor_pubkey)
@@ -166,6 +168,11 @@ async def send(
     if link and reason == "reaction_reply":
         # Only "post" is the link: to the post that was reacted to.
         phrase_html = phrase_html[: -len("post")] + f'<a href="{html.escape(link, quote=True)}">post</a>'
+    elif reason == "mention":
+        # "post" links to their post: in Matrix, or else on the web.
+        post_link = event_link(app, *theirs) if theirs else their_url
+        if post_link:
+            phrase_html = phrase_html[: -len("post")] + f'<a href="{html.escape(post_link, quote=True)}">post</a>'
     elif link:
         phrase_html = phrase_html.replace("your post", f'<a href="{html.escape(link, quote=True)}">your post</a>')
     emoji_html = html.escape(emoji)
@@ -193,7 +200,7 @@ async def send(
     if quoted_plain:
         plain += f"\n{quoted_plain}"
     formatted = f"<p>{emoji_html} {pill} {phrase_html}</p>{quoted_html}"
-    target_link = event_link(app, *theirs) if theirs else link
+    target_link = event_link(app, *theirs) if theirs else link or (their_url if reason == "mention" else "")
     if target_link:
         plain += f"\n{target_link}"
     return await notify(app, local, plain, formatted, extra=extra, media=media)
