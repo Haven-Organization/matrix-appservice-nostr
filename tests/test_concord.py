@@ -348,6 +348,44 @@ def test_custom_emoji_reactions_both_ways(client, homeserver, relay_pool) -> Non
     assert emoji[1] == "blobcat" and emoji[2].startswith("http")
 
 
+def test_custom_emoji_in_messages_both_ways(client, homeserver, relay_pool) -> None:
+    import io
+
+    from PIL import Image
+
+    from bridge.safe_fetch import Fetched
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), (250, 200, 0)).save(buffer, format="PNG")
+
+    class Fetcher:
+        async def get(self, url, **kwargs):
+            return Fetched(url, 200, buffer.getvalue(), "image/png")
+
+        async def aclose(self):
+            pass
+
+    client.app.state.fetcher = Fetcher()
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    # Nostr to Matrix: the emoji is copied in, since clients show only mxc images.
+    message, _ = community.say(alice, 9, ":frierenspin:", [["emoji", "frierenspin", "https://img.example/spin.png"]])
+    run(client, concord.receive, client.app, message)
+    shown = homeserver.messages(room)[-1]["content"]
+    assert shown["body"] == ":frierenspin:"
+    assert 'data-mx-emoticon' in shown["formatted_body"] and 'src="mxc://' in shown["formatted_body"]
+    # Matrix to Nostr: ":name:" with an emoji tag.
+    from tests.test_federation import post
+
+    homeserver.media["mxc://example.org/jer"] = (buffer.getvalue(), "image/png")
+    post(client, homeserver, room, {
+        "msgtype": "m.text", "body": "look :look-at-jer-go:", "format": "org.matrix.custom.html",
+        "formatted_body": 'look <img data-mx-emoticon height="32" src="mxc://example.org/jer" alt=":look-at-jer-go:">'})
+    wrap = [e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1]
+    rumor = concord.open_wrap(wrap.to_dict(), community.channel())
+    assert rumor["content"] == "look :look-at-jer-go:"
+    [emoji] = [t for t in rumor["tags"] if t[0] == "emoji"]
+    assert emoji[1] == "look-at-jer-go" and emoji[2].startswith("http")
+
+
 def test_the_guestbook_brings_members_and_honours_only_staff_kicks(client, homeserver, relay_pool) -> None:
     q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
     bob = Stranger()

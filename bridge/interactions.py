@@ -31,7 +31,7 @@ from bridge import ids, shadow_ids
 from bridge import remote as remotes
 from bridge.event_sources import rebuild, with_client
 from bridge.inbound import index_tags, reply_targets
-from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
+from bridge.media import EMOJI_IMAGE_MAX_BYTES, publish_matrix_image
 from bridge.notes import reaction_v1, repost_kind, repost_v1
 from bridge.notifications import notify
 from bridge.publishing import NotifyTarget, publish_in_background
@@ -145,7 +145,7 @@ async def maybe_handle_reaction(request: Request, event: dict[str, Any]) -> bool
         emoji = None
         shortcode = (event.get("content") or {}).get("com.beeper.reaction.shortcode") or (event.get("content") or {}).get("shortcode")
         if key.startswith("mxc://") and isinstance(shortcode, str):
-            published = await publish_matrix_image(app, key, max_bytes=PROFILE_IMAGE_MAX_BYTES)
+            published = await publish_matrix_image(app, key, max_bytes=EMOJI_IMAGE_MAX_BYTES)
             if published is not None:
                 emoji = {"shortcode": re.sub(r"[^a-zA-Z0-9_-]", "", shortcode.strip(":")) or "emoji", "url": published.url}
         if key.startswith("mxc://") and emoji is None:

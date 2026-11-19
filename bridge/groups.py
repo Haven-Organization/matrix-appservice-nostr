@@ -726,11 +726,11 @@ async def _outgoing(app: FastAPI, group: Group, event: dict[str, Any], content: 
             return None
         refs = [["e", target[0], group.relay, target[1]], ["p", target[1]], ["k", str(target[2])]]
         if key.startswith("mxc://"):
-            from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
+            from bridge.media import EMOJI_IMAGE_MAX_BYTES, publish_matrix_image
 
             shortcode = content.get("shortcode") or content.get("com.beeper.reaction.shortcode")
             name = re.sub(r"[^a-zA-Z0-9_-]", "", str(shortcode or "").strip(":")) or "emoji"
-            published = await publish_matrix_image(app, key, max_bytes=PROFILE_IMAGE_MAX_BYTES)
+            published = await publish_matrix_image(app, key, max_bytes=EMOJI_IMAGE_MAX_BYTES)
             if published is None:
                 return None
             return REACTION, f":{name}:", [*refs, ["emoji", name, published.url]]

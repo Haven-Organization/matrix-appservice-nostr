@@ -136,7 +136,7 @@ def _emoji_map(raw: dict[str, Any]) -> dict[str, str]:
     return {
         t[1]: t[2]
         for t in raw.get("tags") or []
-        if isinstance(t, list) and len(t) >= 3 and t[0] == "emoji" and str(t[2]).startswith("https://")
+        if isinstance(t, list) and len(t) >= 3 and t[0] == "emoji" and str(t[2]).startswith(("https://", "mxc://"))
     }
 
 
@@ -378,6 +378,28 @@ def _long_form(app: FastAPI, raw: dict[str, Any]) -> dict[str, Any]:
     return {**raw, "kind": 1, "content": text, "tags": shadow_tags}
 
 
+async def _emoji_in_matrix(app: FastAPI, raw: dict[str, Any], as_user_id: str) -> dict[str, Any]:
+    """``raw`` with the custom emoji its text uses (NIP-30) copied into
+    Matrix: clients show only ``mxc://`` images in a message, so an
+    https one leaves the emoji, or a message of only emoji, blank."""
+    content = raw.get("content") or ""
+    used = {m.group(1) for m in _SHORTCODE_RE.finditer(content)}
+    if not used:
+        return raw
+    from bridge.inbound import _emoji_mxc
+
+    tags = []
+    copied = 0
+    for tag in raw.get("tags") or []:
+        if (isinstance(tag, list) and len(tag) >= 3 and tag[0] == "emoji" and tag[1] in used
+                and str(tag[2]).startswith("https://") and copied < 20):
+            copied += 1
+            mxc = await _emoji_mxc(app, str(tag[2]), as_user_id)
+            tag = [tag[0], tag[1], mxc, *tag[3:]] if mxc else tag
+        tags.append(tag)
+    return {**raw, "tags": tags}
+
+
 async def message_content(
     app: FastAPI,
     raw: dict[str, Any],
@@ -404,6 +426,7 @@ async def message_content(
     if main is not None:
         copied = media if media is not None else await copy_attachment(app, main, as_user_id=as_user_id)
     skip = {main.url} if copied is not None and main is not None else set()
+    raw = await _emoji_in_matrix(app, raw, as_user_id)
     rendered = await render(app, raw, skip_urls=skip)
     others = [a for a in attachments if copied is None or a is not main]
     body, formatted = rendered.body, rendered.html

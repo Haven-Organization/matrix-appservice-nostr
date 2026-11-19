@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 # Profile pictures and banners: small enough for every client to load
 # quickly, large enough to look sharp.
 PROFILE_IMAGE_MAX_BYTES = 1_000_000
+# Custom emoji are often animated GIFs over a megabyte; flattening one to a
+# still frame loses what it's for.
+EMOJI_IMAGE_MAX_BYTES = 5_000_000
 
 _PASSTHROUGH_FORMATS = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif"}
 EXTENSIONS = {
@@ -87,6 +90,10 @@ def _prepare_image(data: bytes, max_bytes: int) -> PreparedImage | None:
         # Animated images keep their frames; Pillow can't re-encode every
         # animation faithfully, and GIF/WebP animations rarely carry GPS.
         return PreparedImage(data, mime_type, image.width, image.height, reencoded=False)
+    if animated:
+        shrunk = _shrink_animation(image, max_bytes)
+        if shrunk is not None:
+            return shrunk
 
     image = ImageOps.exif_transpose(image)
     if _has_alpha(image):
@@ -111,6 +118,31 @@ def _prepare_image(data: bytes, max_bytes: int) -> PreparedImage | None:
         candidate.save(buffer, format="JPEG", quality=quality, optimize=True)
         if buffer.tell() <= max_bytes:
             return PreparedImage(buffer.getvalue(), "image/jpeg", candidate.width, candidate.height, reencoded=True)
+    return None
+
+
+def _shrink_animation(image: Image.Image, max_bytes: int) -> PreparedImage | None:
+    """An animation too big to pass through, made smaller as an animated
+    GIF (frames, timings and loop kept), or ``None`` if it won't fit."""
+    from PIL import ImageSequence
+
+    try:
+        frames = [(frame.convert("RGBA"), frame.info.get("duration", image.info.get("duration", 100)))
+                  for frame in ImageSequence.Iterator(image)]
+    except Exception:
+        logger.info("Could not read an animation's frames", exc_info=True)
+        return None
+    for side in (512, 384, 256, 192, 128):
+        resized = []
+        for frame, _duration in frames:
+            copy = frame.copy()
+            copy.thumbnail((side, side), Image.Resampling.LANCZOS)
+            resized.append(copy)
+        buffer = io.BytesIO()
+        resized[0].save(buffer, format="GIF", save_all=True, append_images=resized[1:],
+                        duration=[d for _f, d in frames], loop=image.info.get("loop", 0), disposal=2, optimize=True)
+        if buffer.tell() <= max_bytes:
+            return PreparedImage(buffer.getvalue(), "image/gif", resized[0].width, resized[0].height, reencoded=True)
     return None
 
 

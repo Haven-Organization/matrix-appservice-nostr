@@ -1509,11 +1509,11 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
             # A custom emoji (MSC4027): published, and sent as NIP-30 ":name:".
             import re
 
-            from bridge.media import PROFILE_IMAGE_MAX_BYTES, publish_matrix_image
+            from bridge.media import EMOJI_IMAGE_MAX_BYTES, publish_matrix_image
 
             shortcode = content.get("shortcode") or content.get("com.beeper.reaction.shortcode")
             name = re.sub(r"[^a-zA-Z0-9_-]", "", str(shortcode or "").strip(":")) or "emoji"
-            published = await publish_matrix_image(app, key, max_bytes=PROFILE_IMAGE_MAX_BYTES)
+            published = await publish_matrix_image(app, key, max_bytes=EMOJI_IMAGE_MAX_BYTES)
             if published is None:
                 return None
             return 7, f":{name}:", [*refs, ["emoji", name, published.url]]
@@ -1532,10 +1532,12 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
         if target is None or not isinstance(new.get("body"), str):
             return None
         text, tags = await _with_mentions(app, new["body"], new, tags)
+        text, tags = await _with_emoji(app, text, new, tags)
         return EDIT_KIND, text, [*tags, ["e", target[0]]]
     text = message_body(content)
     if content.get("msgtype") not in MEDIA_MSGTYPES or content.get("filename") not in (None, content.get("body")):
         text, tags = await _with_mentions(app, text, content, tags)
+        text, tags = await _with_emoji(app, text, content, tags)
     has_media = False
     if content.get("msgtype") in MEDIA_MSGTYPES:
         # Encrypted for the community, as Armada does: a plain link would make
@@ -1585,6 +1587,39 @@ async def _with_mentions(app: FastAPI, text: str, content: dict[str, Any], tags:
     have = {t[1] for t in tags if len(t) > 1 and t[0] == "p"}
     extra = [["p", k] for k in dict.fromkeys(keys.values()) if k not in have]
     return text, [*tags, *extra]
+
+
+async def _with_emoji(app: FastAPI, text: str, content: dict[str, Any], tags: list[list[str]]):
+    """Custom emoji in the message (``<img data-mx-emoticon>``) published
+    and sent as NIP-30 ``:name:`` with emoji tags, as Armada and
+    poster.place show them."""
+    import re
+
+    formatted = content.get("formatted_body") if content.get("format") == "org.matrix.custom.html" else None
+    if not isinstance(formatted, str) or "data-mx-emoticon" not in formatted:
+        return text, tags
+    from bridge.media import EMOJI_IMAGE_MAX_BYTES, publish_matrix_image
+
+    def attribute(img: str, name: str) -> str:
+        found = re.search(rf"""\b{name}\s*=\s*["']([^"']*)["']""", img, re.IGNORECASE)
+        return html.unescape(found.group(1)) if found else ""
+
+    added: dict[str, str] = {}
+    for img in re.findall(r"<img\b[^>]*\bdata-mx-emoticon\b[^>]*>", formatted, re.IGNORECASE)[:20]:
+        src, alt = attribute(img, "src"), attribute(img, "alt") or attribute(img, "title")
+        name = re.sub(r"[^a-zA-Z0-9_-]", "", alt.strip(":")) or "emoji"
+        if not src.startswith("mxc://") or name in added:
+            continue
+        published = await publish_matrix_image(app, src, max_bytes=EMOJI_IMAGE_MAX_BYTES)
+        if published is None:
+            continue
+        added[name] = published.url
+        code = f":{name}:"
+        if alt and alt != code and alt in text:
+            text = text.replace(alt, code)
+        elif code not in text:
+            text = f"{text} {code}".strip()
+    return text, [*tags, *(["emoji", name, url] for name, url in added.items())]
 
 
 # -- subscriptions ----------------------------------------------------------------------------------
