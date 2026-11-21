@@ -24,6 +24,17 @@ DEFAULT_PUBLISH_RELAYS = (
     "wss://nos.lol",
     "wss://relay.primal.net",
 )
+# Relays that only take posts from paying members: never sent to, even when
+# they're the inbox of someone a post is aimed at.
+DEFAULT_SKIP_RELAYS = (
+    "wss://nostr.land",
+    "wss://eden.nostr.land",
+    "wss://nostr.wine",
+    "wss://inbox.nostr.wine",
+    "wss://filter.nostr.wine",
+    "wss://premium.primal.net",
+    "wss://nostr21.com",
+)
 # Not poster.place: it only takes posts from its own members now.
 DEFAULT_DISCOVERY_RELAYS = ("wss://purplepag.es", "wss://relay.damus.io")
 # For reading accounts that publish no relay list. Not poster.place: it
@@ -209,6 +220,7 @@ class NostrSection:
     key_encryption_secret: str
     # Public relays local IDs' events are copied to, for reach.
     publish_relays: list[str] = field(default_factory=lambda: list(DEFAULT_PUBLISH_RELAYS))
+    skip_relays: list[str] = field(default_factory=lambda: list(DEFAULT_SKIP_RELAYS))
     # Relays asked for accounts' relay lists (kind 10002) and profiles.
     discovery_relays: list[str] = field(default_factory=lambda: list(DEFAULT_DISCOVERY_RELAYS))
     # Relays read for accounts that publish no relay list.
@@ -557,6 +569,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         relay_url=_relay_url(_require(nostr_raw, "relay_url", "nostr"), "nostr.relay_url"),
         key_encryption_secret=key_secret,
         publish_relays=_relay_list(nostr_raw, "publish_relays", DEFAULT_PUBLISH_RELAYS),
+        skip_relays=_relay_list(nostr_raw, "skip_relays", DEFAULT_SKIP_RELAYS),
         discovery_relays=_relay_list(nostr_raw, "discovery_relays", DEFAULT_DISCOVERY_RELAYS),
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
         web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://ditto.pub/").rstrip("/") + "/",

@@ -318,6 +318,29 @@ def test_policy_refusal_told_once_and_skipped(client, homeserver, relay_pool) ->
     assert run(client, client.app.state.repository.list_due_publishes, "9999") == []  # not retried either
 
 
+def test_paid_relays_are_skipped_quietly(client, homeserver, relay_pool) -> None:
+    """A relay that wants payment is never tried again, for anyone, and nobody
+    is told: no ID here will ever pay. Nor is anyone told when someone else's
+    inbox refuses; only the bridge's own publish relays are worth a notice."""
+    from bridge.publishing import _relays_to_try, publish
+
+    q = create_id(client)
+    room = q.profile_room_id
+    inbox, paid = "wss://inbox.example", "wss://paid.example"
+    relay_pool.answers = {inbox: (False, "blocked: you're not in the extended network of this relay"),
+                          paid: (False, "restricted: Pay on https://paid.example for access.")}
+    post(client, homeserver, room, {"msgtype": "m.text", "body": "hello"})
+    event = notes(relay_pool)[-1]
+    sent_before = len(homeserver.sent_to(room))
+    client.portal.call(lambda: publish(client.app, event, extra_relays=[inbox, paid, "wss://nostr.land"]))
+    assert set(relay_pool.published[-1][1]) == {RELAY_ONE, RELAY_TWO, inbox, paid}  # nostr.land: a known paid relay
+    assert len(homeserver.sent_to(room)) == sent_before  # nobody told
+    client.portal.call(lambda: publish(client.app, event, extra_relays=[inbox, paid]))
+    assert relay_pool.published[-1][1] == [RELAY_ONE, RELAY_TWO]
+    # The paid relay is skipped for every ID; the inbox only for this one.
+    assert run(client, _relays_to_try, client.app, "ab" * 32, [inbox, paid]) == [inbox]
+
+
 def test_markdown_links_go_out_plain(client, homeserver, relay_pool) -> None:
     """Element's plain text is the Markdown it was typed as; Nostr notes are
     plain text, so links become "text (url)" (or the url alone)."""

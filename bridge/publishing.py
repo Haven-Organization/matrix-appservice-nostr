@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -65,14 +66,25 @@ def _retry_at(attempts: int) -> str:
     return (_now() + timedelta(seconds=delay)).isoformat()
 
 
+# A refusal asking for payment: that relay is for paying members, and no
+# ID here will ever be one, so it's skipped for everyone, for a long while.
+_PAYMENT_RE = re.compile(r"\b(pay|paid|payment|premium|subscri\w*|invoice|admission)\b", re.IGNORECASE)
+EVERYONE = "*"
+_PAID_RELAY_DAYS = 30
+
+
 async def _relays_to_try(app: FastAPI, pubkey: str, relays: list[str]) -> list[str]:
-    """``relays`` minus those that refused this ID by policy recently."""
+    """``relays`` minus paid ones (``nostr.skip_relays``, or found asking
+    for payment) and those that refused this ID by policy recently."""
     repository = app.state.repository
     now = _now().isoformat()
+    skip = {normalize_relay_url(url) for url in app.state.config.nostr.skip_relays}
     wanted = []
     for relay in dict.fromkeys(normalize_relay_url(url) for url in relays):
-        refusal = await repository.get_relay_refusal(relay, pubkey)
-        if refusal is None or refusal.until <= now:
+        if relay in skip:
+            continue
+        refusals = [await repository.get_relay_refusal(relay, who) for who in (pubkey, EVERYONE)]
+        if all(r is None or r.until <= now for r in refusals):
             wanted.append(relay)
     return wanted
 
@@ -93,11 +105,18 @@ async def _record_policy_refusals(
     repository = app.state.repository
     hours = app.state.config.nostr.refused_relay_retry_hours
     until = (_now() + timedelta(hours=hours)).isoformat()
+    # Only the bridge's own publish relays are worth telling anyone about:
+    # the inboxes of whoever a post is aimed at are theirs to choose.
+    own = {normalize_relay_url(url) for url in app.state.config.nostr.publish_relays}
     newly: list[PublishResult] = []
     for result in refused:
+        if _PAYMENT_RE.search(result.message):
+            paid_until = (_now() + timedelta(days=_PAID_RELAY_DAYS)).isoformat()
+            await repository.put_relay_refusal(RelayRefusal(result.relay, EVERYONE, paid_until, result.message))
+            continue
         previous = await repository.get_relay_refusal(result.relay, pubkey)
         await repository.put_relay_refusal(RelayRefusal(result.relay, pubkey, until, result.message))
-        if previous is None:
+        if previous is None and result.relay in own:
             newly.append(result)
     if newly and notify is not None:
         lines = [f"{r.relay}: {r.message}" for r in newly]

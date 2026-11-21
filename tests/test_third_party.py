@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 
 from bridge.shadow_ids import sync_shadow_profiles, third_party_name
+from tests.conftest import settle
 from tests.test_federation import _followed_post, command, run, transact
 
 ADMIN = "@admin:example.org"
@@ -25,7 +26,9 @@ def _react(client, homeserver, room, target, sender, key="👍"):
         "rel_type": "m.annotation", "event_id": target, "key": key}}, sender))
 
 
-def _profile(relay_pool, pubkey):
+def _profile(relay_pool, pubkey, client=None):
+    if client is not None:
+        settle(client)  # profiles go out in the background
     return json.loads([e for e, _ in relay_pool.published if e.kind == 0 and e.pubkey == pubkey][-1].content)
 
 
@@ -44,11 +47,11 @@ def test_a_local_users_first_reaction_makes_a_shadow_id(client, homeserver, rela
     assert any("shadow Nostr identity" in b and '"[create profile"' in b for b in _bodies(homeserver, remote.room_id))
     assert [e for e, _ in relay_pool.published if e.kind == 7 and e.pubkey == bob.pubkey]
     # Its profile is Bob's Matrix profile, and follows it.
-    assert _profile(relay_pool, bob.pubkey) == {"name": "Bob B", "display_name": "Bob B",
+    assert _profile(relay_pool, bob.pubkey, client) == {"name": "Bob B", "display_name": "Bob B",
                                                 "about": "@bob:example.org is a Matrix user.", "nip05": "bob@example.org"}
     homeserver.profiles["@bob:example.org"] = {"displayname": "Robert"}
     run(client, sync_shadow_profiles, client.app)
-    assert _profile(relay_pool, bob.pubkey)["name"] == "Robert"
+    assert _profile(relay_pool, bob.pubkey, client)["name"] == "Robert"
     # The relay can rebuild it.
     kind0 = [e for e, _ in relay_pool.published if e.kind == 0 and e.pubkey == bob.pubkey][-1]
     from bridge.event_sources import rebuild
@@ -59,7 +62,7 @@ def test_a_local_users_first_reaction_makes_a_shadow_id(client, homeserver, rela
     command(client, "[create profile", sender="@bob:example.org")
     [upgraded] = _ids(client, "@bob:example.org")
     assert upgraded.id == bob.id and upgraded.pubkey == bob.pubkey and upgraded.profile_room_id
-    assert _profile(relay_pool, bob.pubkey) == {"name": "Robert", "display_name": "Robert", "nip05": "bob@example.org"}
+    assert _profile(relay_pool, bob.pubkey, client) == {"name": "Robert", "display_name": "Robert", "nip05": "bob@example.org"}
 
 
 def test_strangers_from_other_homeservers_get_nothing(client, homeserver, relay_pool) -> None:
@@ -89,7 +92,7 @@ def test_a_shadow_grant(client, homeserver, relay_pool) -> None:
     assert shadow.name == "alice_other.org" and shadow.profile_room_id is None
     [told] = [b for b in _bodies(homeserver) if "shadow Nostr identity for you: alice_other.org@example.org" in b]
     assert "create profile" not in told  # shadow tier: not hers to run
-    assert _profile(relay_pool, shadow.pubkey)["name"] == "Alice Elsewhere"
+    assert _profile(relay_pool, shadow.pubkey, client)["name"] == "Alice Elsewhere"
     # Reactions go out; making a profile or DMing doesn't.
     _react(client, homeserver, remote.room_id, mirrored["event_id"], ALICE)
     assert [e for e, _ in relay_pool.published if e.kind == 7 and e.pubkey == shadow.pubkey]
@@ -115,7 +118,7 @@ def test_a_full_grant_and_parking(client, homeserver, relay_pool) -> None:
     transact(client, homeserver._store(alice.profile_room_id, "m.room.message", {"msgtype": "m.text", "body": "two"}, ALICE))
     assert len([e for e, _ in relay_pool.published if e.kind == 1]) == before
     run(client, sync_shadow_profiles, client.app)
-    assert _profile(relay_pool, alice.pubkey)["name"] == "Alice M"
+    assert _profile(relay_pool, alice.pubkey, client)["name"] == "Alice M"
     assert _ids(client, ALICE)[0].profile_room_id == alice.profile_room_id  # nothing deleted
 
 

@@ -138,6 +138,9 @@ nostr:
   # Keep the reverse proxy's client_max_body_size at least this big.
   # max_media_mb: 50
   # refused_relay_retry_hours: 24
+  # Paid relays, never sent to (these, by default):
+  # skip_relays: [wss://nostr.land, wss://eden.nostr.land, wss://nostr.wine, wss://inbox.nostr.wine,
+  #               wss://filter.nostr.wine, wss://premium.primal.net, wss://nostr21.com]
   # Local development only.
   # allow_private_addresses: false
 
