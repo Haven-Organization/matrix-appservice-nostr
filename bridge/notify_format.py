@@ -71,6 +71,11 @@ async def post_preview(app: FastAPI, room_id: str, event_id: str) -> tuple[str, 
         event = await app.state.homeserver.get_event(room_id, event_id, as_user_id=bot_mxid(app.state.config))
     except HomeserverError:
         return "", None
+    if event:
+        # A file from an encrypted room: its decrypted copy, once there is one.
+        from bridge.encrypted_media import resolve
+
+        event = await resolve(app, event)
     content = (event or {}).get("content") or {}
     body = str(content.get("org.matrix.msc4501.social.body") or content.get("body") or "").strip()
     filename = str(content.get("filename") or "").strip()

@@ -251,3 +251,21 @@ def test_no_sent_after_a_sibling_when_no_relay_took_it(config, repository, homes
             "url": "mxc://example.org/plain", "encrypted_url": content["file"]["url"], "info": {"mimetype": "image/png"}}, AP))
         assert len(notes(relay_pool)) == 1
         assert not any(c.get("body") == "✅ Sent." for c in homeserver.sent_to(room))
+
+
+def test_a_notification_shows_the_decrypted_copy(client, homeserver, relay_pool) -> None:
+    from tests.test_federation import Stranger, relay_send, run
+
+    q = create_id(client)
+    room = q.profile_room_id
+    picture = _png()
+    message = post(client, homeserver, room, _encrypted(homeserver, picture))
+    [prompt] = _prompts(homeserver, room)
+    _reply(client, homeserver, room, prompt["event_id"])
+    [note] = notes(relay_pool)
+    stranger = Stranger()
+    assert relay_send(client, stranger.event(7, "+", [["e", note.id], ["p", q.pubkey]]))[2] is True
+    notifications = run(client, client.app.state.repository.get_user_rooms, "@q:example.org").notifications_room_id
+    [liked] = [c for c in homeserver.sent_to(notifications) if "liked" in c.get("body", "")]
+    assert liked["msgtype"] == "m.image" and homeserver.media[liked["url"]][0] == picture
+    assert message
