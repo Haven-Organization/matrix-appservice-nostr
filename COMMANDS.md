@@ -345,7 +345,7 @@ A shadow ID:
 
 - is named like a bare `[create profile` would name it: your Matrix username (`alice`), or for a user of another homeserver, username and homeserver (`@alice:other.org` → `alice_other.org`). If that's taken or can't be used, the nearest free name.
 - has no Profile Room. Its Nostr profile is your Matrix display name and avatar, with "`@you:server` is a Matrix user." as its bio, and it's updated within 20 minutes when you change them.
-- otherwise works like any ID: it follows, replies, reacts and gets notifications.
+- otherwise works like any ID: it follows, replies, reacts and gets notifications. It doesn't take Nostr DMs unless the bridge's `shadow_id_dms` setting is on (off by default; see [CONFIG.md](CONFIG.md)).
 
 `[create profile` (with no name) turns it into a full ID **in place**: same key, same handle, same followers, now with a Profile Room whose name and avatar start from your Matrix profile. An ID with a key you brought yourself is never given a mirrored profile: its profile is yours from before.
 

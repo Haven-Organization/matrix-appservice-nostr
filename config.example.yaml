@@ -41,6 +41,7 @@ bridge:
   # world_readable_remote_rooms: false
   # accept_federated_knocks: false
   # dm_rooms_as_direct: false
+  # shadow_id_dms: false                 # let shadow IDs (no Profile Room) take DMs
 
   # MSC4501 and related proposals (same settings as the sibling bridges).
   # set_msc4501_relates_to: true

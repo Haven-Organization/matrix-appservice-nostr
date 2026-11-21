@@ -98,6 +98,12 @@ async def receive_dm(app: FastAPI, raw: dict[str, Any], *, origin: str, ip: str 
             local = await repository.get_id_by_pubkey(tag[1])
             if local is not None:
                 recipients.append(local)
+    if not app.state.config.bridge.shadow_id_dms:
+        from bridge.shadow_ids import effective_tier
+
+        recipients = [local for local in recipients if await effective_tier(app, local) == "full"]
+        if not recipients:
+            return IngestResult(False, "restricted: this account doesn't take DMs")
     if not recipients:
         return REJECTED
     stored = False

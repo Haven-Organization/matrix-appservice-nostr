@@ -117,6 +117,11 @@ class BridgeSection:
     # Create DM rooms as Matrix direct messages (is_direct). Off by
     # default; only turn on where DMs aren't end-to-end encrypted by default.
     dm_rooms_as_direct: bool = False
+    # Whether a shadow ID (no Profile Room of its own: made automatically
+    # for a reply, reaction or [join, or for anyone a room grant lets in)
+    # takes Nostr DMs. Off by default: such IDs are mostly people who never
+    # asked for a Nostr identity, and what reaches them is mostly spam.
+    shadow_id_dms: bool = False
     # Addresses of reverse proxies whose X-Forwarded-For is trusted for the
     # relay's per-IP limits and bans.
     trusted_proxies: list[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
@@ -482,6 +487,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         msc4144_per_message_profiles=bool(bridge_raw.get("msc4144_per_message_profiles", True)),
         quote_import_policy=_choice(bridge_raw, "quote_import_policy", ("always", "known", "never"), "known"),
         dm_rooms_as_direct=bool(bridge_raw.get("dm_rooms_as_direct", False)),
+        shadow_id_dms=bool(bridge_raw.get("shadow_id_dms", False)),
         trusted_proxies=_string_list(bridge_raw, "trusted_proxies", "bridge") or ["127.0.0.1", "::1"],
         max_ids_per_user=int(bridge_raw.get("max_ids_per_user", 5)),
         id_min_length=id_min_length,

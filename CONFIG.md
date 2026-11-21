@@ -21,6 +21,7 @@ Every setting in `config.yaml`. `config.example.yaml` has the ones needed to sta
 | `world_readable_remote_rooms` | `false` | Make Remote User Rooms readable without joining (`history_visibility: world_readable`). |
 | `accept_federated_knocks` | `false` | Also let in knocks on Remote User Rooms from users of other homeservers. |
 | `dm_rooms_as_direct` | `false` | Create DM rooms as Matrix direct chats (`is_direct`). Only turn on where clients don't end-to-end encrypt direct chats by default: the bridge can't read encrypted rooms. |
+| `shadow_id_dms` | `false` | Whether shadow IDs (no Profile Room of their own: made automatically for a reply, reaction or `[join`, including for anyone an [`[allow room`](COMMANDS.md#allow-mxidhomeserverroom-value-fullshadow) grant lets in) take Nostr DMs. Off, DMs to them are refused and no DM room is made; once their user runs `[create profile`, the same ID takes DMs. |
 | `trusted_proxies` | `["127.0.0.1", "::1"]` | Addresses of reverse proxies whose `X-Forwarded-For` is believed. The relay's per-IP rate limits and bans use the address it gives. |
 | `set_msc4501_relates_to` | `true` | Mark reposts, quotes and reply copies with an MSC4501 relation to the original post. Same setting as the sibling bridges. |
 | `use_msc4501_content_inline` | `true` | On MSC4501 repost relations, say the repost carries the post's content inline. |

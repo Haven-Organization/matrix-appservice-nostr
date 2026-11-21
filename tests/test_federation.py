@@ -259,6 +259,32 @@ def test_incoming_dm(client, homeserver, relay_pool) -> None:
     assert relay_req(client, {"kinds": [1059], "#p": [q.pubkey]}, auth_secret=secret)[0] == [wrap]
 
 
+def test_shadow_ids_take_no_dms_unless_allowed(client, homeserver, relay_pool) -> None:
+    from dataclasses import replace
+
+    from bridge.shadow_ids import ensure_shadow_id
+
+    run(client, ensure_shadow_id, client.app, "@bob:example.org", "")
+    [bob] = run(client, client.app.state.repository.list_ids_for_user, "@bob:example.org")
+    assert bob.profile_room_id is None
+    stranger = Stranger()
+
+    def dm(text):
+        rumor = nip59.make_rumor(stranger.pubkey, 14, text, [["p", bob.pubkey]], int(time.time()))
+        return relay_send(client, nip59.wrap_message(rumor, stranger.secret, bob.pubkey).to_dict())
+
+    reply = dm("buy my coin")
+    assert reply[2] is False and "doesn't take DMs" in reply[3]
+    assert run(client, client.app.state.repository.get_dm_room, bob.id, stranger.pubkey) is None
+    config = client.app.state.config
+    client.app.state.config = replace(config, bridge=replace(config.bridge, shadow_id_dms=True))
+    try:
+        assert dm("hi bob")[2] is True
+        assert run(client, client.app.state.repository.get_dm_room, bob.id, stranger.pubkey)
+    finally:
+        client.app.state.config = config
+
+
 def test_outgoing_dm(client, homeserver, relay_pool) -> None:
     q = create_id(client)
     stranger = Stranger()
