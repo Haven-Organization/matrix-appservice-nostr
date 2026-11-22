@@ -292,12 +292,14 @@ def test_an_attached_rooms_topic_is_the_channels(client, homeserver, relay_pool)
     send(client, message("[concord channel grift", room=room))
     community = run(client, concord.load, client.app, community.id)
     first = _editions(relay_pool, community)[-1][0]
-    assert json.loads(first["content"]) == {"name": "grift", "private": False, "topic": "Lolcows and grifters"}
+    assert json.loads(first["content"]) == {"name": "grift", "private": False, "topic": "Lolcows and grifters",
+                                              "description": "Lolcows and grifters"}
     _to_network(relay_pool)
     # Changed in Matrix: the channel follows, keeping the rest.
     transact(client, homeserver._store(room, "m.room.topic", {"topic": "Grifters only"}, "@q:example.org", ""))
     changed = _editions(relay_pool, community)[-1][0]
-    assert json.loads(changed["content"]) == {"name": "grift", "private": False, "topic": "Grifters only"}
+    assert json.loads(changed["content"]) == {"name": "grift", "private": False, "topic": "Grifters only",
+                                                "description": "Grifters only"}
     assert _tags(changed)["ev"] == ["2"]
     # By someone who can't manage channels: nothing.
     count = len(_editions(relay_pool, community))

@@ -158,7 +158,7 @@ Making and running Concord communities (the encrypted, Discord-style communities
 
 **`[concord rename <new name>`**, run in a channel's room, renames the channel in the community. It needs the same right as adding one. A room you attached keeps its own Matrix name.
 
-**`[concord topic`**, run in a room you attached, gives the channel the room's current topic. It happens on its own too: when someone who can manage the community's channels changes the room's topic in Matrix, the channel's topic follows. (Not every Concord app shows channel topics: poster.place shows the community's description instead.)
+**`[concord topic`**, run in a room you attached, gives the channel the room's current topic. It happens on its own too: when someone who can manage the community's channels changes the room's topic in Matrix, the channel's topic follows. It's written as both the channel's `topic` and its `description`, which is the field Armada-based apps like poster.place show.
 
 **`[concord link [label] [in <community>]`** makes an invite link to a community you own (`https://armada.buzz/invite/naddr1…#…`), which opens in Armada, Vector, poster.place, or here with `[join`. Anyone with it can join. **`[concord links`** lists the live ones by number, and **`[concord revoke <number>`** retires one; people who already joined with it stay members.
 

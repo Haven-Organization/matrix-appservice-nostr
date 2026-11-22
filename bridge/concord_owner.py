@@ -465,7 +465,7 @@ async def add_channel(app: FastAPI, room_id: str, sender: str, argument: str) ->
     await app.state.repository.set_state(concord._ROOM.format(room_id), f"{community.id}|{channel_id}")
     await concord.save(app, community)
     await publish_edition(app, community, secret, "2", channel_id,
-                          {"name": name, "private": False, **({"topic": topic} if topic else {})}, marked=marked, vac=vac)
+                          {"name": name, "private": False, **({"topic": topic, "description": topic} if topic else {})}, marked=marked, vac=vac)
     await concord.save(app, community)
     server = app.state.config.homeserver.server_name
     try:
@@ -511,6 +511,12 @@ def _topic(text: Any) -> str:
     """A Channel ``topic``: at most 1024 bytes, cut at a whole character
     (CORD-03 §2); empty means none."""
     return str(text or "").strip().encode()[:1024].decode("utf-8", "ignore").strip()
+
+
+def _topic_fields(topic: str) -> dict[str, str | None]:
+    """A room topic as Channel fields: ``topic`` (CORD-03) and
+    ``description``, which is what Armada and poster.place show."""
+    return {"topic": topic or None, "description": topic or None}
 
 
 async def update_channel(app: FastAPI, community: Community, actor, channel_id: str,
@@ -608,7 +614,7 @@ async def push_topic(app: FastAPI, room_id: str, sender: str, argument: str) -> 
     community, actor, channel_id = here
     topic = await _room_topic(app, room_id)
     try:
-        await update_channel(app, community, actor, channel_id, {"topic": topic or None})
+        await update_channel(app, community, actor, channel_id, _topic_fields(topic))
     except ConcordProblem as exc:
         await notice(app, room_id, f"I didn't change the channel's topic: {exc}.")
         return
@@ -634,7 +640,7 @@ async def maybe_sync_topic(request: Any, event: dict[str, Any]) -> bool:
         return False
     topic = _topic((event.get("content") or {}).get("topic"))
     try:
-        await update_channel(app, found[0], found[1], channel_id, {"topic": topic or None})
+        await update_channel(app, found[0], found[1], channel_id, _topic_fields(topic))
     except ConcordProblem as exc:
         logger.info("Didn't carry the topic of %s to its channel: %s", room_id, exc)
     return False
