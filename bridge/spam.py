@@ -15,6 +15,13 @@ DESIGN.md, "Spam". The layers, cheapest first:
    target).
 4. Policy by trust tier: strangers may have to show NIP-13 proof-of-work,
    or be refused, depending on ``inbound_policy``, and on "shields up".
+   Two bot tells are refused from strangers whatever the policy: a reply
+   to someone here within ``stranger_fast_reply_seconds`` of their post,
+   and a link sold with crypto-giveaway wording (``stranger_scam_patterns``).
+
+``enabled: false`` turns all of this off but bans an admin set by hand,
+size and timestamp sanity, and the connection and subscription limits,
+which protect the relay itself rather than judge what people say.
 
 Every rejection from layers 2 and 3 is a strike against the pubkey and IP.
 Enough strikes in a window ban them, for longer each time. Bot waves show
@@ -45,6 +52,16 @@ GIFT_WRAP_KIND = 1059
 REACTION_KIND = 7
 
 _POLICIES = ("open", "pow", "web_of_trust")
+# Wallet-drainer bait: an airdrop or "verify your wallet", a coin
+# giveaway, or an amount of a coin said to be waiting. Only counts in a
+# stranger's post with a link. The default for stranger_scam_patterns.
+DEFAULT_SCAM_PATTERNS = (
+    r"(?i)\b(?:airdrops?|verify (?:your |the )?wallets?|unverified wallets?|connect (?:your )?wallets?"
+    r"|claim your|seed phrase|eligible (?:address|wallet))\b",
+    r"(?i)\b(?:eth|ether|ethereum|crypto|token|btc|bitcoin|usdc|usdt|sol|solana)\W+(?:\w+\W+)?giveaways?\b",
+    r"(?i)\b\d[\d,.]*\s*(?:usdc|usdt|w?eth|w?btc|cbbtc|sol)\b.{0,40}?\b(?:waiting|held|unclaimed|reward|release|free)\b",
+)
+_LINK_RE = re.compile(r"https?://", re.IGNORECASE)
 _BASE64_MEDIA_RE = re.compile(r"data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{200,}", re.IGNORECASE)
 _BAN_CACHE_SECONDS = 30.0
 _SWEEP_SECONDS = 60.0
@@ -121,6 +138,15 @@ class SpamConfig:
     wave_window_seconds: int = 300
     wave_policy: str = "pow"
     wave_cooldown_seconds: int = 3600
+    # A stranger's reply to someone here this soon after their post is a
+    # bot watching for new posts: people take longer. 0 turns it off.
+    stranger_fast_reply_seconds: int = 60
+    # Refuse strangers' posts with a link and text matching any of these
+    # (crypto-giveaway wording by default). An empty list turns it off.
+    stranger_scam_patterns: tuple[str, ...] = DEFAULT_SCAM_PATTERNS
+    # False: no spam checks at all, but bans set by hand, size and clock
+    # sanity, and the connection and subscription limits.
+    enabled: bool = True
 
     @staticmethod
     def from_dict(raw: dict[str, Any] | None) -> "SpamConfig":
@@ -140,10 +166,14 @@ class SpamConfig:
             default = getattr(defaults, f.name)
             if isinstance(default, RateSpec):
                 values[f.name] = _rate_spec(f.name, value)
-            elif f.name == "spam_patterns":
-                values[f.name] = _patterns(value)
+            elif f.name in ("spam_patterns", "stranger_scam_patterns"):
+                values[f.name] = _patterns(f.name, value)
             elif f.name == "ban_durations_seconds":
                 values[f.name] = _durations(value)
+            elif isinstance(default, bool):
+                if not isinstance(value, bool):
+                    raise ValueError(f"spam.{f.name} must be true or false, got {value!r}")
+                values[f.name] = value
             elif f.name in ("inbound_policy", "wave_policy"):
                 if value not in _POLICIES:
                     raise ValueError(f"spam.{f.name} must be one of {', '.join(_POLICIES)}, got {value!r}")
@@ -178,14 +208,14 @@ def _rate_spec(name: str, value: Any) -> RateSpec:
     return RateSpec(burst, tokens, per_seconds)
 
 
-def _patterns(value: Any) -> tuple[str, ...]:
+def _patterns(name: str, value: Any) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError("spam.spam_patterns must be a list of regular expressions")
+        raise ValueError(f"spam.{name} must be a list of regular expressions")
     for pattern in value:
         try:
             re.compile(pattern)
         except re.error as exc:
-            raise ValueError(f"spam.spam_patterns: {pattern!r} is not a valid regular expression ({exc})") from exc
+            raise ValueError(f"spam.{name}: {pattern!r} is not a valid regular expression ({exc})") from exc
     return tuple(value)
 
 
@@ -351,6 +381,7 @@ class SpamGuard:
         self._wall_now = wall_now
         self.on_shields_change = on_shields_change
         self._patterns = [re.compile(pattern) for pattern in config.spam_patterns]
+        self._scam_patterns = [re.compile(pattern) for pattern in config.stranger_scam_patterns]
 
         self._connections = RateLimiter(config.connections)
         self._reqs = RateLimiter(config.reqs)
@@ -392,7 +423,9 @@ class SpamGuard:
     # -- bans ---------------------------------------------------------------
 
     def _ban_active(self, ban: Ban | None) -> bool:
-        return ban is not None and (ban.until is None or _parse_iso(ban.until) > self._wall_now())
+        if ban is None or (not self.config.enabled and ban.reason.startswith("automatic:")):
+            return False
+        return ban.until is None or _parse_iso(ban.until) > self._wall_now()
 
     async def active_ban(self, kind: str, key: str) -> Ban | None:
         cache_key = (kind, key)
@@ -438,7 +471,7 @@ class SpamGuard:
     # -- strikes ------------------------------------------------------------
 
     async def _strike(self, kind: str, key: str | None, reason: str, count: int = 1) -> None:
-        if not key:
+        if not key or not self.config.enabled:
             return
         now = self._now()
         window = self.config.strike_window_seconds
@@ -500,10 +533,12 @@ class SpamGuard:
         interaction: bool = False,
         fetched: bool = False,
         aimed_here: bool = True,
+        reply_delay: float | None = None,
     ) -> Verdict:
         """Whether to take ``event``. ``targets`` are the local pubkeys it is
         aimed at; ``interaction`` marks replies, reactions and the like, which
-        are refused when stale (backfill isn't). ``fetched`` means the bridge
+        are refused when stale (backfill isn't). ``reply_delay``: seconds
+        between a post by someone here and this reply to it. ``fetched`` means the bridge
         asked a relay for it: a followed account's events fetched that way
         aren't rate-limited, since someone here chose to read all of them."""
         self._maybe_sweep()
@@ -528,6 +563,8 @@ class SpamGuard:
             return Verdict(False, "blocked", "this address is banned here")
 
         problem = self._size_and_clock(event, interaction=interaction and not wrap)
+        if not self.config.enabled:
+            return problem or ACCEPT
         if problem is not None:
             return await self._reject(problem.prefix, problem.message, pubkey=pubkey, ip=ip)
 
@@ -560,6 +597,9 @@ class SpamGuard:
             # accounts a minute, none of which the bridge keeps.
             if aimed_here:
                 await self._note_stranger(pubkey)
+            problem = self._bot_tell(event, reply_delay)
+            if problem is not None:
+                return await self._reject(problem.prefix, problem.message, pubkey=pubkey, ip=ip)
             return self._policy(event)
         return ACCEPT
 
@@ -572,6 +612,8 @@ class SpamGuard:
             return ACCEPT
         if await self.active_ban("pubkey", pubkey) is not None:
             return Verdict(False, "blocked", "this key is banned here")
+        if not self.config.enabled:
+            return ACCEPT
         limiter = self._trusted_pubkey_events if tier is Tier.TRUSTED else self._pubkey_events
         if not limiter.take(pubkey, self._now()):
             return await self._reject("rate-limited", "too many messages from this key", pubkey=pubkey, ip=None)
@@ -605,6 +647,14 @@ class SpamGuard:
                 return Verdict(False, "blocked", "content matches a spam pattern")
         if self._is_duplicate_wave(event):
             return Verdict(False, "blocked", "the same text was just sent by several accounts")
+        return None
+
+    def _bot_tell(self, event: Event, reply_delay: float | None) -> Verdict | None:
+        fast = self.config.stranger_fast_reply_seconds
+        if fast and reply_delay is not None and reply_delay < fast:
+            return Verdict(False, "blocked", "replies this fast from accounts nobody here follows are bots")
+        if _LINK_RE.search(event.content) and any(p.search(event.content) for p in self._scam_patterns):
+            return Verdict(False, "blocked", "looks like a crypto giveaway scam")
         return None
 
     def _is_duplicate_wave(self, event: Event) -> bool:

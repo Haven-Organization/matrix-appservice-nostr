@@ -373,6 +373,52 @@ async def test_policy_by_tier() -> None:
     assert (await guard.check_event(note(secret, "anyone"), tier=Tier.STRANGER)).ok
 
 
+async def test_bot_tells_from_strangers() -> None:
+    guard, _, _ = make_guard()
+    scam = "💎 an exclusive ether airdrop. Claim your ETH spot now: https://gweiportal.example/?ref=x"
+    drainer = "2,000 USDC (~$2,000) waiting. No fee, one tap.\nhttps://genesis.example/a/USDC/"
+    for i, text in enumerate([scam, drainer]):
+        verdict = await guard.check_event(note(key(f"scam{i}"), text), tier=Tier.STRANGER)
+        assert verdict.reply == "blocked: looks like a crypto giveaway scam"
+    # The same words without a link, or a link without them, are fine.
+    assert (await guard.check_event(note(key("talk"), "that airdrop was a scam lol"), tier=Tier.STRANGER)).ok
+    assert (await guard.check_event(note(key("link"), "art giveaway: https://example.org"), tier=Tier.STRANGER)).ok
+    # A reply within a minute of the post is a bot; after that, people.
+    fast = await guard.check_event(note(key("fast"), "One more episode"), tier=Tier.STRANGER, reply_delay=9)
+    assert fast.reply == "blocked: replies this fast from accounts nobody here follows are bots"
+    assert (await guard.check_event(note(key("slow"), "Lol"), tier=Tier.STRANGER, reply_delay=84)).ok
+    # Only strangers: someone followed here may do both.
+    assert (await guard.check_event(note(key("pal"), scam), tier=Tier.TRUSTED, reply_delay=3)).ok
+    assert (await guard.check_event(note(key("fof"), "quick", ), tier=Tier.WEB_OF_TRUST, reply_delay=3)).ok
+    # Both can be turned off, and the wording replaced.
+    guard, _, _ = make_guard(stranger_fast_reply_seconds=0, stranger_scam_patterns=())
+    assert (await guard.check_event(note(key("scam9"), scam), tier=Tier.STRANGER, reply_delay=1)).ok
+    guard, _, _ = make_guard(stranger_scam_patterns=("(?i)free robux",))
+    assert (await guard.check_event(note(key("scam8"), scam), tier=Tier.STRANGER)).ok
+    robux = await guard.check_event(note(key("scam7"), "FREE ROBUX https://x.example"), tier=Tier.STRANGER)
+    assert robux.reply == "blocked: looks like a crypto giveaway scam"
+
+
+async def test_spam_checks_switched_off() -> None:
+    guard, clock, store = make_guard(enabled=False, inbound_policy="web_of_trust", max_p_tags=1,
+                                     spam_patterns=("(?i)airdrop",), events_per_pubkey=RateSpec(1, 0, 3600))
+    spammer = key("off")
+    many = [["p", "%02x" % i * 32] for i in range(5)]
+    for i in range(20):
+        verdict = await guard.check_event(note(spammer, f"airdrop https://x.example {i}", tags=many),
+                                          tier=Tier.STRANGER, reply_delay=1)
+        assert verdict.ok
+    assert not store.bans and not guard.shields_up
+    # Still refused: a hand-set ban, and broken events.
+    await guard.ban("pubkey", secp256k1.public_key(spammer).hex(), None, "admin said so")
+    assert (await guard.check_event(note(spammer, "hi"), tier=Tier.STRANGER)).reply == "blocked: this key is banned here"
+    big = note(key("big"), "x" * 70000)
+    assert (await guard.check_event(big, tier=Tier.STRANGER)).prefix == "invalid"
+    # Automatic bans left over from before don't count.
+    await store.put_ban(Ban("pubkey", secp256k1.public_key(key("old")).hex(), None, "automatic: rate", 1, "2020-01-01T00:00:00Z"))
+    assert (await guard.check_event(note(key("old"), "back"), tier=Tier.STRANGER)).ok
+
+
 # -- wave detection --------------------------------------------------------------------------------
 
 
@@ -524,6 +570,8 @@ def test_config_from_dict() -> None:
         ({"ban_durations_seconds": []}, "non-empty list"),
         ({"strike_window": 5}, "unknown spam setting"),
         ({"stranger_pow_bits": True}, "whole number"),
+        ({"enabled": "no"}, "must be true or false"),
+        ({"stranger_scam_patterns": ["(bad"]}, "stranger_scam_patterns"),
     ],
 )
 def test_config_validation(raw, message) -> None:

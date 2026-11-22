@@ -324,6 +324,19 @@ async def _aimed_here(app: FastAPI, raw: dict[str, Any], targets: list[str]) -> 
     return False
 
 
+async def _reply_delay(app: FastAPI, raw: dict[str, Any]) -> float | None:
+    """For a reply to a post by someone here: how many seconds after it."""
+    if raw["kind"] not in (1, 1111):
+        return None
+    repository = app.state.repository
+    delays = []
+    for event_id in [t[1] for t in raw["tags"] if len(t) >= 2 and t[0] in ("e", "E")][:20]:
+        parent = await repository.get_event(event_id)
+        if parent is not None and await repository.get_id_by_pubkey(parent.pubkey) is not None:
+            delays.append(raw["created_at"] - parent.created_at)
+    return min(delays) if delays else None
+
+
 async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *, origin: str, ip: str | None, authed: frozenset[str]) -> IngestResult:
     repository = app.state.repository
     raw = event.to_dict()
@@ -364,6 +377,7 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
             interaction=origin == "relay" and event.kind in (1, 6, 7, 16, 1111, ZAP_RECEIPT_KIND),
             fetched=origin == "subscription",
             aimed_here=await _aimed_here(app, raw, targets),
+            reply_delay=await _reply_delay(app, raw),
         )
         if not verdict.ok:
             return IngestResult(False, verdict.reply)

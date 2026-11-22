@@ -171,6 +171,9 @@ nostr:
 #   duplicate_min_pubkeys: 3
 #   duplicate_min_length: 12
 #   spam_patterns: []
+#   stranger_fast_reply_seconds: 60   # 0: off
+#   stranger_scam_patterns: [...]     # default: crypto-giveaway wording; []: off
+#   enabled: true                     # false: no spam checks but hand-set bans and sanity limits
 
 # Games: webxdc mini apps over Nostr (NIP-DC). Needs its own hostname for the
 # sandbox games run in; see INSTALL.md.

@@ -507,6 +507,11 @@ Applied to every event from a non-local author:
   forgotten after the window, catches it. Nothing is stored.
 - **Keyword/regex lists** (`nostr.spam_patterns`), empty by default, for
   operators who want them.
+- **Bot tells, strangers only**: a reply to someone here written less than
+  `stranger_fast_reply_seconds` (60) after their post (on one server's
+  data every such reply was a bot, and the fastest person took 84 s), or a
+  link next to crypto-giveaway wording (`stranger_scam_patterns`, replaceable). Accounts
+  someone here follows are never judged by either.
 
 ### 3. Trust tiers
 

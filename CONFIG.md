@@ -122,6 +122,9 @@ A rate limit is a token bucket: `{burst: <most at once>, tokens: <added back>, p
 | `duplicate_min_pubkeys` | `3` | That many different accounts sending the same text within the window is a wave, and refused. |
 | `duplicate_min_length` | `12` | Shorter texts ("gm") are too common to judge. |
 | `spam_patterns` | `[]` | Regular expressions; content matching any is refused. |
+| `stranger_fast_reply_seconds` | `60` | A reply to someone here from an account nobody here follows, written less than this many seconds after the post, is refused: bots watch for new posts and answer at once, people take longer. `0` turns it off. |
+| `stranger_scam_patterns` | crypto-giveaway wording | Regular expressions; a post from an account nobody here follows that has a link and matches any of them is refused. The default list catches wallet-drainer bait ("airdrop", "verify your wallet", "ETH giveaway", "2,000 USDC waiting"); see `DEFAULT_SCAM_PATTERNS` in `bridge/spam.py`. Set your own list to replace it, or `[]` to turn it off. |
+| `enabled` | `true` | `false` turns every spam check off, except bans an admin set by hand, size and timestamp sanity (`max_event_bytes`, `future_skew_seconds`, `max_interaction_age_seconds`) and the `connections`/`reqs` limits, which protect the relay itself. No strikes are counted and automatic bans already made stop counting. |
 | `inbound_policy` | `open` | What strangers (not followed here, and not followed by anyone followed here) need: `open` (nothing), `pow` (NIP-13 proof of work, with a committed target) or `web_of_trust` (refused). |
 | `stranger_pow_bits` | `20` | Proof of work asked of strangers under `pow`. |
 | `strikes_to_ban` | `10` | Refusals (strikes) within `strike_window_seconds` that ban a key or IP automatically. |
