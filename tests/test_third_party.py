@@ -44,7 +44,7 @@ def test_a_local_users_first_reaction_makes_a_shadow_id(client, homeserver, rela
     _react(client, homeserver, remote.room_id, mirrored["event_id"], "@bob:example.org")
     [bob] = _ids(client, "@bob:example.org")
     assert bob.name == "bob" and bob.profile_room_id is None and bob.room_unlinked
-    assert any("shadow Nostr identity" in b and '"[create profile"' in b for b in _bodies(homeserver, remote.room_id))
+    assert any("I've created the Nostr identity bob@" in b for b in _bodies(homeserver, remote.room_id))
     assert [e for e, _ in relay_pool.published if e.kind == 7 and e.pubkey == bob.pubkey]
     # Its profile is Bob's Matrix profile, and follows it.
     assert _profile(relay_pool, bob.pubkey, client) == {"name": "Bob B", "display_name": "Bob B",
@@ -90,7 +90,7 @@ def test_a_shadow_grant(client, homeserver, relay_pool) -> None:
     command(client, f"[follow {alice_npub.pubkey}", sender=ALICE)
     [shadow] = _ids(client, ALICE)
     assert shadow.name == "alice_other.org" and shadow.profile_room_id is None
-    [told] = [b for b in _bodies(homeserver) if "shadow Nostr identity for you: alice_other.org@example.org" in b]
+    [told] = [b for b in _bodies(homeserver) if "the Nostr identity alice_other.org@example.org for you" in b]
     assert "create profile" not in told  # shadow tier: not hers to run
     assert _profile(relay_pool, shadow.pubkey, client)["name"] == "Alice Elsewhere"
     # Reactions go out; making a profile or DMing doesn't.

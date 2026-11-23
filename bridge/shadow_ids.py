@@ -248,23 +248,11 @@ async def _make_shadow_id(app: FastAPI, sender: str) -> NostrId | None:
     return nostr_id
 
 
-async def may_create_profile(app: FastAPI, mxid: str) -> bool:
-    """Whether ``[create profile`` is open to ``mxid``: a local user (whom
-    ``bridge.id_allowed_users`` doesn't leave out), or a third party with a
-    full grant of their own. A room grant never is one."""
-    config = app.state.config
-    if not is_third_party(config, mxid):
-        return ids.user_allowed(config, mxid)
-    return config.bridge.third_party_access and await resolve_third_party_tier(app, mxid) == "full"
-
-
 async def shadow_created_notice(app: FastAPI, nostr_id: NostrId) -> tuple[str, str]:
     """Said once, wherever a shadow ID was just made: ``(plain, html)``.
     Addressed to its owner by name (a pill), since it's often said in a
-    room full of other people, and only offers ``[create profile`` to
-    someone who can run it."""
+    room full of other people."""
     config = app.state.config
-    prefix = config.appservice.command_prefix
     owner = nostr_id.matrix_user_id
     try:
         name = (await app.state.homeserver.get_profile(owner)).get("displayname")
@@ -272,15 +260,11 @@ async def shadow_created_notice(app: FastAPI, nostr_id: NostrId) -> tuple[str, s
         name = None
     name = name.strip() if isinstance(name, str) and name.strip() else owner
     handle = f"{nostr_id.name}@{config.bridge.domain}"
-    rest = (
-        "It mirrors your Matrix display name/avatar automatically, and has no profile of its own yet."
-    )
-    if await may_create_profile(app, owner):
-        rest += f' Run "{prefix}create profile" anytime to turn it into a full, customizable profile.'
-    plain = f"{name}: I've created a shadow Nostr identity for you: {handle}. {rest}"
+    rest = "for you so your messages are automatically bridged to Nostr."
+    plain = f"{name}: I've created the Nostr identity {handle} {rest}"
     rich = (
-        f'<a href="https://matrix.to/#/{html.escape(owner)}">{html.escape(name)}</a>: I\'ve created a shadow Nostr '
-        f"identity for you: <strong>{html.escape(handle)}</strong>. {html.escape(rest)}"
+        f'<a href="https://matrix.to/#/{html.escape(owner)}">{html.escape(name)}</a>: I\'ve created the Nostr '
+        f"identity <strong>{html.escape(handle)}</strong> {rest}"
     )
     return plain, rich
 

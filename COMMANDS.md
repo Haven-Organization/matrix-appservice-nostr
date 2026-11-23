@@ -339,7 +339,7 @@ Undoing something (removing a reaction, say) always uses the ID that did it in t
 
 Everyone's first Nostr ID can come about without asking: the first time you do something that goes out to Nostr without having an ID (`[follow`, `[join`, replying to a Nostr post, reacting to one, voting in a Nostr poll), the bridge makes one for you and says so once:
 
-> I've created a shadow Nostr identity for you: alice@example.org. It mirrors your Matrix display name/avatar automatically, and has no profile of its own yet. Run "[create profile" anytime to turn it into a full, customizable profile.
+> I've created the Nostr identity alice@example.org for you so your messages are automatically bridged to Nostr.
 
 A shadow ID:
 
