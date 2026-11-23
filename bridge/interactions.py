@@ -196,12 +196,13 @@ async def post_repost_card(app: FastAPI, actor: NostrId, target: EventRow, *, ro
       post makes the card that image or video at preview size;
     - ``external_url``: the post on the web;
     - MSC4144: shown as the reposter (``msc4144_per_message_profiles``);
-    - MSC4501: the repost relation, ``content_inline``, and the post's text
-      as ``social.body`` (``set_msc4501_relates_to``).
+    - MSC4501: the repost relation, ``content_inline``, and the post's full
+      text as ``social.body`` (``set_msc4501_relates_to``).
 
     It's a copy of the repost: redacting it, or the 🔁, undoes the repost."""
     from bridge.homeserver_client import HomeserverError
     from bridge.inbound import _per_message_profile, event_url
+    from bridge.msc4501 import own_words, set_social_body
     from bridge.notify_format import event_link, post_preview, quote_block
     from bridge.users import bot_mxid
 
@@ -254,9 +255,8 @@ async def post_repost_card(app: FastAPI, actor: NostrId, target: EventRow, *, ro
     content["external_url"] = external if isinstance(external, str) else (event_url(app, raw) if raw else link)
     if relation is not None:
         content["org.matrix.msc4501.social.relates_to"] = relation
-        if preview_text:
-            content["org.matrix.msc4501.social.body"] = preview_text
-            content["org.matrix.msc4501.social.formatted_body"] = html.escape(preview_text)
+        # The reposted post's full words, not the shortened preview above.
+        set_social_body(content, *own_words(original.get("content") or {}))
     if config.bridge.msc4144_per_message_profiles:
         content["com.beeper.per_message_profile"] = await _per_message_profile(app, actor)
     try:

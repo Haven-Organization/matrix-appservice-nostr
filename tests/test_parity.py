@@ -112,6 +112,13 @@ def test_incoming_quote_gets_footer(client, homeserver, relay_pool) -> None:
     assert run(client, ingest, client.app, raw, origin="subscription").stored
     content = homeserver.messages(remote.room_id)[-1]["content"]
     assert "alice says hi" in content["body"]
+    # MSC4501: the quoted post's content goes inside the relation, and the
+    # quoter's own words alone are social.body.
+    relation = content["org.matrix.msc4501.social.relates_to"]
+    assert relation["rel_type"] == "org.matrix.msc4501.social.repost" and relation["displayname"] == "Alice"
+    assert relation["content"]["body"] == "alice says hi" and "content_inline" not in relation
+    assert content["org.matrix.msc4501.social.body"].startswith("quoting myself")
+    assert "alice says hi" not in content["org.matrix.msc4501.social.body"]
 
 
 # -- Blossom uploads (BUD-02) -----------------------------------------------------------

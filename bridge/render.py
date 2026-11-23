@@ -410,6 +410,7 @@ async def message_content(
     footer_plain: str = "",
     footer_html: str = "",
     media: dict[str, Any] | None = None,
+    social_body: bool = False,
 ) -> dict[str, Any]:
     """A complete Matrix message for a Nostr post: its first image or video
     as the message (when it can be copied), the text as body/caption, and
@@ -417,7 +418,9 @@ async def message_content(
     ("🔁 reposted X's post:"); ``footer_*`` below it (a quoted post).
     ``media``: that image or video already in Matrix (``url``/``info``/
     ``filename``, from the post's own Matrix copy), used instead of
-    downloading it again."""
+    downloading it again. ``social_body``: also give the post's own text,
+    without header and footer, as MSC4501's ``social.body`` (for an event
+    that carries a relation)."""
     if raw.get("kind") == 30023:
         raw = _long_form(app, raw)
     attachments = attachments_of(raw)
@@ -443,6 +446,7 @@ async def message_content(
         formatted += "<br><br>Other Attachments:<br>" + "<br>".join(
             f'<a href="{html.escape(a.url, quote=True)}">{html.escape(a.url)}</a>' for a in listed
         )
+    own_plain, own_html = body, formatted
     if header_plain:
         body = f"{header_plain}\n{body}" if body else header_plain
         formatted = f"{header_html}<br>{formatted}" if formatted else header_html
@@ -467,6 +471,10 @@ async def message_content(
             content["formatted_body"] = formatted
     if games:
         content[webxdc.GAME_FIELD] = webxdc.game_field(games[0])
+    if social_body:
+        from bridge.msc4501 import set_social_body
+
+        set_social_body(content, own_plain, own_html)
     return content
 
 

@@ -48,7 +48,15 @@ from fastapi import FastAPI
 from bridge import remote as remotes
 from bridge.event_sources import EMBED_FIELD, embedded_source
 from bridge.homeserver_client import HomeserverError
-from bridge.msc4501 import EXTERNAL_HANDLE_FIELD, external_handle_value
+from bridge.msc4501 import (
+    EXTERNAL_HANDLE_FIELD,
+    REPLY_REL_TYPE,
+    REPOST_REL_TYPE,
+    external_handle_value,
+    own_words,
+    set_social_body,
+    social_relation,
+)
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19
 from bridge import notify_format
@@ -706,13 +714,17 @@ async def _repost_card(
         header_html=f'🔁 reposted {html.escape(author_label)}\'s <a href="{link}">post</a>:',
         media=await _matrix_media(app, target[0], target[1]) if target else None,
     )
-    if app.state.config.bridge.set_msc4501_relates_to and target is not None:
-        content[SOCIAL_RELATES_TO_FIELD] = {
-            "rel_type": "org.matrix.msc4501.social.repost", "event_id": target[1],
-            "room_id": target[0], "sender": target[2],
-            "via": [app.state.config.homeserver.server_name],
-            **({"content_inline": True} if app.state.config.bridge.use_msc4501_content_inline else {}),
-        }
+    relation = None if target is None else await social_relation(
+        app, REPOST_REL_TYPE, room_id=target[0], event_id=target[1], sender=target[2], displayname=author_label,
+        content_inline=app.state.config.bridge.use_msc4501_content_inline,
+    )
+    if relation is not None:
+        # A plain repost: its words are the reposted post's, and a client
+        # that understands the relation needs nothing else in the body
+        # than the link to it.
+        content[SOCIAL_RELATES_TO_FIELD] = relation
+        set_social_body(content, *own_words(relation.get("content") or await _content_of(app, target)))
+        content["body"] = link
     event_id = await _send(
         app, remote.room_id, _with_extras(app, content, raw, remote, link=event_url(app, original)), sender=remote.ghost_user_id,
         ts=int(raw["created_at"]) * 1000, event_type=_post_event_type(app),
@@ -723,6 +735,15 @@ async def _repost_card(
     if reaction is not None:
         await repository.put_mirrored_event(reaction[1], raw["id"], reaction[0])
     return IngestResult(True, "", stored=True)
+
+
+async def _content_of(app: FastAPI, target: tuple[str, str, str]) -> dict[str, Any]:
+    try:
+        event = await app.state.homeserver.get_event(target[0], target[1], as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        event = None
+    content = (event or {}).get("content")
+    return content if isinstance(content, dict) else {}
 
 
 async def repair_repost_cards(app: FastAPI) -> int:
@@ -1057,14 +1078,14 @@ async def _reply_in_matrix(
             else:
                 header_plain = f"⤵️ Reply to {parent_author}'s post:"
                 header_html = f'⤵️ Reply to {html.escape(parent_author)}\'s <a href="{link}">post</a>:'
-            copy = await message_content(app, raw, as_user_id=remote.ghost_user_id,
-                                         header_plain=header_plain, header_html=header_html)
-            if app.state.config.bridge.set_msc4501_relates_to:
-                copy[SOCIAL_RELATES_TO_FIELD] = {
-                    "rel_type": "org.matrix.msc4501.social.reply", "event_id": anchor,
-                    "room_id": parent.room_id, "sender": await _author_mxid(app, parent.pubkey),
-                    "via": [app.state.config.homeserver.server_name],
-                }
+            relation = await social_relation(
+                app, REPLY_REL_TYPE, room_id=parent.room_id, event_id=anchor,
+                sender=await _author_mxid(app, parent.pubkey), displayname=parent_author,
+            )
+            copy = await message_content(app, raw, as_user_id=remote.ghost_user_id, header_plain=header_plain,
+                                         header_html=header_html, social_body=relation is not None)
+            if relation is not None:
+                copy[SOCIAL_RELATES_TO_FIELD] = relation
             copy["external_url"] = event_url(app, raw)
             copy_id = await _send(app, remote.room_id, copy, sender=remote.ghost_user_id, ts=int(raw["created_at"]) * 1000)
             await repository.put_mirrored_event(copy_id, raw["id"], remote.room_id)
@@ -1101,11 +1122,10 @@ async def _quote_footer(app: FastAPI, raw: dict[str, Any]) -> tuple[str, str, di
     if row is not None and row.room_id and row.matrix_event_id:
         link = event_link(app, row.room_id, row.matrix_event_id)
         preview, _media = await post_preview(app, row.room_id, row.matrix_event_id)
-        if app.state.config.bridge.set_msc4501_relates_to:
-            relation = {
-                "rel_type": "org.matrix.msc4501.social.repost", "event_id": row.matrix_event_id, "room_id": row.room_id,
-                "sender": await _author_mxid(app, author_pubkey), "via": [app.state.config.homeserver.server_name],
-            }
+        relation = await social_relation(
+            app, REPOST_REL_TYPE, room_id=row.room_id, event_id=row.matrix_event_id,
+            sender=await _author_mxid(app, author_pubkey), displayname=author,
+        )
     else:
         link = event_url(app, quoted_raw) if quoted_raw else _viewer_link(app, quoted_id)
         preview = ((quoted_raw or {}).get("content") or "")[:200]
@@ -1127,7 +1147,7 @@ async def _followed_post(app: FastAPI, raw: dict[str, Any], *, parent_id: str | 
     footer_plain, footer_html, relation = await _quote_footer(app, raw)
     content = await message_content(
         app, raw, as_user_id=remote.ghost_user_id, header_plain=header_plain, header_html=header_html,
-        footer_plain=footer_plain, footer_html=footer_html,
+        footer_plain=footer_plain, footer_html=footer_html, social_body=relation is not None,
     )
     if relation is not None:
         content[SOCIAL_RELATES_TO_FIELD] = relation

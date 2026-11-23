@@ -381,7 +381,8 @@ def test_repost_of_our_own_fediverse_post(client, homeserver, relay_pool, ours) 
     ghost = run(client, client.app.state.repository.get_remote_account, mostr.pubkey)
     if ours:
         assert asked == [note_url + "/matrix"]
-        assert card["content"]["body"].startswith("🔁 reposted Q's post:")
+        assert card["content"]["formatted_body"].startswith("🔁 reposted Q's ")
+        assert card["content"]["body"].startswith("https://matrix.to/#/!approfile:example.org/$original")
         assert (relation["room_id"], relation["event_id"], relation["sender"]) == ("!approfile:example.org", "$original", "@q:example.org")
         assert ghost is None or ghost.room_id is None
     else:
@@ -415,7 +416,7 @@ def test_repost_card_reuses_the_originals_media(client, homeserver, relay_pool) 
     copy = homeserver.messages(carols_room)[-1]["content"]
     card = homeserver.messages(remote.room_id)[-1]["content"]
     assert copy["msgtype"] == card["msgtype"] == "m.video" and card["url"] == copy["url"]
-    assert card["body"].startswith("🔁 reposted ")
+    assert card["formatted_body"].startswith("🔁 reposted ") and card["body"].startswith("https://matrix.to/#/")
     assert fetched.count(video) == 1
 
 
@@ -468,6 +469,27 @@ def test_reply_to_a_reaction_goes_in_the_reacted_posts_thread(client, homeserver
     [rich] = [c["formatted_body"] for _, c, _ in homeserver.sent if "replied to your reaction" in c.get("body", "")]
     assert f"Alice&#x27;s <a href=\"https://matrix.to/#/{remote.room_id}/{mirrored['event_id']}" in rich
     assert rich.split("</p>")[0].endswith(">post</a>")
+
+
+def test_followed_reply_copy_carries_the_msc4501_reply(client, homeserver, relay_pool) -> None:
+    """A followed account's reply to a post in another room is copied to
+    their own room with the relation, the replied-to post's content inside
+    it, and their own words alone as social.body."""
+    _q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    bob = Stranger()
+    relay_pool.network.append(bob.event(0, json.dumps({"name": "Bob"}), created_at=1000))
+    command(client, f"[follow {bob.pubkey}")
+    reply = bob.event(1, "didn't one of them die?", [["e", raw["id"], "", "root"], ["p", alice.pubkey]])
+    run(client, ingest, client.app, reply, origin="subscription")
+    bobs = run(client, client.app.state.repository.get_remote_account, bob.pubkey)
+    copy = homeserver.messages(bobs.room_id)[-1]["content"]
+    assert copy["body"].startswith("⤵️ Reply to Alice's post:")
+    relation = copy["org.matrix.msc4501.social.relates_to"]
+    assert relation["rel_type"] == "org.matrix.msc4501.social.reply"
+    assert (relation["event_id"], relation["room_id"], relation["displayname"]) == (mirrored["event_id"], remote.room_id, "Alice")
+    assert relation["content"]["body"] == "alice says hi" and "content_inline" not in relation
+    assert copy["org.matrix.msc4501.social.body"] == "didn't one of them die?"
+    assert "Reply to" not in copy["org.matrix.msc4501.social.formatted_body"]
 
 
 def test_reply_to_a_custom_emoji_reaction_shows_it(client, homeserver, relay_pool) -> None:
@@ -589,7 +611,10 @@ def test_followed_account_reposting_a_local_post(client, homeserver, relay_pool)
     assert reaction["content"]["m.relates_to"] == {"rel_type": "m.annotation", "event_id": message["event_id"], "key": "🔁"}
     assert any("reposted your post" in b for b in notifications(client, homeserver))
     card = homeserver.messages(remote.room_id)[-1]
-    assert card["content"]["body"].startswith("🔁 reposted ") and "my own post" in card["content"]["body"]
+    assert card["content"]["formatted_body"].startswith("🔁 reposted ") and "my own post" in card["content"]["formatted_body"]
+    # A client that understands the relation shows the post's words alone.
+    assert card["content"]["body"] == f"https://matrix.to/#/{message['room_id']}/{message['event_id']}"
+    assert card["content"]["org.matrix.msc4501.social.body"] == "my own post"
     assert card["content"]["org.matrix.msc4501.social.relates_to"]["event_id"] == message["event_id"]
 
     undo = alice.event(5, "", [["e", repost["id"]], ["k", "6"]])
@@ -613,7 +638,7 @@ def test_repair_reposts_that_only_got_a_reaction(client, homeserver, relay_pool)
 
     assert run(client, repair_repost_cards, client.app) == 1
     card = homeserver.messages(remote.room_id)[-1]
-    assert card["content"]["body"].startswith("🔁 reposted ") and "worth reposting" in card["content"]["body"]
+    assert card["content"]["formatted_body"].startswith("🔁 reposted ") and "worth reposting" in card["content"]["formatted_body"]
     relation = card["content"]["org.matrix.msc4501.social.relates_to"]
     assert relation["rel_type"] == "org.matrix.msc4501.social.repost" and relation["event_id"] == message["event_id"]
     assert card["content"]["external_url"].startswith("https://ditto.pub/nevent1")
@@ -780,7 +805,7 @@ def test_reacting_to_a_repost_card_acts_on_the_original(client, homeserver, rela
     assert run(client, ingest, client.app, repost, origin="subscription").stored
     remote = run(client, client.app.state.repository.get_remote_account, alice.pubkey)
     card = homeserver.messages(remote.room_id)[-1]
-    assert card["content"]["body"].startswith("🔁 reposted ")
+    assert card["content"]["formatted_body"].startswith("🔁 reposted ")
     for key in ("🔁", "👍"):
         transact(client, homeserver._store(remote.room_id, "m.reaction", {"m.relates_to": {
             "rel_type": "m.annotation", "event_id": card["event_id"], "key": key}}, "@q:example.org"))
