@@ -328,6 +328,8 @@ async def _reply_delay(app: FastAPI, raw: dict[str, Any]) -> float | None:
     """For a reply to a post by someone here: how many seconds after it."""
     if raw["kind"] not in (1, 1111):
         return None
+    if any(t[1] in ("1617", "1618", "1621") for t in _tags(raw, "K")):
+        return None  # a repository's own bots answer its issues at once
     repository = app.state.repository
     delays = []
     for event_id in [t[1] for t in raw["tags"] if len(t) >= 2 and t[0] in ("e", "E")][:20]:
@@ -391,6 +393,11 @@ async def _ingest(app: FastAPI, raw: dict[str, Any], event: nostr_event.Event, *
     except nostr_event.InvalidEvent as exc:
         return IngestResult(False, f"invalid: {exc}")
 
+    from bridge import git_rooms
+
+    if await git_rooms.receive(app, raw, verified=True):
+        # A Concord community's repository: its issues and their comments.
+        return IngestResult(True, "", stored=True)
     if event.kind == VANISH_KIND:
         from bridge.vanish import receive_vanish
 

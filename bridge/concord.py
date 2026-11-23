@@ -243,6 +243,10 @@ class Community:
     # each chain written here; ``links``: the invite links minted.
     owner_salt: str = ""
     control_root: str = ""
+    # Git repositories attached to channels (bridge.git_rooms): the Git
+    # Space, and address -> {"room", "name", "relays", "maintainers"}.
+    git_space: str | None = None
+    git: dict[str, dict[str, Any]] = field(default_factory=dict)
     mine: dict[str, dict[str, Any]] = field(default_factory=dict)
     links: list[dict[str, Any]] = field(default_factory=list)
 
@@ -518,6 +522,9 @@ def fold_control(community: Community, rumors: list[dict[str, Any]]) -> None:
         channel["name"] = str(content.get("name") or "channel")[:64]
         channel["private"] = bool(content.get("private"))
         channel["deleted"] = bool(content.get("deleted"))
+        from bridge.git_rooms import channel_repositories
+
+        channel["git"] = channel_repositories(content)
 
 
 async def control_rumors(app: FastAPI, community: Community) -> list[dict[str, Any]]:
@@ -617,6 +624,12 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
             if user not in done:
                 done.append(user)
         await add_room_to_space(app, user, community.space)
+    from bridge import git_rooms
+
+    try:
+        await git_rooms.ensure_rooms(app, community)
+    except HomeserverError:
+        logger.info("Could not make the git rooms of %s", community.id, exc_info=True)
 
 
 async def _fetch_image(app: FastAPI, ref: dict[str, str]) -> tuple[bytes, str]:

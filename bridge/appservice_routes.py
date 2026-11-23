@@ -41,6 +41,7 @@ from bridge.polls import maybe_handle_vote, maybe_publish_poll
 from bridge.secret_guard import maybe_catch_secret
 from bridge.shares import maybe_publish_share, repost_relation
 from bridge.concord import maybe_publish as maybe_publish_concord
+from bridge.git_rooms import maybe_open_issue
 from bridge.concord_owner import maybe_invite_ghost, maybe_sync_topic
 from bridge.games_room import maybe_handle_card_reaction
 from bridge.groups import maybe_publish as maybe_publish_group
@@ -146,6 +147,8 @@ _HANDLERS = (
     maybe_publish_concord,
     # A NIP-29 group's room: the same, to the group's relay.
     maybe_publish_group,
+    # A Concord community's git repository room: a new message opens an issue.
+    maybe_open_issue,
     maybe_handle_reaction,
     maybe_publish_poll,
     maybe_handle_vote,

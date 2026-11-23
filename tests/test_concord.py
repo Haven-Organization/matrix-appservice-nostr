@@ -658,3 +658,82 @@ def test_mentions_go_out_as_npubs(client, homeserver, relay_pool) -> None:
         "formatted_body": f'<a href="https://matrix.to/#/{ghost}">Alice</a>: hi'})
     rumor = last()
     assert rumor["content"] == f"{npub}: hi" and ["p", alice.pubkey] in rumor["tags"]
+
+
+def test_git_repositories_get_rooms_in_a_git_space(client, homeserver, relay_pool) -> None:
+    from bridge.inbound import ingest
+    from tests.conftest import settle
+    from tests.test_federation import transact
+
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    owner, maintainer, stranger = community.owner, Stranger(), Stranger()
+    address = f"30617:{owner.pubkey}:posterchanai"
+    relay_pool.network.append(owner.event(30617, "", [["d", "posterchanai"], ["name", "PosterChanAI"],
+                                                       ["description", "The AI"], ["maintainers", maintainer.pubkey]]))
+    long_ago = int(time.time()) - 60 * 86400
+    open_issue = alice.event(1621, "It refreshes and stays logged in.", [
+        ["a", address, RELAY], ["p", owner.pubkey], ["subject", "Logout doesn't stick"], ["t", "bug"]], created_at=long_ago)
+    closed_issue = alice.event(1621, "old", [["a", address], ["subject", "Old and closed"]], created_at=long_ago)
+    closed = maintainer.event(1632, "", [["e", closed_issue["id"], "", "root"], ["a", address]], created_at=long_ago + 5)
+    comment = stranger.event(1111, "same here", [["E", open_issue["id"], "", alice.pubkey], ["K", "1621"], ["P", alice.pubkey],
+                                                 ["e", open_issue["id"], "", alice.pubkey], ["k", "1621"], ["p", alice.pubkey]],
+                             created_at=long_ago + 10)
+    relay_pool.network += [open_issue, closed_issue, closed, comment]
+    git_channel = secrets.token_hex(32)
+    wrap = community.edition("2", git_channel, {"name": "Git", "private": False, "custom": {"armada.git": {"repositories": [
+        {"address": address, "relayHints": [RELAY], "attachedAt": 1}]}}})
+    run(client, concord.receive, client.app, wrap)
+    settle(client)
+    state = run(client, concord.load, client.app, community.id)
+    # A Git Space in the community's Space, with a room for the repository.
+    made = {r["room_id"]: r for r in homeserver.created}
+    assert made[state.git_space]["room_type"] == "m.space" and made[state.git_space]["name"] == "Git"
+    assert [s["state_key"] for s in made[state.git_space]["initial_state"] if s["type"] == "m.space.parent"] == [state.space]
+    repo_room = state.git[address]["room"]
+    assert made[repo_room]["name"] == "PosterChanAI"
+    assert [s["state_key"] for s in made[repo_room]["initial_state"] if s["type"] == "m.space.parent"] == [state.git_space]
+    assert state.git[address]["maintainers"] == [maintainer.pubkey]
+    # The open issue came in (not the closed old one), with its comment in its thread.
+    shown = homeserver.messages(repo_room)
+    [root] = [e for e in shown if "Logout doesn't stick" in e["content"]["body"]]
+    assert root["content"]["body"].startswith("🐛 Logout doesn't stick [bug]") and root["sender"].startswith("@nostr_")
+    assert not [e for e in shown if "Old and closed" in e["content"]["body"]]
+    [reply] = [e for e in shown if e["content"]["body"] == "same here"]
+    assert reply["content"]["m.relates_to"]["event_id"] == root["event_id"]
+    # A maintainer resolves it: a line in the thread and the marker; a stranger can't.
+    run(client, ingest, client.app, stranger.event(1632, "", [["e", open_issue["id"], "", "root"]]), origin="subscription")
+    resolved = maintainer.event(1631, "", [["e", open_issue["id"], "", "root"], ["a", address]])
+    run(client, ingest, client.app, resolved, origin="subscription")
+    notices = [e for e in homeserver.messages(repo_room) if e["content"].get("msgtype") == "m.notice"]
+    assert [n["content"]["body"] for n in notices] == ["✅ marked this resolved"]
+    [marker] = homeserver.messages(repo_room, "m.reaction")
+    assert marker["content"]["m.relates_to"]["key"] == "✅ resolved"
+    # q comments from another app (the key's own): in the thread, as q.
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    mine = nostr_event.build(secret, kind=1111, content="here's a screenshot", created_at=int(time.time()), tags=[
+        ["E", open_issue["id"], "", alice.pubkey], ["K", "1621"], ["P", alice.pubkey],
+        ["e", open_issue["id"], "", alice.pubkey], ["k", "1621"], ["p", alice.pubkey]]).to_dict()
+    run(client, ingest, client.app, mine, origin="subscription")
+    shown_mine = homeserver.messages(repo_room)[-1]
+    assert shown_mine["content"]["body"] == "here's a screenshot"
+    assert shown_mine["content"]["m.relates_to"]["event_id"] == root["event_id"]
+    assert shown_mine["content"]["com.beeper.per_message_profile"]["id"] == "@q:example.org"
+    assert not [e for e in homeserver.messages(q.profile_room_id) if "screenshot" in e["content"].get("body", "")]
+    # From Matrix: a new message opens an issue; a thread reply comments.
+    transact(client, homeserver._store(repo_room, "m.room.message", {"msgtype": "m.text", "body": "Copy link\nOn profiles, please."},
+                                       "@q:example.org"))
+    [issue] = [e for e, _ in relay_pool.published if e.kind == 1621]
+    tags = [list(t) for t in issue.tags]
+    assert issue.pubkey == q.pubkey and issue.content == "On profiles, please." and ["subject", "Copy link"] in tags
+    assert ["a", address, RELAY] in tags and ["p", owner.pubkey] in tags and ["p", maintainer.pubkey] in tags
+    transact(client, homeserver._store(repo_room, "m.room.message", {"msgtype": "m.text", "body": "me too", "m.relates_to": {
+        "rel_type": "m.thread", "event_id": root["event_id"], "is_falling_back": True,
+        "m.in_reply_to": {"event_id": root["event_id"]}}}, "@q:example.org"))
+    [answer] = [e for e, _ in relay_pool.published if e.kind == 1111]
+    answer_tags = [list(t) for t in answer.tags]
+    assert ["K", "1621"] in answer_tags and any(t[:2] == ["E", open_issue["id"]] for t in answer_tags)
+    # Subscribed: the repository's events, and comments on what's shown.
+    desired = run(client, client.app.state.feeds._desired)
+    git_filters = [f for (relay, name), fs in desired.items() if name.startswith("git:") for f in fs]
+    assert any(f.get("#a") == [address] for f in git_filters)
+    assert any(open_issue["id"] in f.get("#E", []) for f in git_filters)

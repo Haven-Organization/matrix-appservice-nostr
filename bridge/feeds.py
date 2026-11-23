@@ -119,9 +119,10 @@ class Feeds:
             await self._desired_games(desired)
         from bridge import concord
 
-        from bridge import groups
+        from bridge import git_rooms, groups
 
-        for (relay, name), filters in [*(await concord.desired(app)).items(), *(await groups.desired(app)).items()]:
+        for (relay, name), filters in [*(await concord.desired(app)).items(), *(await groups.desired(app)).items(),
+                                       *(await git_rooms.desired(app)).items()]:
             since = await self._since(relay, name)
             desired[(relay, name)] = [{**f, "since": since} for f in filters]
         return desired
