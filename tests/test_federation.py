@@ -824,3 +824,107 @@ def test_only_strangers_reaching_someone_here_count_toward_a_wave(client, homese
     mention = Stranger().event(1, "hi q", tags=[["p", q.pubkey]])
     run(client, ingest, client.app, mention, origin="relay")
     assert len(guard._wave) == 1
+
+
+# -- an ID's key used in another Nostr app (bridge.elsewhere) ----------------------------
+
+
+def _signed_elsewhere(client, q, kind, content="", tags=(), created_at=None):
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    return nostr_event.build(secret, kind=kind, content=content, tags=list(tags),
+                             created_at=created_at or int(time.time())).to_dict()
+
+
+def test_replies_reactions_and_reposts_made_elsewhere_show_as_theirs(client, homeserver, relay_pool) -> None:
+    q, alice, raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    bot = "@nostrbot:example.org"
+    # A reply in another app: in the post's thread, in the room it's shown in.
+    reply = _signed_elsewhere(client, q, 1, "replying from my phone", [["e", raw["id"], "", "root"], ["p", alice.pubkey]])
+    assert run(client, ingest, client.app, reply, origin="subscription").stored
+    shown = homeserver.messages(remote.room_id)[-1]
+    assert shown["sender"] == bot and shown["content"]["body"].startswith("replying from my phone")
+    assert shown["content"]["m.relates_to"]["event_id"] == mirrored["event_id"]
+    assert shown["content"]["com.beeper.per_message_profile"]["id"] == "@q:example.org"
+    # A like and a repost: on the post, as theirs; the repost's card in their room.
+    like = _signed_elsewhere(client, q, 7, "+", [["e", raw["id"]], ["p", alice.pubkey], ["k", "1"]])
+    assert run(client, ingest, client.app, like, origin="subscription").stored
+    repost = _signed_elsewhere(client, q, 6, "", [["e", raw["id"], "wss://nostr.example.org"], ["p", alice.pubkey]])
+    assert run(client, ingest, client.app, repost, origin="subscription").stored
+    reactions = homeserver.messages(remote.room_id, "m.reaction")
+    assert [r["content"]["m.relates_to"]["key"] for r in reactions] == ["👍", "🔁"]
+    assert all(r["sender"] == bot and r["content"]["com.beeper.per_message_profile"]["id"] == "@q:example.org"
+               for r in reactions)
+    card = homeserver.messages(q.profile_room_id)[-1]
+    assert "reposted" in card["content"]["formatted_body"]
+    # Deleting the repost there takes back the 🔁 and the card.
+    undo = _signed_elsewhere(client, q, 5, "", [["e", repost["id"]], ["k", "6"]])
+    run(client, ingest, client.app, undo, origin="subscription")
+    redacted = {event_id for _, event_id, _ in homeserver.redactions}
+    assert {reactions[1]["event_id"], card["event_id"]} <= redacted
+    # Nothing the bridge made itself comes back in twice.
+    transact(client, homeserver._store(remote.room_id, "m.reaction", {
+        "m.relates_to": {"rel_type": "m.annotation", "event_id": mirrored["event_id"], "key": "😂"}}, "@q:example.org"))
+    [ours] = [e for e, _ in relay_pool.published if e.kind == 7]
+    before = len(homeserver.messages(remote.room_id, "m.reaction"))
+    run(client, ingest, client.app, ours.to_dict(), origin="subscription")
+    assert len(homeserver.messages(remote.room_id, "m.reaction")) == before
+
+
+def test_follow_and_mute_lists_made_elsewhere(client, homeserver, relay_pool) -> None:
+    q = create_id(client)
+    repo = client.app.state.repository
+    alice, bob, carol = Stranger(), Stranger(), Stranger()
+    follows = _signed_elsewhere(client, q, 3, "", [["p", alice.pubkey], ["p", bob.pubkey], ["t", "nostr"]])
+    assert run(client, ingest, client.app, follows, origin="subscription").stored
+    assert sorted(run(client, repo.list_follows, q.id)) == sorted([alice.pubkey, bob.pubkey])
+    assert not [e for e, _ in relay_pool.published if e.kind == 3 and e.id != follows["id"]]  # not published over
+    # Unfollowed there: unfollowed here. An older list changes nothing.
+    fewer = _signed_elsewhere(client, q, 3, "", [["p", alice.pubkey], ["t", "nostr"]], created_at=follows["created_at"] + 1)
+    run(client, ingest, client.app, fewer, origin="subscription")
+    assert run(client, repo.list_follows, q.id) == [alice.pubkey]
+    stale = _signed_elsewhere(client, q, 3, "", [], created_at=follows["created_at"] - 50)
+    run(client, ingest, client.app, stale, origin="subscription")
+    assert run(client, repo.list_follows, q.id) == [alice.pubkey]
+    # Following from Matrix next keeps what the bridge can't model.
+    command(client, f"[follow {carol.pubkey}")
+    published = [e for e, _ in relay_pool.published if e.kind == 3][-1]
+    assert ["t", "nostr"] in [list(t) for t in published.tags]
+    assert {t[1] for t in published.tags if t[0] == "p"} == {alice.pubkey, carol.pubkey}
+    # A mute list: blocks.
+    mutes = _signed_elsewhere(client, q, 10000, "", [["p", bob.pubkey]])
+    run(client, ingest, client.app, mutes, origin="subscription")
+    assert run(client, repo.list_blocks, q.id) == [bob.pubkey]
+
+
+def test_a_profile_edited_elsewhere(client, homeserver, relay_pool) -> None:
+    q = create_id(client)
+    profile = _signed_elsewhere(client, q, 0, json.dumps({"name": "Q Prime", "about": "now on my phone",
+                                                          "website": "https://q.example"}), created_at=int(time.time()) + 5)
+    run(client, ingest, client.app, profile, origin="subscription")
+    assert homeserver.state_of(q.profile_room_id, "m.room.name")["name"] == "Q Prime"
+    assert homeserver.state_of(q.profile_room_id, "m.room.topic")["topic"] == "now on my phone"
+    assert homeserver.state_of(q.profile_room_id, "software.haven.nostr.profile_extra") == {"website": "https://q.example"}
+
+
+def test_a_dm_sent_from_another_app(client, homeserver, relay_pool) -> None:
+    q = create_id(client)
+    alice = Stranger()
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    rumor = nip59.make_rumor(q.pubkey, 14, "sent from my phone", [["p", alice.pubkey]], int(time.time()))
+    own_copy = nip59.wrap_message(rumor, secret, q.pubkey).to_dict()
+    assert relay_send(client, own_copy)[2] is True
+    dm_room = run(client, client.app.state.repository.get_dm_room, q.id, alice.pubkey)
+    [message] = [e for e in homeserver.messages(dm_room) if e["content"].get(EMBED_FIELD)]
+    assert message["sender"] == "@nostrbot:example.org" and message["content"]["body"] == "sent from my phone"
+    assert message["content"]["com.beeper.per_message_profile"]["id"] == "@q:example.org"
+    # Another copy of the same message isn't shown twice.
+    again = nip59.wrap_message(rumor, secret, q.pubkey).to_dict()
+    relay_send(client, again)
+    assert len([e for e in homeserver.messages(dm_room) if e["content"].get(EMBED_FIELD)]) == 1
+
+
+def test_feeds_ask_for_what_local_ids_sign_elsewhere(client) -> None:
+    q = create_id(client)
+    desired = run(client, client.app.state.feeds._desired)
+    inbox = next(filters for (relay, name), filters in desired.items() if name == "inbox")
+    assert any(f.get("authors") == [q.pubkey] and 1 in f["kinds"] and 3 in f["kinds"] for f in inbox)

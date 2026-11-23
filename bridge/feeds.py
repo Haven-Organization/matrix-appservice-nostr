@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 FOLLOW_KINDS = [0, 1, 5, 6, 7, 16, 20, 21, 22, 1063, 1068, 1111, 10002, 30023, 34235, 34236]
 INBOX_KINDS = [1, 3, 6, 7, 16, 1111, 9735]
+# What a local ID's key may sign in another Nostr app that shows here
+# (bridge.elsewhere): posts, reactions, reposts, deletions, its profile and
+# its follow and mute lists. The bridge's own copies are skipped as stored.
+OWN_KINDS = [0, 1, 3, 5, 6, 7, 16, 20, 21, 22, 1063, 1111, 10000, 30023, 34235, 34236]
 DM_KINDS = [4, 1059]
 _SAFETY_SECONDS = 300
 # Gift wraps carry a randomized created_at up to two days in the past.
@@ -107,6 +111,8 @@ class Feeds:
                 desired[(relay, "inbox")] = [
                     {"#p": local_keys, "kinds": INBOX_KINDS, "since": since},
                     {"#P": local_keys, "kinds": [1111], "since": since},
+                    # What the IDs did with their keys in other apps.
+                    {"authors": local_keys, "kinds": OWN_KINDS, "since": since},
                 ]
                 desired[(relay, "dms")] = [{"#p": local_keys, "kinds": DM_KINDS, "since": dm_since}]
         if config.webxdc.enabled:

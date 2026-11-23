@@ -128,8 +128,8 @@ async def publish_list(app: FastAPI, nostr_id: NostrId, kind: int) -> None:
     stands in the database."""
     repository = app.state.repository
     pubkeys = await (repository.list_follows(nostr_id.id) if kind == FOLLOW_LIST_KIND else repository.list_blocks(nostr_id.id))
-    tags = [["p", pubkey] for pubkey in pubkeys]
     previous = await repository.get_latest_event(nostr_id.pubkey, kind)
+    tags = [["p", pubkey] for pubkey in pubkeys] + await _kept_tags(app, previous)
     created_at = int(time.time())
     if previous is not None and created_at <= previous.created_at:
         created_at = previous.created_at + 1
@@ -146,11 +146,25 @@ async def publish_list(app: FastAPI, nostr_id: NostrId, kind: int) -> None:
     publish_in_background(app, event)
 
 
+async def _kept_tags(app: FastAPI, previous: EventRow | None) -> list[list[str]]:
+    """What the last list had besides accounts (followed hashtags, say,
+    from a list made in another app): kept as it was."""
+    if previous is None:
+        return []
+    from bridge.interactions import raw_of
+
+    raw = await raw_of(app, previous)
+    return [list(t) for t in (raw or {}).get("tags") or [] if isinstance(t, list) and t and t[0] != "p"]
+
+
 # -- following ------------------------------------------------------------------------
 
 
-async def follow(app: FastAPI, nostr_id: NostrId, reference: Reference, *, backfill: bool = True) -> tuple[RemoteAccount, bool]:
+async def follow(
+    app: FastAPI, nostr_id: NostrId, reference: Reference, *, backfill: bool = True, publish: bool = True
+) -> tuple[RemoteAccount, bool]:
     """Follow as ``nostr_id``. Returns the account and whether this was new.
+    ``publish=False``: the follow list isn't published (it came from Nostr).
     Raises ``HomeserverError`` if its room can't be made."""
     repository = app.state.repository
     remote = await remotes.get_or_create_remote(app, reference.pubkey)
@@ -158,7 +172,7 @@ async def follow(app: FastAPI, nostr_id: NostrId, reference: Reference, *, backf
     remote = await remotes.ensure_room(app, remote)
     assert remote.room_id is not None
     new = await repository.add_follow(nostr_id.id, reference.pubkey, datetime.now(timezone.utc).isoformat())
-    if new:
+    if new and publish:
         await publish_list(app, nostr_id, FOLLOW_LIST_KIND)
     await invite_to_room(app, remote.room_id, nostr_id.matrix_user_id)
     await add_room_to_space(app, nostr_id.matrix_user_id, remote.room_id)

@@ -88,7 +88,17 @@ A user of a **different** Matrix homeserver needs a bridge admin's grant to do a
 
 **Other people in your Profile Room:** someone who replies to one of your posts publishes that reply from *their own* active ID, as a reply to your post: a shadow ID is made for them if they have none (for a user of another homeserver, only with a grant). Anything else they say there is conversation and stays in Matrix.
 
-**Posts from your other Nostr apps:** if you brought your own key, what you post from another app as that ID is shown in its Profile Room too, sent by the bot under your ID's name (MSC4144), and your deletions are applied.
+**Your key in other Nostr apps:** if you brought your own key, or exported your ID's key (`[export key`), and use it in another Nostr app, what you do there shows here as if you'd done it in Matrix, sent by the bot under your ID's name and avatar (MSC4144). The bridge watches its publish and fallback relays for events signed by your IDs, as well as its own relay, so it doesn't depend on which relays the other app picks.
+
+- **Posts** go in the ID's Profile Room; **replies** go in the thread of the post they answer, in whichever room that post is shown in.
+- **Reactions** and **reposts** appear on the post like a Matrix reaction or 🔁 would, and a repost gets its card in your Profile Room.
+- **Deletions** redact what they delete.
+- **Profile edits** change the Profile Room's name, topic, avatar, banner, website and lightning address, and the profile is republished from the room as usual. A shadow ID's profile is always its Matrix profile, so edits to it elsewhere aren't taken.
+- **Follow and mute lists**: your follows and blocks here are made to match. The bridge doesn't republish the list over yours, and when it next publishes one, it keeps what it doesn't model (like followed hashtags).
+- **DMs you send** show in the DM room with that account.
+- **Concord channels and NIP-29 groups** already show your messages from other apps, as yours.
+
+The bridge's own events coming back from relays are recognised and skipped, and a list or profile older than the bridge's is ignored.
 
 ## Sharing a room with other bridges
 

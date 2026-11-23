@@ -140,10 +140,12 @@ async def receive_dm(app: FastAPI, raw: dict[str, Any], *, origin: str, ip: str 
 
 async def _deliver(app: FastAPI, raw: dict[str, Any], rumor: dict[str, Any], sender: str, local: NostrId) -> bool:
     repository = app.state.repository
-    if sender == local.pubkey:
-        return False  # our own sent copy coming back
     if rumor.get("kind") not in (14, FILE_MESSAGE_KIND):
         return False
+    if sender == local.pubkey:
+        # Their own copy of a DM they sent: the bridge's copies are stored
+        # and never get here, so this was sent from another Nostr app.
+        return await _deliver_sent_elsewhere(app, raw, rumor, local)
     if await repository.get_id_by_pubkey(sender) is not None:
         return False  # between two IDs on this server: that's a Matrix DM
     if await _filtered_request(app, local, sender, str(rumor.get("content") or "")):
@@ -166,6 +168,55 @@ async def _deliver(app: FastAPI, raw: dict[str, Any], rumor: dict[str, Any], sen
         )
     except HomeserverError:
         logger.warning("Could not deliver a DM to %s", room_id, exc_info=True)
+        return False
+    await repository.put_event(
+        EventRow(
+            id=raw["id"], pubkey=raw["pubkey"], kind=raw["kind"], created_at=int(raw["created_at"]), sig=raw["sig"],
+            source=json.dumps(embedded_source()), room_id=room_id, matrix_event_id=event_id, scope="dm",
+            tags=index_tags(raw.get("tags")),
+        )
+    )
+    if isinstance(rumor.get("id"), str):
+        await repository.put_mirrored_event(event_id, rumor["id"], room_id)
+    hub = getattr(app.state, "relay_hub", None)
+    if hub is not None:
+        hub.broadcast(raw, "dm")
+    return True
+
+
+async def _deliver_sent_elsewhere(app: FastAPI, raw: dict[str, Any], rumor: dict[str, Any], local: NostrId) -> bool:
+    """A DM the user sent with this ID's key from another Nostr app: shown
+    in the DM room as theirs, sent by the bot (MSC4144), as ``bridge.elsewhere``
+    shows everything else they do there."""
+    from bridge.elsewhere import as_them
+
+    repository = app.state.repository
+    recipients = list(dict.fromkeys(
+        t[1] for t in rumor.get("tags") or [] if len(t) >= 2 and t[0] == "p" and t[1] != local.pubkey
+    ))
+    if len(recipients) != 1 or await repository.get_id_by_pubkey(recipients[0]) is not None:
+        return False  # a group DM, or one to an ID here (a Matrix DM)
+    if isinstance(rumor.get("id"), str) and await repository.list_mirrored_copies(rumor["id"]):
+        return True  # already shown (another copy of the same message)
+    remote = await remotes.get_or_create_remote(app, recipients[0])
+    room_id = await ensure_dm_room(app, local, remote)
+    bot = bot_mxid(app.state.config)
+    content = await _rumor_content(app, rumor, as_user_id=bot)
+    if content is None:
+        return False
+    content.update(await as_them(app, local))
+    reply_to = next((t[1] for t in rumor.get("tags") or [] if len(t) >= 2 and t[0] == "e"), None)
+    if reply_to:
+        matrix_reply = await repository.get_mirrored_matrix_event(reply_to, room_id)
+        if matrix_reply:
+            content["m.relates_to"] = {"m.in_reply_to": {"event_id": matrix_reply}}
+    content[EMBED_FIELD] = raw
+    try:
+        event_id = await app.state.homeserver.send_message_event(
+            room_id, content, as_user_id=bot, ts=int(rumor.get("created_at") or time.time()) * 1000
+        )
+    except HomeserverError:
+        logger.warning("Could not show a DM sent elsewhere in %s", room_id, exc_info=True)
         return False
     await repository.put_event(
         EventRow(
