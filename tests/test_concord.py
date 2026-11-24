@@ -386,13 +386,17 @@ def test_custom_emoji_in_messages_both_ways(client, homeserver, relay_pool) -> N
     assert emoji[1] == "look-at-jer-go" and emoji[2].startswith("http")
 
 
-def test_the_guestbook_brings_members_and_honours_only_staff_kicks(client, homeserver, relay_pool) -> None:
+def test_the_guestbook_tracks_members_and_honours_only_staff_kicks(client, homeserver, relay_pool) -> None:
     q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
     bob = Stranger()
     run(client, concord.receive, client.app, community.sign_in(bob))
-    ghost = next(m for m in homeserver._room(room)["members"] if m.endswith(bob.pubkey + ":example.org"))
     state = run(client, concord.load, client.app, community.id)
     assert bob.pubkey in state.present
+    # Joining the community doesn't put Bob's ghost in its rooms: his first message there does.
+    assert not [m for m in homeserver._room(room)["members"] if bob.pubkey in m]
+    message, _ = community.say(bob, 9, "hi all")
+    run(client, concord.receive, client.app, message)
+    ghost = next(m for m in homeserver._room(room)["members"] if m.endswith(bob.pubkey + ":example.org"))
     # Alice isn't staff: her kick of Bob is ignored. The owner's isn't.
     run(client, concord.receive, client.app, community.sign_in(alice, concord.KICK_KIND, "", [["p", bob.pubkey]]))
     assert ghost in homeserver._room(room)["members"]

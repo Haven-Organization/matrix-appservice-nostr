@@ -1017,17 +1017,8 @@ async def apply_guestbook(app: FastAPI, community: Community, rumors: list[dict[
         (present.add if verb == "join" else present.discard)(pubkey)
     present -= set(community.banned)
     community.present = sorted(present)[:5000]
-    for pubkey in sorted(present - before):
-        if await app.state.repository.get_id_by_pubkey(pubkey) is not None:
-            continue
-        ghost = await remotes.get_or_create_remote(app, pubkey)
-        for channel_id in community.readable():
-            room = community.channels[channel_id].get("room")
-            if room:
-                try:
-                    await remotes.ensure_ghost_in_room(app, ghost.ghost_user_id, room)
-                except HomeserverError:
-                    pass
+    # A new member's ghost joins a channel's room with their first message
+    # or reaction there, not on joining the community.
     for pubkey in before - present:
         await _leave_rooms(app, community, pubkey)
     kicked = [pk for pk, (_at, verb, _id) in latest.items() if verb == "kick"] if live else []
