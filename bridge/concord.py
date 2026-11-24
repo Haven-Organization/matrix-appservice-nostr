@@ -1274,6 +1274,11 @@ async def _receive_chat(app: FastAPI, community: Community, channel_id: str, key
                     content["m.relates_to"] = {"rel_type": "m.thread", "event_id": (root or parent)[1],
                                                "is_falling_back": False,
                                                "m.in_reply_to": {"event_id": (parent or root)[1]}}
+            else:
+                # An inline quote is a Matrix reply.
+                quoted = await _lookup(app, (first.get("q") or [None, None])[1])
+                if quoted:
+                    content["m.relates_to"] = {"m.in_reply_to": {"event_id": quoted[1]}}
             event_id = await homeserver.send_message_event(room, content, as_user_id=sender, ts=ts)
         elif kind == 7:
             target = await _lookup(app, (first.get("e") or [None, None])[1])
@@ -1567,8 +1572,14 @@ async def _outgoing(app: FastAPI, event: dict[str, Any], content: dict[str, Any]
         has_media = True
     if not text and not has_media:
         return None
+    # A Matrix reply is Concord's inline quote (a kind 9 with a q tag), and a
+    # message in a Matrix thread is Concord's threaded reply (kind 1111):
+    # CORD-03 keeps the two apart.
     parent_event = (relates.get("m.in_reply_to") or {}).get("event_id")
     thread_root = relates.get("event_id") if relates.get("rel_type") == "m.thread" else None
+    if thread_root is None:
+        quoted = await rumor_of(parent_event)
+        return 9, text, [*tags, ["q", quoted[0], "", quoted[1]]] if quoted else tags
     parent = await rumor_of(parent_event if not relates.get("is_falling_back") else None) or await rumor_of(thread_root)
     if parent is None:
         return 9, text, tags

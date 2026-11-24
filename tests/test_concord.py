@@ -150,13 +150,24 @@ def test_messages_go_out_sealed_and_come_back_once(client, homeserver, relay_poo
     count = len(homeserver.messages(room))
     run(client, concord.receive, client.app, wrap.to_dict())
     assert len(homeserver.messages(room)) == count
-    # A Matrix reply becomes a threaded reply (kind 1111) to the message.
+    # A Matrix reply becomes an inline quote (a kind 9 with a q tag)...
     shown = homeserver.messages(room)[0]
+
+    def last_rumor():
+        return concord.open_wrap([e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1].to_dict(),
+                                 community.channel())
+
     post(client, homeserver, room, {"msgtype": "m.text", "body": "> quote\n\nreplying",
                                     "m.relates_to": {"m.in_reply_to": {"event_id": shown["event_id"]}}})
-    reply = concord.open_wrap([e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1].to_dict(),
-                              community.channel())
-    assert reply["kind"] == 1111 and ["E", earlier_id, "", alice.pubkey] in reply["tags"]
+    reply = last_rumor()
+    assert reply["kind"] == 9 and ["q", earlier_id, "", alice.pubkey] in reply["tags"]
+    assert not [t for t in reply["tags"] if t[0] in ("E", "e")]
+    # ...and a message in a Matrix thread a threaded reply (kind 1111).
+    post(client, homeserver, room, {"msgtype": "m.text", "body": "in the thread", "m.relates_to": {
+        "rel_type": "m.thread", "event_id": shown["event_id"], "is_falling_back": True,
+        "m.in_reply_to": {"event_id": shown["event_id"]}}})
+    threaded = last_rumor()
+    assert threaded["kind"] == 1111 and ["E", earlier_id, "", alice.pubkey] in threaded["tags"]
     assert sent
 
 
@@ -174,6 +185,12 @@ def test_live_reaction_reply_and_delete(client, homeserver, relay_pool) -> None:
     threaded = homeserver.messages(room)[-1]
     assert threaded["content"]["m.relates_to"]["rel_type"] == "m.thread"
     assert threaded["content"]["m.relates_to"]["event_id"] == original["event_id"]
+    # An inline quote is a Matrix reply.
+    quote, _ = community.say(bob, 9, "do you know what that means?", [["q", earlier_id, "", alice.pubkey]])
+    run(client, concord.receive, client.app, quote)
+    quoting = homeserver.messages(room)[-1]["content"]
+    assert quoting["m.relates_to"] == {"m.in_reply_to": {"event_id": original["event_id"]}}
+    assert quoting["body"] == "do you know what that means?"
     # Bob can't delete Alice's message; Alice can.
     forged, _ = community.say(bob, 5, "", [["e", earlier_id], ["k", "9"]])
     run(client, concord.receive, client.app, forged)
