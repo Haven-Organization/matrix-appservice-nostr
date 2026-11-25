@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 
 from bridge.homeserver_client import HomeserverError
+from bridge.markdown import has_markdown
 from bridge.nostr import nip19
 from bridge.safe_fetch import FetchError, UnsafeAddress
 from bridge.users import bot_mxid
@@ -163,9 +164,12 @@ async def matrix_link_for_event(app: FastAPI, event_id: str) -> str | None:
     return f"https://matrix.to/#/{row.room_id}/{row.matrix_event_id}"
 
 
-async def render(app: FastAPI, raw: dict[str, Any], *, skip_urls: set[str] | frozenset[str] = frozenset()) -> Rendered:
+async def render(app: FastAPI, raw: dict[str, Any], *, skip_urls: set[str] | frozenset[str] = frozenset(),
+                 markdown: bool = False) -> Rendered:
     """``raw``'s text as Matrix body and HTML. URLs in ``skip_urls`` (media
-    shown as the message itself) are left out of the text."""
+    shown as the message itself) are left out of the text. ``markdown``:
+    the text's Markdown (bold, headings, lists...) becomes HTML too, for
+    apps whose plain text carries it."""
     viewer = app.state.config.nostr.web_viewer_url
     content = raw.get("content") or ""
     if raw.get("kind") in (20, 21, 22, 34235, 34236):
@@ -214,7 +218,12 @@ async def render(app: FastAPI, raw: dict[str, Any], *, skip_urls: set[str] | fro
     plain.append(content[position:])
     rich.append(html.escape(content[position:]))
     body = "".join(plain).strip()
-    formatted = "".join(rich).strip().replace("\n", "<br>")
+    if markdown and has_markdown(body):
+        from bridge.markdown import to_html
+
+        formatted = to_html("".join(rich).strip())
+    else:
+        formatted = "".join(rich).strip().replace("\n", "<br>")
     warning = next(
         (t for t in raw.get("tags") or [] if isinstance(t, list) and t and t[0] == "content-warning"), None
     )
@@ -411,6 +420,7 @@ async def message_content(
     footer_html: str = "",
     media: dict[str, Any] | None = None,
     social_body: bool = False,
+    markdown: bool = False,
 ) -> dict[str, Any]:
     """A complete Matrix message for a Nostr post: its first image or video
     as the message (when it can be copied), the text as body/caption, and
@@ -420,7 +430,7 @@ async def message_content(
     ``filename``, from the post's own Matrix copy), used instead of
     downloading it again. ``social_body``: also give the post's own text,
     without header and footer, as MSC4501's ``social.body`` (for an event
-    that carries a relation)."""
+    that carries a relation). ``markdown``: see ``render``."""
     if raw.get("kind") == 30023:
         raw = _long_form(app, raw)
     attachments = attachments_of(raw)
@@ -430,7 +440,7 @@ async def message_content(
         copied = media if media is not None else await copy_attachment(app, main, as_user_id=as_user_id)
     skip = {main.url} if copied is not None and main is not None else set()
     raw = await _emoji_in_matrix(app, raw, as_user_id)
-    rendered = await render(app, raw, skip_urls=skip)
+    rendered = await render(app, raw, skip_urls=skip, markdown=markdown)
     others = [a for a in attachments if copied is None or a is not main]
     body, formatted = rendered.body, rendered.html
     games = []

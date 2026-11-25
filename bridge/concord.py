@@ -1508,7 +1508,8 @@ async def _message(app: FastAPI, rumor: dict[str, Any], sender: str) -> dict[str
 
     raw = {"id": rumor["id"], "pubkey": rumor["pubkey"], "kind": 1, "created_at": rumor.get("created_at", 0),
            "content": rumor.get("content") or "", "tags": [t for t in rumor.get("tags") or [] if t and t[0] in ("imeta", "emoji", "p")]}
-    content = await message_content(app, raw, as_user_id=sender)
+    # Concord's chat is plain text, but people and bots there write Markdown.
+    content = await message_content(app, raw, as_user_id=sender, markdown=True)
     content.pop("external_url", None)
     return content
 

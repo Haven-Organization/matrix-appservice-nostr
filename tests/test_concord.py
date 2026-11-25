@@ -251,6 +251,12 @@ def test_live_reaction_reply_and_delete(client, homeserver, relay_pool) -> None:
     threaded = homeserver.messages(room)[-1]
     assert threaded["content"]["m.relates_to"]["rel_type"] == "m.thread"
     assert threaded["content"]["m.relates_to"]["event_id"] == original["event_id"]
+    # Markdown typed in Concord shows formatted in Matrix; the plain body keeps it as typed.
+    formatted, _ = community.say(bob, 9, "**Nostr** is *neat*\n### Why\n- relays")
+    run(client, concord.receive, client.app, formatted)
+    shown = homeserver.messages(room)[-1]["content"]
+    assert shown["formatted_body"] == "<strong>Nostr</strong> is <em>neat</em><h3>Why</h3><ul><li>relays</li></ul>"
+    assert shown["body"] == "**Nostr** is *neat*\n### Why\n- relays"
     # An inline quote is a Matrix reply.
     quote, _ = community.say(bob, 9, "do you know what that means?", [["q", earlier_id, "", alice.pubkey]])
     run(client, concord.receive, client.app, quote)
