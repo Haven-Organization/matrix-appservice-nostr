@@ -122,6 +122,8 @@ class BridgeSection:
     # takes Nostr DMs. Off by default: such IDs are mostly people who never
     # asked for a Nostr identity, and what reaches them is mostly spam.
     shadow_id_dms: bool = False
+    # Tell someone, in the room, when a shadow ID was just made for them.
+    shadow_id_notice: bool = True
     # Addresses of reverse proxies whose X-Forwarded-For is trusted for the
     # relay's per-IP limits and bans.
     trusted_proxies: list[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
@@ -489,6 +491,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         quote_import_policy=_choice(bridge_raw, "quote_import_policy", ("always", "known", "never"), "known"),
         dm_rooms_as_direct=bool(bridge_raw.get("dm_rooms_as_direct", False)),
         shadow_id_dms=bool(bridge_raw.get("shadow_id_dms", False)),
+        shadow_id_notice=bool(bridge_raw.get("shadow_id_notice", True)),
         trusted_proxies=_string_list(bridge_raw, "trusted_proxies", "bridge") or ["127.0.0.1", "::1"],
         max_ids_per_user=int(bridge_raw.get("max_ids_per_user", 5)),
         id_min_length=id_min_length,

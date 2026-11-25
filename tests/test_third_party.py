@@ -192,3 +192,14 @@ def test_the_widgets_access_card(client, homeserver) -> None:
     q = widget(client, homeserver)
     assert q("/widget/api/admin/grants").status_code == 403
     assert q("/widget/api/admin/allow", {"rule_type": "mxid", "value": ALICE}).status_code == 403
+
+
+def test_the_shadow_id_notice_can_be_switched_off(client, homeserver, relay_pool) -> None:
+    from dataclasses import replace
+
+    config = client.app.state.config
+    client.app.state.config = replace(config, bridge=replace(config.bridge, shadow_id_notice=False))
+    _q, _alice, _raw, remote, mirrored = _followed_post(client, homeserver, relay_pool)
+    _react(client, homeserver, remote.room_id, mirrored["event_id"], "@bob:example.org")
+    assert _ids(client, "@bob:example.org")  # still made
+    assert not [b for b in _bodies(homeserver, remote.room_id) if "I've created the Nostr identity" in b]

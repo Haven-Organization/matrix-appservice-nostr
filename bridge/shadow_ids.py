@@ -274,7 +274,7 @@ async def ensure_shadow_id_and_tell(app: FastAPI, sender: str, room_id: str) -> 
     from bridge.messages import notice
 
     resolution = await ensure_shadow_id(app, sender, room_id)
-    if resolution.created and resolution.nostr_id is not None:
+    if resolution.created and resolution.nostr_id is not None and app.state.config.bridge.shadow_id_notice:
         plain, rich = await shadow_created_notice(app, resolution.nostr_id)
         await notice(app, room_id, plain, html_message=rich, extra={"m.mentions": {"user_ids": [sender]}})
     return resolution.nostr_id

@@ -42,6 +42,7 @@ bridge:
   # accept_federated_knocks: false
   # dm_rooms_as_direct: false
   # shadow_id_dms: false                 # let shadow IDs (no Profile Room) take DMs
+  # shadow_id_notice: true               # say so in the room when a shadow ID is made
 
   # MSC4501 and related proposals (same settings as the sibling bridges).
   # set_msc4501_relates_to: true
