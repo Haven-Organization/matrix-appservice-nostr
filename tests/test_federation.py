@@ -931,6 +931,49 @@ def test_a_profile_edited_elsewhere(client, homeserver, relay_pool) -> None:
     assert homeserver.state_of(q.profile_room_id, "software.haven.nostr.profile_extra") == {"website": "https://q.example"}
 
 
+def test_the_relay_keeps_whatever_a_local_id_signs_elsewhere(client, homeserver, relay_pool) -> None:
+    """An app's settings, relay list or the like from another Nostr app is
+    taken and served, never answered "restricted": poster.place reads that
+    as the relay refusing it and stops using it for hours."""
+    q = create_id(client)
+    now = int(time.time())
+    settings = _signed_elsewhere(client, q, 30078, "encrypted settings", tags=[["d", "poster.place/settings"]], created_at=now)
+    reply = relay_send(client, settings)
+    assert reply[2] is True and "restricted" not in reply[3]
+    assert [e["id"] for e in relay_req(client, {"authors": [q.pubkey], "kinds": [30078]})[0]] == [settings["id"]]
+    # An older copy isn't kept over it, and still isn't refused.
+    older = _signed_elsewhere(client, q, 30078, "stale", tags=[["d", "poster.place/settings"]], created_at=now - 60)
+    reply = relay_send(client, older)
+    assert reply[2] is True and reply[3].startswith("duplicate:")
+    assert [e["id"] for e in relay_req(client, {"authors": [q.pubkey], "kinds": [30078]})[0]] == [settings["id"]]
+    # A newer one replaces it.
+    newer = _signed_elsewhere(client, q, 30078, "fresh", tags=[["d", "poster.place/settings"]], created_at=now + 5)
+    assert relay_send(client, newer)[2] is True
+    assert [e["content"] for e in relay_req(client, {"authors": [q.pubkey], "kinds": [30078]})[0]] == ["fresh"]
+    # A reaction to something not in Matrix is kept too.
+    like = _signed_elsewhere(client, q, 7, "+", tags=[["e", "ab" * 32], ["p", "cd" * 32]], created_at=now)
+    assert relay_send(client, like)[2] is True
+    assert relay_req(client, {"ids": [like["id"]]})[0][0]["content"] == "+"
+
+
+def test_a_local_ids_app_is_never_told_restricted(client, homeserver, relay_pool) -> None:
+    """poster.place stops using a relay of its user's for hours on any answer
+    saying "restricted", "blocked" or "rate-limited". In a session that's a
+    local ID's own, refusing someone else's event says neither."""
+    q = create_id(client)
+    stranger = Stranger().event(1, "not for anyone here")
+    assert relay_send(client, stranger)[3].startswith("restricted:")  # an ordinary connection
+    mine = _signed_elsewhere(client, q, 30078, "settings", tags=[["d", "x"]])
+    other = Stranger().event(1, "passed on by q's app")
+    with client.websocket_connect("/") as ws:
+        ws.receive_json()
+        ws.send_json(["EVENT", mine])
+        assert ws.receive_json()[2] is True
+        ws.send_json(["EVENT", other])
+        reply = ws.receive_json()
+    assert reply[2] is False and reply[3] == "error: not kept by this relay"
+
+
 def test_a_dm_sent_from_another_app(client, homeserver, relay_pool) -> None:
     q = create_id(client)
     alice = Stranger()

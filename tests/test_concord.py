@@ -30,7 +30,7 @@ class FakeCommunity:
         self.pool = relay_pool
         self.link_secret = secp256k1.generate_secret_key()
         self.token = secrets.token_bytes(16)
-        bundle = {"community_id": self.id, "owner": self.owner.pubkey, "owner_salt": self.salt,
+        self.bundle = bundle = {"community_id": self.id, "owner": self.owner.pubkey, "owner_salt": self.salt,
                   "community_root": self.root, "root_epoch": 0, "channels": [], "relays": [RELAY], "name": name}
         content = nip44.encrypt(json.dumps(bundle), concord.hkdf(self.token, "concord/invite-key"))
         invite = nostr_event.build(self.link_secret, kind=concord.INVITE_KIND, content=content, created_at=int(time.time()),
@@ -111,6 +111,72 @@ def joined(client, homeserver, relay_pool):
     state = run(client, concord.load, client.app, community.id)
     room = state.channels[community.general]["room"]
     return q, community, alice, state, room, earlier_id
+
+
+def test_a_direct_invite_is_offered_and_joined_by_name(client, homeserver, relay_pool) -> None:
+    """CORD-05 §6: the invite bundle gift-wrapped straight to an npub, as a
+    kind 3313 rumor. It's kept and its owner told, never joined by itself."""
+    from bridge.nostr import nip59
+    from tests.test_federation import notifications, relay_send
+
+    send(client, message("[create profile"))
+    [q] = ids_of(client)
+    community = FakeCommunity(relay_pool, name="Testing")
+    relay_pool.network.append(community.say(Stranger(), 9, "hello from Armada")[0])
+    inviter = Stranger()
+    rumor = nip59.make_rumor(inviter.pubkey, 3313, json.dumps(community.bundle), [], int(time.time()))
+    wrap = nip59.wrap_message(rumor, inviter.secret, q.pubkey).to_dict()
+    assert relay_send(client, wrap)[2] is True  # taken, so the sender's app says delivered
+    # q's own Concord apps find it on the relay, and only q may read it.
+    from tests.test_federation import relay_req
+
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    assert [e["id"] for e in relay_req(client, {"kinds": [1059], "#p": [q.pubkey]}, auth_secret=secret)[0]] == [wrap["id"]]
+    assert relay_req(client, {"kinds": [1059], "#p": [q.pubkey]})[0] == []
+    assert run(client, concord.load, client.app, community.id) is None  # not joined by itself
+    [told] = [b for b in notifications(client, homeserver) if "invited you" in b]
+    assert "the Concord community Testing" in told and '"[join Testing"' in told
+    send(client, message("[join nothing-like-it"))
+    assert 'No direct invite to "nothing-like-it"' in homeserver.sent_to("!dm:example.org")[-1]["body"]
+    send(client, message("[join testing"))
+    state = run(client, concord.load, client.app, community.id)
+    assert state.members == [q.id] and state.channels[community.general]["room"]
+    assert run(client, client.app.state.repository.list_state, "concord:direct:") == []
+    # It's in q's Community List, so q's Concord apps show it.
+    [listed] = [e for e, _ in relay_pool.published if e.kind == 33302 and e.pubkey == q.pubkey]
+    plain = json.loads(nip44.decrypt(listed.content, nip44.get_conversation_key(secret, q.pubkey)))
+    assert [e["current"]["name"] for e in plain["entries"]] == ["Testing"]
+
+
+def test_a_channel_moves_to_another_room(client, homeserver, relay_pool) -> None:
+    q, community, alice, state, room, earlier_id = joined(client, homeserver, relay_pool)
+    from tests.test_federation import post
+
+    new = "!wt:elsewhere.example"
+    homeserver._room(new)["members"].update({"@q:example.org", "@nostrbot:example.org"})
+    # Only a moderator of the new room may.
+    send(client, message("[concord move #general in PosterChan", room=new))
+    assert "Only a moderator" in homeserver.sent_to(new)[-1]["body"]
+    client.app.state.config.bridge.admins.append("@q:example.org")  # a bridge admin may anyway
+    send(client, message("[concord move #general in posterchan", room=new))
+    assert "is now #general of PosterChan" in homeserver.sent_to(new)[-1]["body"]
+    assert "moved to another room" in homeserver.sent_to(room)[-1]["body"]
+    state = run(client, concord.load, client.app, community.id)
+    info = state.channels[community.general]
+    assert info["room"] == new and info["attached"]
+    assert homeserver._room(state.space)["state"][("m.space.child", new)]["content"]["via"]
+    assert homeserver._room(state.space)["state"][("m.space.child", room)]["content"] == {}
+    # The channel's messages show in the new room, and what's said there goes out.
+    hello, _ = community.say(alice, 9, "over here now")
+    run(client, concord.receive, client.app, hello)
+    assert homeserver.messages(new)[-1]["content"]["body"] == "over here now"
+    published = len(relay_pool.published)
+    post(client, homeserver, room, {"msgtype": "m.text", "body": "old room"})
+    assert len(relay_pool.published) == published  # the old room is no channel any more
+    post(client, homeserver, new, {"msgtype": "m.text", "body": "new room"})
+    rumor = concord.open_wrap([e for e, _ in relay_pool.published if e.pubkey == community.channel().pk][-1].to_dict(),
+                              community.channel())
+    assert rumor["content"] == "new room"
 
 
 def test_join_makes_a_space_with_a_room_per_channel(client, homeserver, relay_pool) -> None:

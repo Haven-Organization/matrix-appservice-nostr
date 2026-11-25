@@ -283,12 +283,19 @@ async def _update_invite_list(app: FastAPI, community: Community, secret: bytes,
 
 
 def _join_material(community: Community) -> dict[str, Any]:
-    """The owner's membership (CORD-02 §8): every 32-byte value unpadded
-    base64url; public Channels need no key, so none are listed."""
+    """A membership (CORD-02 §8): every 32-byte value unpadded base64url;
+    public Channels need no key, so only Private ones held are listed."""
+    control_pk = community.control_pk or (control_signer(community).pk if community.control_root else community.control().pk)
+    # The Private Channels whose keys we hold, ordered by their ids' bytes.
+    held = sorted((c for c, info in community.channels.items()
+                   if info.get("private") and info.get("key") and not info.get("deleted")), key=bytes.fromhex)
     material: dict[str, Any] = {
         "owner": _b64u(community.owner), "owner_salt": _b64u(community.owner_salt),
         "community_root": _b64u(community.root), "root_epoch": community.epoch,
-        "control_pk": _b64u(community.control_pk or control_signer(community).pk), "channels": [],
+        "control_pk": _b64u(control_pk),
+        "channels": [{"id": _b64u(c), "key": _b64u(community.channels[c]["key"]),
+                      "epoch": int(community.channels[c].get("epoch") or 0), "name": str(community.channels[c].get("name") or "")}
+                     for c in held],
         "relays": community.relays, "name": community.name,
     }
     if community.control_root:
@@ -393,6 +400,39 @@ async def create(app: FastAPI, room_id: str, sender: str, name: str) -> None:
                  f"&lt;npub or name@domain&gt;</code> to invite someone.{html.escape(listed)}")
 
 
+_LISTED = "concord:listed:{}:{}"
+
+
+async def list_membership(app: FastAPI, community: Community, member) -> bool:
+    """Add a community a local ID is in to that ID's Community List, so
+    Concord apps signed in as it (poster.place, Armada, Vector) show it."""
+    secret = await app.state.signer.secret_key(member.pubkey)
+    if secret is None:
+        return False
+    if await _record_membership(app, community, secret):
+        return False
+    await app.state.repository.set_state(_LISTED.format(member.id, community.id), "1")
+    return True
+
+
+async def list_all_memberships(app: FastAPI) -> int:
+    """At startup: every membership not yet in its ID's Community List (ones
+    joined before the bridge wrote them there) is added, once."""
+    added = 0
+    for community in await concord.all_communities(app):
+        if community.removed:
+            continue
+        for member_id in community.members:
+            if await app.state.repository.get_state(_LISTED.format(member_id, community.id)):
+                continue
+            member = await app.state.repository.get_id(member_id)
+            if member is not None and await list_membership(app, community, member):
+                added += 1
+    if added:
+        logger.info("Added %d community memberships to their Community Lists", added)
+    return added
+
+
 async def _record_membership(app: FastAPI, community: Community, secret: bytes) -> str:
     try:
         await _add_to_community_list(app, community, secret)
@@ -406,6 +446,89 @@ async def _record_membership(app: FastAPI, community: Community, secret: bytes) 
 async def save_and_follow(app: FastAPI, community: Community) -> None:
     await concord.save(app, community)
     app.state.feeds.changed()
+
+
+# -- [concord move ------------------------------------------------------------------------
+
+
+async def move_channel(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+    """Make ``room_id`` a channel's Matrix side in place of the room it has.
+    Only the bridge's own record changes, nothing in the community, so any
+    member here may, given they moderate the new room. The old room keeps
+    its history and is taken out of the Space."""
+    from bridge.commands import bridged_as
+
+    p = app.state.config.appservice.command_prefix
+    repository, homeserver, bot = app.state.repository, app.state.homeserver, bot_mxid(app.state.config)
+    mine = {i.id for i in await repository.list_ids_for_user(sender)}
+    joined = [c for c in await concord.all_communities(app) if mine & set(c.members) and not c.removed]
+    name, which = _split_in(argument, [c.name for c in joined])
+    name = name.strip().lstrip("#").strip()
+    if not name:
+        await notice(app, room_id, f'Usage: run "{p}concord move <channel> [in <community>]" in the room that should be '
+                                   "the channel's Matrix side.")
+        return
+    if not joined:
+        await notice(app, room_id, "You aren't in any Concord community here.")
+        return
+    community = _pick(joined, which) or await _by_space(app, joined, room_id)
+    if community is None:
+        names = ", ".join(c.name for c in joined)
+        await notice(app, room_id, f'Which community ({names})? Say "{p}concord move {name} in <community>".')
+        return
+    channel_id = next((c for c in community.readable() if str(community.channels[c].get("name", "")).casefold() == name.casefold()), None)
+    if channel_id is None:
+        have = ", ".join(f"#{community.channels[c].get('name')}" for c in community.readable())
+        await notice(app, room_id, f"{community.name} has no channel #{name} I can read. Its channels: {have}.")
+        return
+    info = community.channels[channel_id]
+    old = info.get("room")
+    if old == room_id:
+        await notice(app, room_id, f"This room already is #{info.get('name')} of {community.name}.")
+        return
+    already = await bridged_as(app, room_id)
+    if already is not None:
+        await notice(app, room_id, f"This room is already {already}, so it can't be a channel too.")
+        return
+    try:
+        encrypted = await homeserver.get_room_state(room_id, "m.room.encryption", as_user_id=bot) is not None
+        levels = await homeserver.get_room_state(room_id, "m.room.power_levels", as_user_id=bot) or {}
+    except HomeserverError:
+        encrypted, levels = False, {}
+    if encrypted:
+        await notice(app, room_id, "This room is end-to-end encrypted, and I can't read encrypted rooms, so it can't "
+                                   "be a channel.")
+        return
+    from bridge.admins import is_admin
+
+    users = levels.get("users") or {}
+    if int(users.get(sender, levels.get("users_default", 0)) or 0) < 50 and not await is_admin(app.state.config, homeserver, sender):
+        await notice(app, room_id, "Only a moderator of this room, or a bridge admin, can make it a channel's room.")
+        return
+    info.update({"room": room_id, "attached": True})
+    await repository.set_state(concord._ROOM.format(room_id), f"{community.id}|{channel_id}")
+    if old:
+        await repository.delete_state(concord._ROOM.format(old))
+    await concord.save(app, community)
+    server = app.state.config.homeserver.server_name
+    if community.space:
+        try:
+            await homeserver.send_state_event(community.space, "m.space.child", {"via": [server], "suggested": True},
+                                              as_user_id=bot, state_key=room_id)
+            if old:
+                await homeserver.send_state_event(community.space, "m.space.child", {}, as_user_id=bot, state_key=old)
+        except HomeserverError:
+            logger.info("Could not update the Space of %s", community.id, exc_info=True)
+    link = f"https://matrix.to/#/{room_id}?via={server}"
+    if old:
+        await notice(app, old, f"#{info.get('name')} of {community.name} moved to another room: {link}. "
+                               "Nothing said here goes to the community any more.",
+                     html_message=f"#{html.escape(str(info.get('name')))} of {html.escape(community.name)} moved to "
+                     f"{room_link_html(room_id, 'another room')}. Nothing said here goes to the community any more.")
+    await notice(app, room_id, f"This room is now #{info.get('name')} of {community.name}: what's said here goes to "
+                               "the channel, and the channel's messages show here from now on. People from other "
+                               f'homeservers need "{p}allow room" before theirs go out.')
+    logger.info("%s moved #%s of %s from %s to %s", sender, info.get("name"), community.id, old, room_id)
 
 
 # -- [concord channel ---------------------------------------------------------------------
@@ -1034,6 +1157,8 @@ async def handle_command(app: FastAPI, room_id: str, sender: str, argument: str)
         await rename_channel(app, room_id, sender, rest)
     elif verb == "topic":
         await push_topic(app, room_id, sender, rest)
+    elif verb == "move":
+        await move_channel(app, room_id, sender, rest)
     else:
         mine = await owned(app, sender)
         have = f" You own: {', '.join(c.name for c in mine)}." if mine else ""
@@ -1042,5 +1167,7 @@ async def handle_command(app: FastAPI, room_id: str, sender: str, argument: str)
                      f'run in a room, makes that room a channel of it ("{p}concord rename <name>" in a channel\'s '
                      f'room renames it); "{p}concord link [label]" makes an invite '
                      f'link, "{p}concord links" lists them and "{p}concord revoke <number>" retires one; '
+                     f'"{p}concord move <channel> [in <community>]", run in a room, makes that room the channel\'s Matrix side '
+                     f'instead of the one it has; '
                      f'"{p}concord invite <npub, name@domain or a mention>" invites someone to a community you\'re '
                      f"in (so does inviting their Matrix ghost to its Space or a channel room).{have}")

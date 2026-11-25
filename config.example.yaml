@@ -133,7 +133,7 @@ nostr:
   # relay. Costs homeserver load.
   # serve_followed_to_local_clients: false
   # relay_max_limit: 500
-  # relay_max_subscriptions: 20
+  # relay_max_subscriptions: 100
   # Accounts (npub or hex) whose mute lists and reports the relay honours.
   # shared_block_lists: []
   # Keep the reverse proxy's client_max_body_size at least this big.
@@ -157,8 +157,8 @@ nostr:
 #   strike_window_seconds: 600
 #   ban_durations_seconds: [3600, 86400, 604800]
 #   escalation_memory_days: 30
-#   connections: {burst: 100, tokens: 1, per_seconds: 300}
-#   reqs: {burst: 100, tokens: 20, per_seconds: 60}
+#   connections: {burst: 100, tokens: 1, per_seconds: 6}
+#   reqs: {burst: 300, tokens: 120, per_seconds: 60}
 #   events_per_ip: {burst: 10, tokens: 2, per_seconds: 180}
 #   events_per_pubkey: {burst: 10, tokens: 5, per_seconds: 3600}
 #   events_per_pubkey_target: {burst: 5, tokens: 2, per_seconds: 3600}

@@ -123,6 +123,8 @@ class Connection:
         self.ip = ip
         self.challenge = secrets.token_hex(16)
         self.authed: set[str] = set()
+        # A local ID's own app (signed in as it, or sent its events).
+        self.own = False
         self.subscriptions: dict[str, list[dict[str, Any]]] = {}
         self.lock = asyncio.Lock()
 
@@ -286,8 +288,23 @@ async def _on_event(app, connection: Connection, raw: Any) -> None:
     from bridge.inbound import ingest
 
     event_id = raw.get("id") if isinstance(raw, dict) else None
-    result = await ingest(app, raw, origin="relay", ip=connection.ip, authed=frozenset(connection.authed))
-    await connection.send(["OK", event_id if isinstance(event_id, str) else "", result.ok, result.message])
+    pubkey = raw.get("pubkey") if isinstance(raw, dict) else None
+    if not connection.own and isinstance(pubkey, str) and await app.state.repository.get_id_by_pubkey(pubkey) is not None:
+        connection.own = True
+    # A local ID's app passing on others' events (a Concord channel's wraps,
+    # someone's post it quotes) isn't that address spamming the relay.
+    result = await ingest(app, raw, origin="relay", ip=None if connection.own else connection.ip,
+                          authed=frozenset(connection.authed))
+    message = result.message
+    if not result.ok and not message.startswith(("duplicate:", "auth-required:")):
+        logger.info("Relay refused kind %s from %s%s: %s", raw.get("kind") if isinstance(raw, dict) else "?",
+                    str(pubkey)[:12], " (a local ID's app)" if connection.own else "", message)
+        if connection.own and not message.startswith(("invalid:", "pow:")):
+            # Apps such as poster.place read "restricted", "blocked" or
+            # "rate-limited" from a relay of their user's as the relay turning
+            # them away, and stop using it for hours.
+            message = "error: not kept by this relay"
+    await connection.send(["OK", event_id if isinstance(event_id, str) else "", result.ok, message])
 
 
 async def _on_auth(app, connection: Connection, raw: Any) -> None:
@@ -308,15 +325,18 @@ async def _on_auth(app, connection: Connection, raw: Any) -> None:
         await connection.send(["OK", event.id, False, "invalid: bad authentication event"])
         return
     connection.authed.add(event.pubkey)
+    if await app.state.repository.get_id_by_pubkey(event.pubkey) is not None:
+        connection.own = True
     await connection.send(["OK", event.id, True, ""])
 
 
 async def _on_req(app, connection: Connection, sub_id: str, filters: list[Any], *, count: bool) -> None:
     config = app.state.config
     guard = getattr(app.state, "spam", None)
-    if guard is not None:
+    if guard is not None and not connection.own:
         verdict = await guard.check_req(connection.ip)
         if not verdict.ok:
+            logger.info("Relay closed a subscription: %s", verdict.reply)
             await connection.send(["CLOSED", sub_id, verdict.reply])
             return
     if not filters or len(filters) > MAX_FILTERS:
@@ -328,7 +348,10 @@ async def _on_req(app, connection: Connection, sub_id: str, filters: list[Any], 
             await connection.send(["CLOSED", sub_id, problem])
             return
     if not count and sub_id not in connection.subscriptions and len(connection.subscriptions) >= config.nostr.relay_max_subscriptions:
-        await connection.send(["CLOSED", sub_id, "rate-limited: too many open subscriptions"])
+        # Not "rate-limited": poster.place reads that as the relay turning it
+        # away and stops using it. It's this one subscription that's refused.
+        logger.info("Relay closed a subscription over the limit of %d", config.nostr.relay_max_subscriptions)
+        await connection.send(["CLOSED", sub_id, "error: too many open subscriptions on this connection"])
         return
 
     hub: RelayHub = app.state.relay_hub

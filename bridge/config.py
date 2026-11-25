@@ -238,7 +238,8 @@ class NostrSection:
     serve_followed_to_local_clients: bool = False
     # Largest REQ result and most open subscriptions per relay connection.
     relay_max_limit: int = 500
-    relay_max_subscriptions: int = 20
+    # poster.place opens up to 100 on one connection.
+    relay_max_subscriptions: int = 100
     # Accounts whose public mute lists (kind 10000) and reports (kind 1984)
     # the relay honours: anyone on them is refused (unless someone here
     # follows them). npub or hex.
@@ -583,7 +584,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         shared_block_lists=_pubkeys(nostr_raw, "shared_block_lists"),
         serve_followed_to_local_clients=bool(nostr_raw.get("serve_followed_to_local_clients", False)),
         relay_max_limit=int(nostr_raw.get("relay_max_limit", 500)),
-        relay_max_subscriptions=int(nostr_raw.get("relay_max_subscriptions", 20)),
+        relay_max_subscriptions=int(nostr_raw.get("relay_max_subscriptions", 100)),
         max_media_mb=int(nostr_raw.get("max_media_mb", 50)),
         refused_relay_retry_hours=int(nostr_raw.get("refused_relay_retry_hours", 24)),
         allow_private_addresses=bool(nostr_raw.get("allow_private_addresses", False)),

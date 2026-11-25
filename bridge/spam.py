@@ -110,8 +110,12 @@ class RateSpec:
 @dataclass(frozen=True)
 class SpamConfig:
     # Per IP.
-    connections: RateSpec = RateSpec(100, 1, 300)
-    reqs: RateSpec = RateSpec(100, 20, 60)
+    # Web clients reconnect a lot: poster.place opened about 90 an hour from
+    # one person, and a refill of one per 5 minutes locked them out.
+    connections: RateSpec = RateSpec(100, 1, 6)
+    # A web client re-subscribes constantly, and poster.place stops using a
+    # relay for hours after one "rate-limited" answer.
+    reqs: RateSpec = RateSpec(300, 120, 60)
     events_per_ip: RateSpec = RateSpec(10, 2, 180)
     # Per pubkey, for events aimed at local IDs, and per (pubkey, local ID).
     events_per_pubkey: RateSpec = RateSpec(10, 5, 3600)

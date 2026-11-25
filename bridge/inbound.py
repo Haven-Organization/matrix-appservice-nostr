@@ -1218,4 +1218,7 @@ async def _from_local_author(app: FastAPI, raw: dict[str, Any], local: NostrId, 
     the user's other Nostr app (``bridge.elsewhere``)."""
     from bridge import elsewhere
 
-    return await elsewhere.receive(app, raw, local)
+    result = await elsewhere.receive(app, raw, local)
+    if not result.ok and result.message.startswith("restricted:"):
+        return await elsewhere.keep(app, raw)
+    return result

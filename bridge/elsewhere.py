@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from fastapi import FastAPI
@@ -68,6 +69,44 @@ async def receive(app: FastAPI, raw: dict[str, Any], local: NostrId) -> Any:
     if kind in (FOLLOW_LIST_KIND, MUTE_LIST_KIND):
         return await _list(app, raw, local)
     return inbound.IngestResult(False, "restricted: the bridge manages this ID's other events itself")
+
+
+async def keep(app: FastAPI, raw: dict[str, Any]) -> Any:
+    """An event of a local ID's that the bridge shows nothing of in Matrix
+    (an app's settings, a relay list, a reaction to something not here):
+    kept and served, as the ID's own relay should. Answered as taken either
+    way, never "restricted": apps such as poster.place read that as the relay
+    refusing them and stop using it for hours."""
+    from bridge import inbound
+    from bridge.nostr.event import is_addressable, is_ephemeral, is_replaceable
+
+    kind = int(raw["kind"])
+    if is_ephemeral(kind):
+        return inbound.IngestResult(True, "")
+    repository = app.state.repository
+    replace = is_replaceable(kind) or is_addressable(kind)
+    d_tag = next((t[1] for t in raw.get("tags") or [] if len(t) >= 2 and t[0] == "d"), "") if is_addressable(kind) else ""
+    if replace:
+        rows = await repository.query_events({"authors": [raw["pubkey"]], "kinds": [kind]}, limit=500, now=int(time.time()),
+                                             dm_readers=frozenset(), followed_readers=frozenset())
+        same = [r for r in rows if r.d_tag == d_tag]
+        if any(r.created_at >= int(raw["created_at"]) for r in same):
+            return inbound.IngestResult(True, "duplicate: a newer one is kept")
+        if any(json.loads(r.source).get("kind") != "inline" for r in same):
+            # The bridge publishes this one for the ID (its profile, say).
+            return inbound.IngestResult(True, "duplicate: the bridge publishes this ID's own")
+    await repository.put_event(
+        EventRow(
+            id=raw["id"], pubkey=raw["pubkey"], kind=kind, created_at=int(raw["created_at"]), sig=raw["sig"],
+            source=_json(inline_source(kind, raw.get("tags") or [], raw.get("content") or "")), d_tag=d_tag,
+            expires_at=inbound._expiration(raw), tags=inbound.index_tags(raw.get("tags")),
+        ),
+        replace=replace,
+    )
+    hub = getattr(app.state, "relay_hub", None)
+    if hub is not None:
+        hub.broadcast(raw, "public")
+    return inbound.IngestResult(True, "", stored=True)
 
 
 async def as_them(app: FastAPI, local: NostrId) -> dict[str, Any]:

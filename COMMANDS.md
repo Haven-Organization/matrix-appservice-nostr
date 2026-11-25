@@ -137,6 +137,8 @@ Opens a DM room with the account, as the ID, and invites you to it. Run it again
 
 Joins a Concord community (the encrypted, Discord-style communities of Armada, Vector and other apps) from its invite link (`https://armada.buzz/invite/naddr1…#…`, or any other site's), as your Active identity. The bridge makes a Space for the community and a room for each channel you can read, invites you to the Space (join the channels you want from there; nobody is invited to them), and brings in each channel's recent messages. What you say in those rooms goes to the community, encrypted for it.
 
+When someone invites one of your identities directly from a Concord app (a Direct Invite, sent to its npub rather than as a link), the bot tells you in your notifications room. `[join <community name>` accepts it, as the identity that was invited. Nothing is joined until you say so.
+
 Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet. To make a community of your own, add channels, or invite people, see [`[concord`](#concord).
 
 It also joins NIP-29 groups (the relay-hosted groups of Flotilla, Chachi, 0xchat and others), by their `naddr1…` link (with `?invite=<code>` for a closed group) or as `relay.example'groupid`. The bridge sends the relay your join request, makes a room for the group in a Space for its relay, and brings in its recent messages. What you say there goes to the group as you.
@@ -155,6 +157,8 @@ Making and running Concord communities (the encrypted, Discord-style communities
 - Messages from then on go to the channel; earlier ones stay in Matrix. Anyone on this homeserver who talks there joins the community with their Nostr identity (a shadow one is made for anyone without one). People from other homeservers need [`[allow room`](#allow-mxidhomeserverroom-value-fullshadow) there too.
 - Nobody is invited to it: like every channel, it's listed in the community's Space, and members join it from there if they want.
 - The room can't be end-to-end encrypted, or already bridged as something else.
+
+**`[concord move <channel> [in <community>]`**, run in a room you moderate (or anywhere, by a bridge admin), makes that room a channel's Matrix side in place of the room it has, in any community you're in (not only ones you manage: nothing changes in the community itself). The new room goes into the community's Space and the old one comes out of it, keeping its history; nothing said there reaches the community any more. The new room can be on another homeserver once the bot is in it, as long as it isn't end-to-end encrypted; people from other homeservers need [`[allow room`](#allow-mxidhomeserverroom-value-fullshadow) there before their messages go out.
 
 **`[concord rename <new name>`**, run in a channel's room, renames the channel in the community. It needs the same right as adding one. A room you attached keeps its own Matrix name.
 

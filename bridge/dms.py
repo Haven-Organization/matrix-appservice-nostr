@@ -33,9 +33,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import FastAPI, Request
 
 from bridge import remote as remotes
-from bridge.event_sources import EMBED_FIELD, embedded_source
+from bridge.event_sources import EMBED_FIELD, embedded_source, inline_source
 from bridge.homeserver_client import HomeserverError
-from bridge.inbound import IngestResult, REJECTED, index_tags
+from bridge.inbound import IngestResult, REJECTED, _expiration, index_tags
 from bridge.media import EncryptedMedia, MediaProblem, blob_url
 from bridge.messages import invite_to_room, notice
 from bridge.nostr import nip04, nip59
@@ -140,6 +140,21 @@ async def receive_dm(app: FastAPI, raw: dict[str, Any], *, origin: str, ip: str 
 
 async def _deliver(app: FastAPI, raw: dict[str, Any], rumor: dict[str, Any], sender: str, local: NostrId) -> bool:
     repository = app.state.repository
+    if rumor.get("kind") == 3313 and sender != local.pubkey:  # a Concord Direct Invite (CORD-05 §6)
+        from bridge.concord import receive_direct_invite
+
+        if not await receive_direct_invite(app, local, sender, rumor):
+            return False
+        # Kept for the ID's own Concord apps, which look for their invites here.
+        await repository.put_event(EventRow(
+            id=raw["id"], pubkey=raw["pubkey"], kind=raw["kind"], created_at=int(raw["created_at"]), sig=raw["sig"],
+            source=json.dumps(inline_source(raw["kind"], raw.get("tags") or [], raw.get("content") or "")),
+            expires_at=_expiration(raw), scope="dm", tags=index_tags(raw.get("tags")),
+        ))
+        hub = getattr(app.state, "relay_hub", None)
+        if hub is not None:
+            hub.broadcast(raw, "dm")
+        return True
     if rumor.get("kind") not in (14, FILE_MESSAGE_KIND):
         return False
     if sender == local.pubkey:

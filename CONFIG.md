@@ -90,7 +90,7 @@ To move an existing SQLite database to Postgres: stop the bridge, run `python -m
 | `backfill_on_follow` | `20` | How many of an account's latest posts are brought in when it's first followed. `0` turns it off. |
 | `serve_followed_to_local_clients` | `false` | Let a local ID's own Nostr apps read the posts of the accounts it follows through the bridge's relay (after NIP-42 login). Off by default: every such read is fetched from the homeserver, and a timeline can be hundreds of events. Off, those apps read the accounts' own relays, as usual. |
 | `relay_max_limit` | `500` | Most events one `REQ` filter can return (NIP-11 `max_limit`). |
-| `relay_max_subscriptions` | `20` | Most open subscriptions per relay connection. |
+| `relay_max_subscriptions` | `100` | Most open subscriptions per relay connection. poster.place opens up to 100 on one. |
 | `shared_block_lists` | `[]` | Accounts (`npub` or hex) whose public mute lists (kind 10000) and reports (kind 1984) the relay honours: anyone on them is refused, unless someone here follows them. Read from `discovery_relays` and `fallback_relays` at startup and every 6 hours. |
 | `web_viewer_url` | `https://ditto.pub/` | Web page a Nostr profile or event can be opened on, followed by its `npub`/`nevent`/`naddr`. Used for the `external_url` of bridged posts, links to posts that aren't in Matrix, long-form articles, and MSC4503 handles. |
 | `max_media_mb` | `50` | Largest file published from Matrix (Profile Rooms and DMs; images are also capped at 5 MB after cleaning), and largest Blossom upload (`PUT /upload`). Keep the reverse proxy's body size limit at least this big. |
@@ -108,8 +108,8 @@ A rate limit is a token bucket: `{burst: <most at once>, tokens: <added back>, p
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `connections` | `{burst: 100, tokens: 1, per_seconds: 300}` | New relay connections per IP. |
-| `reqs` | `{burst: 100, tokens: 20, per_seconds: 60}` | Subscriptions (`REQ`) per IP. |
+| `connections` | `{burst: 100, tokens: 1, per_seconds: 6}` | New relay connections per IP: 100 at once, then one every 6 seconds (600 an hour). Web clients reconnect often, so keep this well above what one person opens. |
+| `reqs` | `{burst: 300, tokens: 120, per_seconds: 60}` | Subscriptions (`REQ`) per IP. Web clients re-subscribe often, and some (poster.place) stop using a relay for hours after one "rate-limited" answer. |
 | `events_per_ip` | `{burst: 10, tokens: 2, per_seconds: 180}` | Events per IP. |
 | `events_per_pubkey` | `{burst: 10, tokens: 5, per_seconds: 3600}` | Events per key. |
 | `events_per_pubkey_target` | `{burst: 5, tokens: 2, per_seconds: 3600}` | Events per key aimed at one local ID. |

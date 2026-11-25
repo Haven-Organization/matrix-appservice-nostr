@@ -184,6 +184,14 @@ async def fetch_bundle(app: FastAPI, invite: Invite) -> dict[str, Any]:
         bundle = json.loads(nip44.decrypt(newest["content"], hkdf(invite.token, "concord/invite-key")))
     except (ValueError, KeyError) as exc:
         raise ConcordProblem("I couldn't open that invite (is the link complete?).") from exc
+    return check_bundle(bundle)
+
+
+def check_bundle(bundle: Any) -> dict[str, Any]:
+    """An invite bundle (CORD-02 §3), from a link or a Direct Invite, once
+    it proves its owner and hasn't expired."""
+    if not isinstance(bundle, dict):
+        raise ConcordProblem("That invite is malformed.")
     for key in ("community_id", "owner", "owner_salt", "community_root"):
         if not isinstance(bundle.get(key), str) or len(bundle[key]) != 64:
             raise ConcordProblem("That invite is malformed.")
@@ -737,6 +745,16 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     if not argument.strip():
         await notice(app, room_id, f'Usage: "{p}join <community invite link>" (an Armada, Vector or other Concord invite).')
         return
+    if not any(mark in argument for mark in ("#", "naddr1", "://")):
+        # A Direct Invite, named by its community.
+        found = await _direct_invite(app, sender, argument.strip())
+        if isinstance(found, str):
+            await notice(app, room_id, found)
+            return
+        invited, bundle = found
+        if await _join(app, room_id, sender, invited, bundle, ()):
+            await app.state.repository.delete_state(_DIRECT.format(invited.id, bundle["community_id"]))
+        return
     from bridge.shadow_ids import ensure_shadow_id_and_tell
 
     # Like [follow: makes a shadow ID for someone who has none.
@@ -754,13 +772,19 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     except ConcordProblem as exc:
         await notice(app, room_id, str(exc))
         return
+    await _join(app, room_id, sender, member, bundle, invite.relays)
+
+
+async def _join(app: FastAPI, room_id: str, sender: str, member, bundle: dict[str, Any], relays: tuple[str, ...]) -> bool:
+    """Join the community ``bundle`` hands the keys of, as ``member``."""
+    invite_relays = tuple(r for r in relays if isinstance(r, str))
     await notice(app, room_id, f"Joining {bundle.get('name') or 'the community'}… {WARNING}")
     community = await load(app, bundle["community_id"])
     if community is None:
         community = Community(
             id=bundle["community_id"], owner=bundle["owner"], root=bundle["community_root"],
             epoch=int(bundle.get("root_epoch") or 0), control_pk=bundle.get("control_pk") or None,
-            relays=[r for r in bundle.get("relays") or invite.relays if isinstance(r, str)][:_MAX_RELAYS] or list(invite.relays),
+            relays=[r for r in bundle.get("relays") or invite_relays if isinstance(r, str)][:_MAX_RELAYS] or list(invite_relays),
             name=str(bundle.get("name") or "Community")[:64], description="", picture="",
             channels={}, space=None, members=[], owner_salt=str(bundle.get("owner_salt") or ""),
         )
@@ -773,7 +797,7 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     await catch_up(app, community)
     if community.removed or not community.readable():
         await notice(app, room_id, "I opened the invite, but couldn't read any of the community's channels.")
-        return
+        return False
     new_member = member.id not in community.members
     if new_member:
         community.members.append(member.id)
@@ -785,10 +809,13 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     except HomeserverError:
         logger.warning("Could not make the rooms of %s", community.id, exc_info=True)
         await notice(app, room_id, "I couldn't make the community's rooms just now; try again in a minute.")
-        return
+        return False
     await save(app, community)
     if new_member:
         await _announce_join(app, community, member, bundle)
+    from bridge.concord_owner import list_membership
+
+    await list_membership(app, community, member)
     for channel_id in community.readable():
         await backfill_channel(app, community, channel_id)
     app.state.feeds.changed()
@@ -799,6 +826,66 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
                  f"{html.escape(member.name)}@{html.escape(app.state.config.bridge.domain)}: {html.escape(names)}. "
                  f"Its space: {room_link_html(community.space or '', community.name)}. Join the channels you want "
                  "from there.")
+    return True
+
+
+# A Direct Invite (CORD-05 §6) waiting for its ID's owner: {"bundle", "from", "at"}.
+_DIRECT = "concord:direct:{}:{}"
+
+
+async def receive_direct_invite(app: FastAPI, local, sender: str, rumor: dict[str, Any]) -> bool:
+    """A Direct Invite to ``local``: kept, and its owner told how to accept
+    it. Never joined by itself: an invite from anyone isn't consent."""
+    from bridge.notifications import notify
+
+    try:
+        bundle = check_bundle(json.loads(rumor.get("content") or ""))
+    except (ConcordProblem, ValueError) as exc:
+        logger.info("A Direct Invite to %s that can't be used: %s", local.name, exc)
+        return False
+    community = await load(app, bundle["community_id"])
+    if community is not None and local.pubkey in community.banned:
+        return False  # CORD-05 §6: refused from a community that banned us
+    if community is not None and local.id in community.members and not community.removed:
+        return True  # already in it
+    await app.state.repository.set_state(_DIRECT.format(local.id, bundle["community_id"]),
+                                         json.dumps({"bundle": bundle, "from": sender, "at": int(time.time())}))
+    name = str(bundle.get("name") or "a community")[:64]
+    who = await _display_name(app, sender)
+    p = app.state.config.appservice.command_prefix
+    await notify(app, local,
+                 f'{who} invited you to the Concord community {name}. Say "{p}join {name}" to join it.',
+                 f"{html.escape(who)} invited you to the Concord community <strong>{html.escape(name)}</strong>. "
+                 f"Say <code>{html.escape(p)}join {html.escape(name)}</code> to join it.")
+    logger.info("Direct Invite to %s from %s for %s", local.name, sender, bundle["community_id"])
+    return True
+
+
+async def _direct_invite(app: FastAPI, sender: str, name: str):
+    """The Direct Invite to one of ``sender``'s IDs whose community is
+    called ``name`` (or whose ID starts with it): (ID, bundle), or what to
+    tell them."""
+    p = app.state.config.appservice.command_prefix
+    matches = []
+    for nostr_id in await app.state.repository.list_ids_for_user(sender):
+        for _key, stored in await app.state.repository.list_state(_DIRECT.format(nostr_id.id, "")):
+            bundle = json.loads(stored)["bundle"]
+            wanted = name.casefold()
+            if str(bundle.get("name") or "").casefold() == wanted or (len(wanted) >= 8 and bundle["community_id"].startswith(wanted)):
+                matches.append((nostr_id, bundle))
+    if not matches:
+        return (f'Usage: "{p}join <community invite link>" (an Armada, Vector or other Concord invite), or '
+                f'"{p}join <community name>" for one you were invited to directly. No direct invite to "{name}" here.')
+    if len(matches) > 1:
+        return f'More than one direct invite matches "{name}"; give its invite link instead.'
+    nostr_id, bundle = matches[0]
+    expires = bundle.get("expires_at")
+    if isinstance(expires, (int, float)) and expires / 1000 < time.time():
+        return "That invite has expired."
+    if nostr_id.key_origin == "bunker":
+        return (f"{nostr_id.name}@{app.state.config.bridge.domain} signs through a remote signer, which Concord "
+                "communities can't work with yet.")
+    return nostr_id, bundle
 
 
 async def _join_quietly(app: FastAPI, community: Community, sender: str, room_id: str):
@@ -909,6 +996,12 @@ async def refresh_all(app: FastAPI) -> None:
             await _refresh(app, community)
         except Exception:
             logger.exception("Could not refresh community %s", community.id)
+    from bridge.concord_owner import list_all_memberships
+
+    try:
+        await list_all_memberships(app)
+    except Exception:
+        logger.exception("Could not add memberships to Community Lists")
 
 
 # -- roles as power levels ------------------------------------------------------------------
