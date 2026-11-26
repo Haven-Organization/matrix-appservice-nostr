@@ -303,6 +303,34 @@ def _join_material(community: Community) -> dict[str, Any]:
     return material
 
 
+async def in_community_list(app: FastAPI, member, community_id: str) -> bool:
+    """Whether ``member``'s Community List (as their other Concord apps
+    wrote it) has the community, and no later tombstone for it."""
+    secret = await app.state.signer.secret_key(member.pubkey)
+    if secret is None:
+        return False
+    relays = list(dict.fromkeys([*app.state.config.nostr.publish_relays, *RELAY_DICTIONARY.values()]))
+    key = _b64u(community_id)
+    added = removed = -1
+    for _raw, plain in await _read_own(app, secret, COMMUNITY_LIST_KIND, relays):
+        if not isinstance(plain, dict):
+            continue
+        for entry in plain.get("entries") or []:
+            if isinstance(entry, dict) and entry.get("community_id") == key:
+                added = max(added, _int(entry.get("added_at")))
+        for tomb in plain.get("tombstones") or []:
+            if isinstance(tomb, dict) and tomb.get("community_id") == key:
+                removed = max(removed, _int(tomb.get("removed_at")))
+    return added >= 0 and added > removed
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _add_to_community_list(app: FastAPI, community: Community, secret: bytes) -> None:
     """The owner's Community List gains this community, so their other
     clients show it. Written only from a whole read; a fragment that would

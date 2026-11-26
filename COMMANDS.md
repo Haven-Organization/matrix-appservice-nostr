@@ -137,7 +137,7 @@ Opens a DM room with the account, as the ID, and invites you to it. Run it again
 
 Joins a Concord community (the encrypted, Discord-style communities of Armada, Vector and other apps) from its invite link (`https://armada.buzz/invite/naddr1…#…`, or any other site's), as your Active identity. The bridge makes a Space for the community and a room for each channel you can read, invites you to the Space (join the channels you want from there; nobody is invited to them), and brings in each channel's recent messages. What you say in those rooms goes to the community, encrypted for it.
 
-When someone invites one of your identities directly from a Concord app (a Direct Invite, sent to its npub rather than as a link), the bot tells you in your notifications room. `[join <community name>` accepts it, as the identity that was invited. Nothing is joined until you say so.
+When someone invites one of your identities directly from a Concord app (a Direct Invite, sent to its npub rather than as a link), the bot tells you in your notifications room. `[join <community name>` accepts it, as the identity that was invited. Accepting it in a Concord app signed in as that identity (poster.place, Armada) works too: the bridge notices within a couple of minutes and invites you to the community's Space. Nothing is joined until you accept it one way or the other.
 
 Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet. To make a community of your own, add channels, or invite people, see [`[concord`](#concord).
 

@@ -301,9 +301,10 @@ def create_app(
                 tasks.append(asyncio.create_task(retry_loop(app), name="publish retries"))
                 tasks.append(asyncio.create_task(_housekeeping_loop(app), name="housekeeping"))
                 tasks.append(asyncio.create_task(_spam_tick_loop(app), name="spam tick"))
-                from bridge.concord import expiry_loop, refresh_all
+                from bridge.concord import direct_invite_loop, expiry_loop, refresh_all
 
                 tasks.append(asyncio.create_task(expiry_loop(app), name="community message expiry"))
+                tasks.append(asyncio.create_task(direct_invite_loop(app), name="direct invites"))
                 run_in_background(app, refresh_all(app), name="community refresh")
                 from bridge.shadow_ids import shadow_profile_loop
 

@@ -113,6 +113,62 @@ def joined(client, homeserver, relay_pool):
     return q, community, alice, state, room, earlier_id
 
 
+def test_a_direct_invite_accepted_in_another_app_is_joined_here(client, homeserver, relay_pool) -> None:
+    """Accepted in poster.place (signed in as the same ID), which posts the
+    Join to the guestbook: the bridge joins too, making the Space and rooms
+    and inviting the ID's owner (it can't join them to a Matrix room)."""
+    from types import SimpleNamespace
+
+    from bridge.nostr import nip59
+    from tests.test_federation import relay_send
+
+    send(client, message("[create profile"))
+    [q] = ids_of(client)
+    community = FakeCommunity(relay_pool, name="Testing")
+    relay_pool.network.append(community.say(Stranger(), 9, "hello from Armada")[0])
+    inviter = Stranger()
+    rumor = nip59.make_rumor(inviter.pubkey, 3313, json.dumps(community.bundle), [], int(time.time()))
+    assert relay_send(client, nip59.wrap_message(rumor, inviter.secret, q.pubkey).to_dict())[2] is True
+    assert run(client, concord.check_direct_invites, client.app) == 0  # not accepted yet
+    assert run(client, concord.load, client.app, community.id) is None
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    relay_pool.network.append(community.sign_in(SimpleNamespace(secret=secret)))
+    published = len(relay_pool.published)
+    assert run(client, concord.check_direct_invites, client.app) == 1
+    state = run(client, concord.load, client.app, community.id)
+    assert state.members == [q.id] and state.channels[community.general]["room"]
+    assert run(client, client.app.state.repository.list_state, "concord:direct:") == []
+    # Invited to the Space, not joined; and no second Join from the bridge.
+    assert (state.space, "@q:example.org") in homeserver.invites
+    guestbook_pk = community.guestbook().pk
+    assert not [e for e, _ in relay_pool.published[published:] if e.kind == 1059 and e.pubkey == guestbook_pk]
+    assert run(client, concord.check_direct_invites, client.app) == 0
+
+
+def test_a_direct_invite_in_the_community_list_is_joined_here(client, homeserver, relay_pool) -> None:
+    """poster.place writes the Community List before the guestbook Join;
+    either one is the invite accepted."""
+    from bridge import concord_owner
+    from bridge.nostr import nip59
+    from tests.test_federation import relay_send
+
+    send(client, message("[create profile"))
+    [q] = ids_of(client)
+    community = FakeCommunity(relay_pool, name="Testing")
+    relay_pool.network.append(community.say(Stranger(), 9, "hello from Armada")[0])
+    inviter = Stranger()
+    rumor = nip59.make_rumor(inviter.pubkey, 3313, json.dumps(community.bundle), [], int(time.time()))
+    assert relay_send(client, nip59.wrap_message(rumor, inviter.secret, q.pubkey).to_dict())[2] is True
+    secret = run(client, client.app.state.signer.secret_key, q.pubkey)
+    entry = {"community_id": concord_owner._b64u(community.id), "current": {"name": "Testing"}, "added_at": 1}
+    listed = concord_owner._self_encrypted(secret, 33302, {"frags": 1, "entries": [entry], "tombstones": []},
+                                           int(time.time()), [["d", "0"]])
+    relay_pool.network.append(listed.to_dict())
+    assert run(client, concord.check_direct_invites, client.app) == 1
+    state = run(client, concord.load, client.app, community.id)
+    assert state.members == [q.id] and (state.space, "@q:example.org") in homeserver.invites
+
+
 def test_a_direct_invite_is_offered_and_joined_by_name(client, homeserver, relay_pool) -> None:
     """CORD-05 §6: the invite bundle gift-wrapped straight to an npub, as a
     kind 3313 rumor. It's kept and its owner told, never joined by itself."""
@@ -132,7 +188,10 @@ def test_a_direct_invite_is_offered_and_joined_by_name(client, homeserver, relay
 
     secret = run(client, client.app.state.signer.secret_key, q.pubkey)
     assert [e["id"] for e in relay_req(client, {"kinds": [1059], "#p": [q.pubkey]}, auth_secret=secret)[0]] == [wrap["id"]]
-    assert relay_req(client, {"kinds": [1059], "#p": [q.pubkey]})[0] == []
+    # Unsigned in, the relay says to sign in (NIP-42) instead of answering
+    # with nothing: poster.place only signs in when asked.
+    events, end = relay_req(client, {"kinds": [1059], "#p": [q.pubkey], "#k": ["3313"]})
+    assert events == [] and end[0] == "CLOSED" and end[2].startswith("auth-required:")
     assert run(client, concord.load, client.app, community.id) is None  # not joined by itself
     [told] = [b for b in notifications(client, homeserver) if "invited you" in b]
     assert "the Concord community Testing" in told and '"[join Testing"' in told
@@ -686,6 +745,11 @@ def test_a_room_grant_joins_a_guest_quietly(client, homeserver, relay_pool) -> N
     assert told.startswith(f"{bronze}: I've created the Nostr identity bronze_kitsunemimi.example@")
     [content] = [c for c in homeserver.sent_to(room) if c.get("body") == told]
     assert content["m.mentions"] == {"user_ids": [bronze]} and f"matrix.to/#/{bronze}" in content["formatted_body"]
+    # A refresh (as at startup) invites him to nothing: not the community's
+    # Space, and no bridge Space of his own.
+    run(client, concord.refresh_all, client.app)
+    assert not [r for r, u in homeserver.invites if u == bronze]
+    assert run(client, client.app.state.repository.get_user_rooms, bronze).space_room_id is None
 
 
 def test_a_slow_relay_doesnt_hold_up_the_homeservers_events(client, homeserver, relay_pool) -> None:

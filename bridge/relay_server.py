@@ -330,6 +330,21 @@ async def _on_auth(app, connection: Connection, raw: Any) -> None:
     await connection.send(["OK", event.id, True, ""])
 
 
+_DM_KINDS = frozenset({4, 1059})
+
+
+def _wants_unauthed_dms(connection: Connection, filters: list[Any]) -> bool:
+    """Whether a filter asks only for direct messages (gift wraps, legacy
+    DMs) addressed to someone this connection hasn't signed in as."""
+    for flt in filters:
+        kinds, recipients = flt.get("kinds"), flt.get("#p")
+        if (isinstance(kinds, list) and kinds and all(k in _DM_KINDS for k in kinds)
+                and isinstance(recipients, list) and recipients
+                and not set(recipients) <= connection.authed):
+            return True
+    return False
+
+
 async def _on_req(app, connection: Connection, sub_id: str, filters: list[Any], *, count: bool) -> None:
     config = app.state.config
     guard = getattr(app.state, "spam", None)
@@ -352,6 +367,12 @@ async def _on_req(app, connection: Connection, sub_id: str, filters: list[Any], 
         # away and stops using it. It's this one subscription that's refused.
         logger.info("Relay closed a subscription over the limit of %d", config.nostr.relay_max_subscriptions)
         await connection.send(["CLOSED", sub_id, "error: too many open subscriptions on this connection"])
+        return
+
+    if not count and _wants_unauthed_dms(connection, filters):
+        # NIP-42: say so rather than answer with nothing. Clients (poster.place
+        # among them) only sign in when a relay asks, then ask again.
+        await connection.send(["CLOSED", sub_id, "auth-required: sign in to read direct messages"])
         return
 
     hub: RelayHub = app.state.relay_hub

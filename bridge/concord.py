@@ -626,6 +626,10 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
         # invites were remembered (everyone here had theirs).
         community.invited[community.space] = list(users)
     for user in users:
+        if user != again and not await _has_full_id(app, user):
+            # Someone here only through a shadow ID (they talked in a
+            # channel's room): no invites to Spaces they never asked for.
+            continue
         done = community.invited.setdefault(community.space, [])
         if user not in done or (user == again and community.space not in made):
             await invite_to_room(app, community.space, user)
@@ -638,6 +642,15 @@ async def _ensure_rooms(app: FastAPI, community: Community, users: list[str], ag
         await git_rooms.ensure_rooms(app, community)
     except HomeserverError:
         logger.info("Could not make the git rooms of %s", community.id, exc_info=True)
+
+
+async def _has_full_id(app: FastAPI, user: str) -> bool:
+    from bridge.shadow_ids import effective_tier
+
+    for nostr_id in await app.state.repository.list_ids_for_user(user):
+        if await effective_tier(app, nostr_id) == "full":
+            return True
+    return False
 
 
 async def _fetch_image(app: FastAPI, ref: dict[str, str]) -> tuple[bytes, str]:
@@ -775,19 +788,27 @@ async def handle_join(app: FastAPI, room_id: str, sender: str, argument: str) ->
     await _join(app, room_id, sender, member, bundle, invite.relays)
 
 
-async def _join(app: FastAPI, room_id: str, sender: str, member, bundle: dict[str, Any], relays: tuple[str, ...]) -> bool:
-    """Join the community ``bundle`` hands the keys of, as ``member``."""
+def _from_bundle(bundle: dict[str, Any], invite_relays: tuple[str, ...] = ()) -> Community:
+    """A community known only from an invite bundle, not yet read."""
+    return Community(
+        id=bundle["community_id"], owner=bundle["owner"], root=bundle["community_root"],
+        epoch=int(bundle.get("root_epoch") or 0), control_pk=bundle.get("control_pk") or None,
+        relays=[r for r in bundle.get("relays") or invite_relays if isinstance(r, str)][:_MAX_RELAYS] or list(invite_relays),
+        name=str(bundle.get("name") or "Community")[:64], description="", picture="",
+        channels={}, space=None, members=[], owner_salt=str(bundle.get("owner_salt") or ""),
+    )
+
+
+async def _join(app: FastAPI, room_id: str, sender: str, member, bundle: dict[str, Any], relays: tuple[str, ...],
+                *, announce: bool = True) -> bool:
+    """Join the community ``bundle`` hands the keys of, as ``member``.
+    ``announce`` False when the member's guestbook Join is already out (they
+    joined from another Concord app)."""
     invite_relays = tuple(r for r in relays if isinstance(r, str))
     await notice(app, room_id, f"Joining {bundle.get('name') or 'the community'}… {WARNING}")
     community = await load(app, bundle["community_id"])
     if community is None:
-        community = Community(
-            id=bundle["community_id"], owner=bundle["owner"], root=bundle["community_root"],
-            epoch=int(bundle.get("root_epoch") or 0), control_pk=bundle.get("control_pk") or None,
-            relays=[r for r in bundle.get("relays") or invite_relays if isinstance(r, str)][:_MAX_RELAYS] or list(invite_relays),
-            name=str(bundle.get("name") or "Community")[:64], description="", picture="",
-            channels={}, space=None, members=[], owner_salt=str(bundle.get("owner_salt") or ""),
-        )
+        community = _from_bundle(bundle, invite_relays)
     for channel in bundle.get("channels") or []:
         if isinstance(channel, dict) and len(str(channel.get("id", ""))) == 64:
             community.channels[channel["id"]] = {"name": str(channel.get("name") or "channel")[:64], "private": True,
@@ -811,7 +832,7 @@ async def _join(app: FastAPI, room_id: str, sender: str, member, bundle: dict[st
         await notice(app, room_id, "I couldn't make the community's rooms just now; try again in a minute.")
         return False
     await save(app, community)
-    if new_member:
+    if new_member and announce:
         await _announce_join(app, community, member, bundle)
     from bridge.concord_owner import list_membership
 
@@ -859,6 +880,80 @@ async def receive_direct_invite(app: FastAPI, local, sender: str, rumor: dict[st
                  f"Say <code>{html.escape(p)}join {html.escape(name)}</code> to join it.")
     logger.info("Direct Invite to %s from %s for %s", local.name, sender, bundle["community_id"])
     return True
+
+
+# How long a Direct Invite is watched for being accepted in another app.
+_DIRECT_WATCH_SECONDS = 14 * 86400
+
+
+async def joined_elsewhere(app: FastAPI, local, bundle: dict[str, Any]) -> bool:
+    """Whether ``local`` accepted the invite to ``bundle``'s community in
+    another Concord app (poster.place, Armada) signed in with the same key:
+    the community is in their Community List, or their latest guestbook
+    entry there is a Join."""
+    from bridge.concord_owner import in_community_list
+
+    if await in_community_list(app, local, bundle["community_id"]):
+        return True
+    community = _from_bundle(bundle)
+    key = community.guestbook()
+    wraps = await app.state.relay_pool.query(community.relays, [{"kinds": [WRAP_KIND], "authors": [key.pk]}], timeout=12.0)
+    latest: tuple[int, str] | None = None
+    for wrap in wraps:
+        rumor = open_wrap(wrap, key)
+        if (rumor is None or rumor.get("kind") != JOIN_KIND or rumor.get("pubkey") != local.pubkey
+                or rumor.get("content") not in ("join", "leave")):
+            continue
+        entry = (_ms_time(rumor), rumor["content"])
+        if latest is None or entry[0] > latest[0]:
+            latest = entry
+    return latest is not None and latest[1] == "join"
+
+
+async def check_direct_invites(app: FastAPI) -> int:
+    """Direct Invites accepted in another app: joined here too, which makes
+    the community's Space and rooms and invites the ID's owner to them (a
+    Matrix user can only be invited, never joined by someone else). Ones
+    left alone too long stop being watched (``[join`` still takes them)."""
+    repository = app.state.repository
+    joined = 0
+    for key, stored in await repository.list_state("concord:direct:"):
+        try:
+            local_id = int(key.split(":")[2])
+            record = json.loads(stored)
+            bundle = record["bundle"]
+        except (IndexError, ValueError, KeyError, TypeError):
+            continue
+        if time.time() - int(record.get("at") or 0) > _DIRECT_WATCH_SECONDS:
+            continue
+        local = await repository.get_id(local_id)
+        if local is None:
+            continue
+        try:
+            if not await joined_elsewhere(app, local, bundle):
+                continue
+        except Exception:
+            logger.info("Could not read the guestbook of %s", bundle.get("community_id"), exc_info=True)
+            continue
+        room_id = (await repository.get_user_rooms(local.matrix_user_id)).notifications_room_id
+        if not room_id:
+            continue
+        logger.info("%s accepted the Direct Invite to %s in another app", local.name, bundle["community_id"])
+        if await _join(app, room_id, local.matrix_user_id, local, bundle, (), announce=False):
+            await repository.delete_state(key)
+            joined += 1
+    return joined
+
+
+async def direct_invite_loop(app: FastAPI) -> None:
+    import asyncio
+
+    while True:
+        await asyncio.sleep(120)
+        try:
+            await check_direct_invites(app)
+        except Exception:
+            logger.exception("Checking Direct Invites failed")
 
 
 async def _direct_invite(app: FastAPI, sender: str, name: str):
