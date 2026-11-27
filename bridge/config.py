@@ -111,6 +111,14 @@ class BridgeSection:
     use_msc4501_post_event_type: bool = False
     set_msc4501_profile_room: bool = False
     msc4144_per_message_profiles: bool = True
+    # Whether to set org.matrix.msc4589.formatted_displayname (still a
+    # draft MSC with no known client support) on a ghost whose profile
+    # name has a :shortcode: custom emoji with a matching image, so a
+    # compliant client can render it inline instead of the literal text.
+    # Off by default: this also means an extra write per room the ghost
+    # is in (see bridge.remote._sync_formatted_displayname_member), for
+    # no benefit until a client actually renders it.
+    use_msc4589_formatted_displayname: bool = False
     # Whether a quoted post that isn't in Matrix is imported: "known" (only
     # if its author already has a room here), "always" or "never".
     quote_import_policy: str = "known"
@@ -488,6 +496,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         use_msc4501_post_event_type=bool(bridge_raw.get("use_msc4501_post_event_type", False)),
         set_msc4501_profile_room=bool(bridge_raw.get("set_msc4501_profile_room", False)),
         msc4144_per_message_profiles=bool(bridge_raw.get("msc4144_per_message_profiles", True)),
+        use_msc4589_formatted_displayname=bool(bridge_raw.get("use_msc4589_formatted_displayname", False)),
         quote_import_policy=_choice(bridge_raw, "quote_import_policy", ("always", "known", "never"), "known"),
         dm_rooms_as_direct=bool(bridge_raw.get("dm_rooms_as_direct", False)),
         shadow_id_dms=bool(bridge_raw.get("shadow_id_dms", False)),

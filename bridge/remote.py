@@ -47,6 +47,7 @@ from bridge.msc4501 import (
 )
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19
+from bridge.render import FORMATTED_DISPLAYNAME_FIELD, build_formatted_displayname
 from bridge.nostr.nip05 import parse_identifier
 from bridge.nostr.relay_pool import normalize_relay_url
 from bridge.repository import EventRow, RemoteAccount
@@ -336,18 +337,68 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
         current = await homeserver.get_profile(ghost)
     except HomeserverError:
         current = {}
+    name_changed = current.get("displayname") != name
     try:
-        if current.get("displayname") != name:
+        if name_changed:
             await homeserver.set_display_name(ghost, name)
         if avatar_mxc and current.get("avatar_url") != avatar_mxc:
             await homeserver.set_avatar_url(ghost, avatar_mxc)
     except HomeserverError:
         logger.info("Could not update the profile of %s", ghost, exc_info=True)
+    if name_changed and config.bridge.use_msc4589_formatted_displayname:
+        formatted_body = await build_formatted_displayname(app, raw, ghost, name)
+        try:
+            if formatted_body is not None:
+                await homeserver.set_profile_field(
+                    ghost, FORMATTED_DISPLAYNAME_FIELD,
+                    {"format": "org.matrix.custom.html", "formatted_body": formatted_body},
+                )
+            else:
+                await homeserver.delete_profile_field(ghost, FORMATTED_DISPLAYNAME_FIELD)
+        except HomeserverError:
+            logger.info("Could not update formatted display name for %s", ghost, exc_info=True)
+        if remote.room_id:
+            await _sync_formatted_displayname_member(app, remote.room_id, ghost, name, formatted_body)
     await app.state.repository.save_remote_account(remote)
     await apply_profile_fields(app, remote)
     if remote.room_id:
         await _dress_room(app, remote, raw, profile, name, avatar_mxc)
     return remote
+
+
+async def _sync_formatted_displayname_member(
+    app: FastAPI, room: str, ghost: str, name: str, formatted_body: str | None,
+) -> None:
+    """Pushes ``FORMATTED_DISPLAYNAME_FIELD`` into ``room``'s
+    ``m.room.member`` event for ``ghost``, as a sibling of its own
+    ``displayname`` there -- per MSC4589, unlike plain ``displayname``/
+    ``avatar_url`` (and unlike every other MSC4133 custom profile field
+    too), this one is NOT auto-replicated by the homeserver into member
+    events, so it has to be pushed explicitly.
+
+    Reads the room's CURRENT member content first and only adds/removes
+    this one field -- never reconstructing ``membership`` from scratch,
+    so nothing else already on the member event is lost. ``None`` clears
+    the field (the name no longer has any resolvable shortcode, or the
+    feature was turned back off) rather than leaving a stale value whose
+    own emoji no longer match ``displayname``."""
+    homeserver = app.state.homeserver
+    try:
+        current = await homeserver.get_room_state(room, "m.room.member", ghost, as_user_id=ghost)
+    except HomeserverError:
+        return
+    if current is None or current.get("membership") != "join":
+        return
+    content = dict(current)
+    content["displayname"] = name
+    if formatted_body is not None:
+        content[FORMATTED_DISPLAYNAME_FIELD] = {"format": "org.matrix.custom.html", "formatted_body": formatted_body}
+    else:
+        content.pop(FORMATTED_DISPLAYNAME_FIELD, None)
+    try:
+        await homeserver.send_state_event(room, "m.room.member", content, as_user_id=ghost, state_key=ghost)
+    except HomeserverError:
+        logger.info("Could not update formatted display name for %s in %s", ghost, room, exc_info=True)
 
 
 async def _dress_room(

@@ -150,6 +150,72 @@ def _emoji_map(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+# MSC4589 (Formatted Display Names, draft): the field name, and the
+# limits its own text puts on a formatted_body value -- see
+# build_formatted_displayname.
+FORMATTED_DISPLAYNAME_FIELD = "org.matrix.msc4589.formatted_displayname"
+_MSC4589_MAX_BYTES = 1024
+_MSC4589_MAX_IMAGES = 10
+
+
+async def build_formatted_displayname(
+    app: FastAPI, raw: dict[str, Any], as_user_id: str, display_name: str,
+) -> str | None:
+    """The MSC4589 ``formatted_displayname`` HTML for ``display_name``,
+    built from ``raw`` (the kind 0 profile event)'s own NIP-30 ``emoji``
+    tags -- matched against ``display_name`` ITSELF (whichever of the
+    profile's ``name``/``display_name`` fields it actually came from, see
+    ``bridge.remote.display_name``), not just the raw event's own
+    ``name`` JSON field: NIP-30's own text only confirms emoji support for
+    ``name``, but real clients put them in ``display_name`` just as often
+    (confirmed live 2026-11-27 -- ~4% of this bridge's own followed
+    accounts have one), and matching against whatever string actually
+    became the ghost's plain displayname is what keeps MSC4589's own
+    consistency rule (reconstructing text from ``formatted_body`` MUST
+    equal ``displayname``) satisfied regardless of which field it came
+    from.
+
+    Reuses ``_emoji_in_matrix``/``_emoji_map`` -- the exact same
+    shortcode-to-``mxc://`` resolution a note's own body already goes
+    through -- by handing it a throwaway copy of ``raw`` whose
+    ``content`` is ``display_name`` itself, so its "which shortcodes does
+    this text actually use" scan runs against the display name rather
+    than the kind 0's real JSON ``content``; ``tags`` (where the emoji
+    actually live) are untouched.
+
+    None if there's nothing to add, or building it would exceed the MSC's
+    own 1024-byte/10-image limits -- sending an over-budget value is worse
+    than not setting the field at all, since a compliant client's own
+    consistency check would just make it ignore the field anyway. No
+    formatting markup here at all, unlike an ordinary message's
+    ``formatted_body`` -- a display name is never itself bold/italic HTML,
+    just emoji -- and each ``<img>`` carries ONLY ``data-mx-emoticon``/
+    ``src``/``alt``/``title``, not the ``height="32"`` a note's own inline
+    emoji gets in ``render()`` above: MSC4589's allow-list for this field
+    is stricter than an ordinary message's."""
+    rewritten = await _emoji_in_matrix(app, {**raw, "content": display_name}, as_user_id)
+    emoji = _emoji_map(rewritten)
+    matches = [m for m in _SHORTCODE_RE.finditer(display_name) if m.group(1) in emoji]
+    if not matches or len(matches) > _MSC4589_MAX_IMAGES:
+        return None
+    pieces: list[str] = []
+    last_end = 0
+    for match in matches:
+        pieces.append(html.escape(display_name[last_end:match.start()]))
+        shortcode = f":{match.group(1)}:"
+        escaped_code = html.escape(shortcode)
+        pieces.append(
+            f'<img data-mx-emoticon src="{html.escape(emoji[match.group(1)], quote=True)}" '
+            f'alt="{escaped_code}" title="{escaped_code}">'
+        )
+        last_end = match.end()
+    pieces.append(html.escape(display_name[last_end:]))
+    formatted_body = "".join(pieces)
+    if len(formatted_body.encode("utf-8")) > _MSC4589_MAX_BYTES:
+        return None
+    return formatted_body
+
+
 async def _pill_for_pubkey(app: FastAPI, pubkey: str) -> tuple[str, str] | None:
     """(MXID, label) for a key the bridge knows: a local ID's owner, or a ghost."""
     repository = app.state.repository
