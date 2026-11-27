@@ -105,6 +105,13 @@ class BridgeSection:
     world_readable_remote_rooms: bool = False
     # Let in knocks from users on other homeservers too. Off by default.
     accept_federated_knocks: bool = False
+    # Whether the bridge maintains a single "backstage" Matrix space that
+    # every ghost joins once, then points rooms a ghost is added to (Remote
+    # User Room replies, NIP-29 group rooms, Concord channels, Git repo
+    # rooms, ...) at it via a restricted/knock_restricted join rule, so
+    # ghosts can self-join directly instead of needing an invite every
+    # time, see bridge.backstage_space. Off by default.
+    backstage_space_enabled: bool = False
     # MSC4501 (same settings and defaults as the sibling bridges).
     set_msc4501_relates_to: bool = True
     use_msc4501_content_inline: bool = True
@@ -491,6 +498,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         ghost_room_join_rule=_choice(bridge_raw, "ghost_room_join_rule", ("public", "invite", "knock"), "knock"),
         world_readable_remote_rooms=bool(bridge_raw.get("world_readable_remote_rooms", False)),
         accept_federated_knocks=bool(bridge_raw.get("accept_federated_knocks", False)),
+        backstage_space_enabled=bool(bridge_raw.get("backstage_space_enabled", False)),
         set_msc4501_relates_to=bool(bridge_raw.get("set_msc4501_relates_to", True)),
         use_msc4501_content_inline=bool(bridge_raw.get("use_msc4501_content_inline", True)),
         use_msc4501_post_event_type=bool(bridge_raw.get("use_msc4501_post_event_type", False)),

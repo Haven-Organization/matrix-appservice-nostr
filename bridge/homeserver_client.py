@@ -299,6 +299,22 @@ class HomeserverClient:
                 return None
             raise
 
+    async def admin_join_room(self, room_id: str, user_id: str, *, admin_token: str) -> None:
+        """Force ``user_id`` to join ``room_id`` via Synapse's Admin API,
+        bypassing that room's own ``join_rules`` entirely for this one
+        membership change, Synapse-only, same caveat as
+        ``bridge.admins``'s one Admin API call. Used by
+        ``bridge.backstage_space`` to get a ghost into the bridge's own
+        backstage space without an invite round-trip, when
+        ``bridge.use_synapse_admin_api`` is on."""
+        response = await self.http.post(
+            f"/_synapse/admin/v1/join/{quote(room_id, safe='')}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"user_id": user_id},
+        )
+        if response.status_code >= 400:
+            raise _error_from(response)
+
     async def resolve_room_alias(self, alias: str) -> str:
         """The room a published alias (``#name:example.org``) points to."""
         result = await self._request("GET", f"/_matrix/client/v3/directory/room/{quote(alias, safe='')}")

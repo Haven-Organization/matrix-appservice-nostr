@@ -32,6 +32,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from bridge.backstage_space import ensure_ghost_access
 from bridge.bridge_info import send_bridge_info
 from bridge.event_sources import EMBED_FIELD, embedded_source
 from bridge.homeserver_client import HomeserverError
@@ -523,14 +524,22 @@ async def ensure_room(app: FastAPI, remote: RemoteAccount) -> RemoteAccount:
 
 
 async def ensure_ghost_in_room(app: FastAPI, ghost: str, room_id: str) -> None:
-    """Get a ghost into a room (a Profile Room it replies in, say): the bot
-    invites, the ghost joins."""
+    """Get a ghost into a room (a Profile Room it replies in, say). With
+    ``bridge.backstage_space_enabled`` on, tries a plain self-join first
+    (and lazily upgrades the room + joins the ghost to the backstage space
+    if that fails once, then retries, see
+    ``bridge.backstage_space.ensure_ghost_access``); otherwise, and as the
+    fallback when that doesn't work (e.g. this room's mods never granted
+    the bridge power over its ``join_rules``), the bot invites and the
+    ghost joins, exactly as before."""
     homeserver = app.state.homeserver
     try:
         members = await homeserver.get_joined_members(room_id, as_user_id=bot_mxid(app.state.config))
     except HomeserverError:
         members = []
     if ghost in members:
+        return
+    if await ensure_ghost_access(app, room_id=room_id, ghost_mxid=ghost):
         return
     await invite_to_room(app, room_id, ghost)
     await homeserver.join_room(room_id, as_user_id=ghost)

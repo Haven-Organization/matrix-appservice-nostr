@@ -26,6 +26,7 @@ How each thing is bridged. For the commands, see [COMMANDS.md](COMMANDS.md); for
 - [Games](#games)
 - [Communities (Concord)](#communities-concord)
 - [Groups (NIP-29)](#groups-nip-29)
+- [Backstage space](#backstage-space)
 - [Not supported](#not-supported)
 
 ## Nostr IDs
@@ -323,6 +324,10 @@ NIP-29 groups are open chat groups hosted by a relay, which keeps the group's ru
 - **From the relay and its admins**: renames and new pictures change the room's name, topic and avatar. Admins are shown at power level 50, for display only. Members added or removed come and go from the room; if it's you who's removed, you're told and taken out. Messages admins delete are redacted.
 - **Readable on this homeserver.** A `private` group's relay only lets members read, but the room can't be encrypted. The bot says so when you join.
 - **Not yet:** moderating from Matrix, leaving the group from Matrix, editing messages, subgroups as nested Spaces, and live audio/video.
+
+## Backstage space
+
+With `bridge.backstage_space_enabled` on (off by default), the bridge keeps one hidden space that every ghost joins once. Rooms that ghosts get added to (Remote User Rooms, NIP-29 group rooms, Concord channels, Git repo rooms) get a `restricted`/`knock_restricted` join rule pointing at that space, added alongside any rule a community already has. A ghost then joins with one membership event instead of an invite plus a join, which adds up on a busy homeserver. Rooms are converted the first time a ghost needs in; a room whose join rule the bridge isn't allowed to change keeps using invites. DM and notification rooms are never changed.
 
 ## Not supported
 
