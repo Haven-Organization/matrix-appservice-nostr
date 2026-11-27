@@ -230,11 +230,20 @@ async def post_repost_card(app: FastAPI, actor: NostrId, target: EventRow, *, ro
         return name, f'<a href="https://matrix.to/#/{html.escape(user_id, quote=True)}">{html.escape(name)}</a>'
 
     author_name, author_html = await display(author_mxid)
-    _, reposter_html = await display(actor.matrix_user_id)
+    reposter_name, reposter_html = await display(actor.matrix_user_id)
     quoted_plain, quoted_html = quote_block(preview_text)
     formatted = (f"<p>🔁 {reposter_html} reposted {author_html}'s "
                  f'<a href="{html.escape(link, quote=True)}">post</a></p>{quoted_html}')
-    plain = f"🔁 reposted {author_name}'s post:" + (f"\n{quoted_plain}" if quoted_plain else "") + f"\n{link}"
+    # Named explicitly (unlike every OTHER repost card in this bridge
+    # family): this one is sent as the bot, not the reposter's own ghost,
+    # so the Matrix sender alone never reveals who actually reposted --
+    # same reasoning the formatted body above already follows; this plain
+    # fallback was the one place that didn't (confirmed drifted until
+    # 2026-11-27).
+    plain = (
+        f"🔁 {reposter_name} reposted {author_name}'s post:"
+        + (f"\n{quoted_plain}" if quoted_plain else "") + f"\n{link}"
+    )
     relation = None
     if config.bridge.set_msc4501_relates_to:
         relation = {

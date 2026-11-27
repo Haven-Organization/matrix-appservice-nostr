@@ -779,7 +779,10 @@ def test_repost_card_without_msc4501(repository, homeserver, relay_pool) -> None
         q, alice, raw, remote, mirrored, reaction, repost, card = _repost_by_reaction(client, homeserver, relay_pool)
     content = card["content"]
     assert "org.matrix.msc4501.social.relates_to" not in content and "com.beeper.per_message_profile" not in content
-    assert content["body"].startswith("🔁 reposted Alice's post:\n> alice says hi\nhttps://matrix.to/#/")
+    # Names the reposter explicitly (this card is sent as the bot, not the
+    # reposter's own ghost, so the Matrix sender alone never reveals who
+    # actually reposted -- see bridge.interactions.post_repost_card).
+    assert content["body"].startswith("🔁 Q Person reposted Alice's post:\n> alice says hi\nhttps://matrix.to/#/")
 
 
 def test_repair_gives_old_own_reposts_their_card(client, homeserver, relay_pool) -> None:

@@ -68,6 +68,23 @@ def set_social_body(content: dict[str, Any], plain: str, rich: str) -> None:
         content[SOCIAL_FORMATTED_BODY_FIELD] = rich or html.escape(plain)
 
 
+# Event TYPE (not a content field) for a "real" post, in place of
+# m.room.message -- see bridge.inbound._post_event_type. MUST NOT be set
+# together with SOCIAL_BODY_FIELD/SOCIAL_FORMATTED_BODY_FIELD: a dedicated
+# post has no non-compliant room timeline to accommodate, so there's
+# nothing for them to duplicate away from.
+SOCIAL_POST_EVENT_TYPE = "org.matrix.msc4501.social.post"
+
+
+def strip_social_body_for_post_event_type(content: dict[str, Any], event_type: str) -> None:
+    """Enforces SOCIAL_POST_EVENT_TYPE's own MUST-NOT rule, right before
+    sending. A no-op when the fields aren't present or ``event_type`` isn't
+    the dedicated post type -- safe to call unconditionally."""
+    if event_type == SOCIAL_POST_EVENT_TYPE:
+        content.pop(SOCIAL_BODY_FIELD, None)
+        content.pop(SOCIAL_FORMATTED_BODY_FIELD, None)
+
+
 def own_words(content: dict[str, Any]) -> tuple[str, str]:
     """An event's own words for ``social.body``: its own ``social.body`` if
     it has one (a quote-post's or reply's text alone), else its body."""

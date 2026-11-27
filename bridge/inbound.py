@@ -52,10 +52,12 @@ from bridge.msc4501 import (
     EXTERNAL_HANDLE_FIELD,
     REPLY_REL_TYPE,
     REPOST_REL_TYPE,
+    SOCIAL_POST_EVENT_TYPE,
     external_handle_value,
     own_words,
     set_social_body,
     social_relation,
+    strip_social_body_for_post_event_type,
 )
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19
@@ -198,6 +200,11 @@ def _viewer_link(app: FastAPI, event_id: str) -> str:
 
 
 async def _send(app: FastAPI, room_id: str, content: dict[str, Any], *, sender: str, ts: int | None, event_type: str = "m.room.message") -> str:
+    # MSC4501: social.body/social.formatted_body MUST NOT be set on
+    # social.post-typed events -- enforced once, here, rather than at each
+    # of this function's callers, since every one of them that sets these
+    # fields also chooses its event type independently of that.
+    strip_social_body_for_post_event_type(content, event_type)
     return await app.state.homeserver.send_message_event(room_id, content, as_user_id=sender, ts=ts, event_type=event_type)
 
 
@@ -271,7 +278,7 @@ async def _thread_root_of(app: FastAPI, room_id: str, event_id: str) -> str:
 
 
 def _post_event_type(app: FastAPI) -> str:
-    return "org.matrix.msc4501.social.post" if app.state.config.bridge.use_msc4501_post_event_type else "m.room.message"
+    return SOCIAL_POST_EVENT_TYPE if app.state.config.bridge.use_msc4501_post_event_type else "m.room.message"
 
 
 # -- the pipeline -------------------------------------------------------------------
