@@ -366,8 +366,7 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
                     await homeserver.delete_profile_field(ghost, FORMATTED_DISPLAYNAME_FIELD)
             except HomeserverError:
                 logger.info("Could not update formatted display name for %s", ghost, exc_info=True)
-            if remote.room_id:
-                await _sync_formatted_displayname_member(app, remote.room_id, ghost, name, formatted_body)
+            await _sync_formatted_displayname_rooms(app, ghost, name, formatted_body)
     await app.state.repository.save_remote_account(remote)
     await apply_profile_fields(app, remote)
     if remote.room_id:
@@ -375,17 +374,25 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
     return remote
 
 
-async def _sync_formatted_displayname_member(
-    app: FastAPI, room: str, ghost: str, name: str, formatted_body: str | None,
+async def _sync_formatted_displayname_rooms(
+    app: FastAPI, ghost: str, name: str, formatted_body: str | None,
 ) -> None:
-    """Pushes ``FORMATTED_DISPLAYNAME_FIELD`` into ``room``'s
-    ``m.room.member`` event for ``ghost``, as a sibling of its own
-    ``displayname`` there -- per MSC4589, unlike plain ``displayname``/
-    ``avatar_url`` (and unlike every other MSC4133 custom profile field
-    too), this one is NOT auto-replicated by the homeserver into member
-    events, so it has to be pushed explicitly.
+    """Pushes ``FORMATTED_DISPLAYNAME_FIELD`` into every room ``ghost`` is
+    a member of, as a sibling of its own ``displayname`` there -- per
+    MSC4589, unlike plain ``displayname``/``avatar_url`` (and unlike every
+    other MSC4133 custom profile field too), this one is NOT auto-
+    replicated by the homeserver into member events, so it has to be
+    pushed explicitly, in every room, not just the Remote User Room.
 
-    Reads the room's CURRENT member content first and only adds/removes
+    Enumerated via ``homeserver.get_joined_rooms`` -- the real, complete
+    list of every room this ghost is actually in right now. Confirmed
+    live 2026-11-27 (Haven): a ghost is routinely also a member of OTHER
+    rooms entirely (someone else's Remote User Room they replied in, a
+    shared room, ...) that this bridge never created FOR them -- the
+    earlier version only ever touched the Remote User Room itself, so
+    the field was missing everywhere else ``displayname`` already is.
+
+    Reads each room's CURRENT member content first and only adds/removes
     this one field -- never reconstructing ``membership`` from scratch,
     so nothing else already on the member event is lost. ``None`` clears
     the field (the name no longer has any resolvable shortcode, or the
@@ -393,21 +400,28 @@ async def _sync_formatted_displayname_member(
     own emoji no longer match ``displayname``."""
     homeserver = app.state.homeserver
     try:
-        current = await homeserver.get_room_state(room, "m.room.member", ghost, as_user_id=ghost)
+        room_ids = await homeserver.get_joined_rooms(as_user_id=ghost)
     except HomeserverError:
+        logger.info("Could not list joined rooms for ghost %s", ghost, exc_info=True)
         return
-    if current is None or current.get("membership") != "join":
-        return
-    content = dict(current)
-    content["displayname"] = name
-    if formatted_body is not None:
-        content[FORMATTED_DISPLAYNAME_FIELD] = {"format": "org.matrix.custom.html", "formatted_body": formatted_body}
-    else:
-        content.pop(FORMATTED_DISPLAYNAME_FIELD, None)
-    try:
-        await homeserver.send_state_event(room, "m.room.member", content, as_user_id=ghost, state_key=ghost)
-    except HomeserverError:
-        logger.info("Could not update formatted display name for %s in %s", ghost, room, exc_info=True)
+
+    for room in room_ids:
+        try:
+            current = await homeserver.get_room_state(room, "m.room.member", ghost, as_user_id=ghost)
+        except HomeserverError:
+            continue
+        if current is None or current.get("membership") != "join":
+            continue
+        content = dict(current)
+        content["displayname"] = name
+        if formatted_body is not None:
+            content[FORMATTED_DISPLAYNAME_FIELD] = {"format": "org.matrix.custom.html", "formatted_body": formatted_body}
+        else:
+            content.pop(FORMATTED_DISPLAYNAME_FIELD, None)
+        try:
+            await homeserver.send_state_event(room, "m.room.member", content, as_user_id=ghost, state_key=ghost)
+        except HomeserverError:
+            logger.info("Could not update formatted display name for %s in %s", ghost, room, exc_info=True)
 
 
 async def _dress_room(
