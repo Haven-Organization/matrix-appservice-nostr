@@ -304,8 +304,8 @@ class WebxdcSection:
     # it directly (a host without CORS), in MB. Never stored.
     max_app_mb: int = 100
     # Where the Nostr Games widget finds games to browse, besides the
-    # bridge's own relays: the relays Ditto and poster.place list them from.
-    catalog_relays: tuple[str, ...] = ("wss://relay.ditto.pub", "wss://relay.poster.place/")
+    # bridge's own relays. Public relays that serve reads without auth.
+    catalog_relays: tuple[str, ...] = ("wss://relay.ditto.pub", "wss://relay.nostr.net")
 
 
 @dataclass(frozen=True)
