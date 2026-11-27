@@ -164,6 +164,11 @@ _HANDLERS = (
 
 async def handle_event(request: Request, event: dict[str, Any]) -> None:
     from bridge import encrypted_media
+    from bridge.remote import maybe_add_formatted_displayname_on_join
+
+    # Never claims the event: a ghost's join just gets its MSC4589
+    # formatted display name copied onto the new member event.
+    await maybe_add_formatted_displayname_on_join(request.app, event)
 
     # Another bridge's decrypted copy of a forwarded encrypted file.
     if event.get("type") == encrypted_media.ANNOUNCE_TYPE:

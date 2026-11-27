@@ -346,7 +346,10 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
             await homeserver.set_avatar_url(ghost, avatar_mxc)
     except HomeserverError:
         logger.info("Could not update the profile of %s", ghost, exc_info=True)
-    if name_changed and config.bridge.use_msc4589_formatted_displayname:
+    # Also when the name is unchanged but a shortcode name still has no
+    # formatted version (last renamed before MSC4589 was turned on).
+    missing_formatted = bool(name) and ":" in name and FORMATTED_DISPLAYNAME_FIELD not in current
+    if (name_changed or missing_formatted) and config.bridge.use_msc4589_formatted_displayname:
         formatted_body = await build_formatted_displayname(app, raw, ghost, name)
         # Nothing to set now, and `current` (already fetched above) shows no
         # stale value to clear either -- skip the profile write and the room
@@ -374,6 +377,44 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
         await _dress_room(app, remote, raw, profile, name, avatar_mxc)
     return remote
 
+
+
+async def maybe_add_formatted_displayname_on_join(app: FastAPI, event: dict[str, Any]) -> None:
+    """When one of this bridge's ghosts joins a room, copy its MSC4589
+    formatted display name from its global profile onto the new member
+    event: the homeserver fills a join's ``displayname`` from the profile
+    but not this field. Never claims the event; does nothing unless the
+    feature is on, the joiner is a ghost, the field is missing, and the
+    profile's plain name matches the member event's."""
+    config = app.state.config
+    if not config.bridge.use_msc4589_formatted_displayname or event.get("type") != "m.room.member":
+        return
+    content = event.get("content") or {}
+    ghost = event.get("state_key") or ""
+    room_id = event.get("room_id")
+    if (
+        content.get("membership") != "join"
+        or event.get("sender") != ghost
+        or FORMATTED_DISPLAYNAME_FIELD in content
+        or not room_id
+        or not ghost.startswith(f"@{config.appservice.user_prefix}")
+        or not ghost.endswith(f":{config.homeserver.server_name}")
+    ):
+        return
+    homeserver = app.state.homeserver
+    try:
+        profile = await homeserver.get_profile(ghost)
+        formatted = profile.get(FORMATTED_DISPLAYNAME_FIELD)
+        if not formatted or profile.get("displayname") != content.get("displayname"):
+            return
+        current = await homeserver.get_room_state(room_id, "m.room.member", ghost, as_user_id=ghost) or {}
+        if current.get("membership") != "join" or FORMATTED_DISPLAYNAME_FIELD in current:
+            return
+        await homeserver.send_state_event(
+            room_id, "m.room.member", {**current, FORMATTED_DISPLAYNAME_FIELD: formatted}, as_user_id=ghost, state_key=ghost,
+        )
+    except HomeserverError:
+        logger.debug("Could not add the formatted display name for %s in %s", ghost, room_id, exc_info=True)
 
 async def _sync_formatted_displayname_rooms(
     app: FastAPI, ghost: str, name: str, formatted_body: str | None,
