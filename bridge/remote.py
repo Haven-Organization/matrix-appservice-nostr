@@ -347,18 +347,27 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
         logger.info("Could not update the profile of %s", ghost, exc_info=True)
     if name_changed and config.bridge.use_msc4589_formatted_displayname:
         formatted_body = await build_formatted_displayname(app, raw, ghost, name)
-        try:
-            if formatted_body is not None:
-                await homeserver.set_profile_field(
-                    ghost, FORMATTED_DISPLAYNAME_FIELD,
-                    {"format": "org.matrix.custom.html", "formatted_body": formatted_body},
-                )
-            else:
-                await homeserver.delete_profile_field(ghost, FORMATTED_DISPLAYNAME_FIELD)
-        except HomeserverError:
-            logger.info("Could not update formatted display name for %s", ghost, exc_info=True)
-        if remote.room_id:
-            await _sync_formatted_displayname_member(app, remote.room_id, ghost, name, formatted_body)
+        # Nothing to set now, and `current` (already fetched above) shows no
+        # stale value to clear either -- skip the profile write and the room
+        # sync entirely rather than pay for both on every single name
+        # change for the common case (most accounts never use custom emoji
+        # in their name at all). Still clears a real stale value: the name
+        # change that just dropped the last shortcode from a PREVIOUSLY
+        # formatted name (went plaintext-only) is exactly the case where
+        # `current` still has the field from before.
+        if formatted_body is not None or FORMATTED_DISPLAYNAME_FIELD in current:
+            try:
+                if formatted_body is not None:
+                    await homeserver.set_profile_field(
+                        ghost, FORMATTED_DISPLAYNAME_FIELD,
+                        {"format": "org.matrix.custom.html", "formatted_body": formatted_body},
+                    )
+                else:
+                    await homeserver.delete_profile_field(ghost, FORMATTED_DISPLAYNAME_FIELD)
+            except HomeserverError:
+                logger.info("Could not update formatted display name for %s", ghost, exc_info=True)
+            if remote.room_id:
+                await _sync_formatted_displayname_member(app, remote.room_id, ghost, name, formatted_body)
     await app.state.repository.save_remote_account(remote)
     await apply_profile_fields(app, remote)
     if remote.room_id:
