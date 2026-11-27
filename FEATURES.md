@@ -146,7 +146,7 @@ New posts arrive through subscriptions on the relays the account says it writes 
 
 **A followed account's posts** appear in its room, from its ghost, with the original's web link (`external_url`, on `nostr.web_viewer_url`, `https://ditto.pub/` by default):
 
-- **Notes, pictures and videos** (kinds 1, 20, 21, 22). The first image or video becomes the Matrix message, copied into the media repository, with the text as its caption. Further attachments are listed as links.
+- **Notes, pictures and videos** (kinds 1, 20, 21, 22). The first image or video becomes the Matrix message, copied into the media repository, with the text as its caption. Further attachments are listed as links. A video gets a thumbnail so clients show a poster frame before playing it: the post's own preview image (`imeta` `image`) when it has one, else a frame decoded with `ffmpeg`, which handles codecs a client may not (e.g. H.264 4:4:4), along with its size and duration.
 - **Text:** URLs are linked; `nostr:npub…` becomes a pill when it's someone here, else a link; `nostr:note…`/`nevent…` becomes a link to the post in Matrix if it's here, else on the web viewer; custom `:emoji:` (NIP-30) are shown as inline images; a `content-warning` becomes a spoiler. Markdown isn't rendered, since Nostr notes are plain text.
 - **Long-form articles** (kind 30023) are shown as 📰 the title, the summary (or the start of the text), the cover image, and a link to read it, rather than pages of markdown.
 - **Replies** by a followed account are threaded under the post they answer, if that post is in Matrix (it's brought in first, if need be), with a copy in the replier's own room. Otherwise they're shown in its room as "⤵️ Reply to a post".

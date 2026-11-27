@@ -21,6 +21,7 @@ Setting the bridge up, natively or in Docker. For what the bridge does, see [REA
 - A **relay hostname** (`nostr.relay_url`), e.g. `nostr.example.org`, with its own TLS certificate.
 - A reverse proxy (nginx in the examples) in front of the bridge.
 - Python 3.12 or newer (developed on 3.14), or Docker.
+- `ffmpeg` on the `PATH` (optional, already in the Docker image): a video copied into Matrix gets a thumbnail, size and duration when the post has no preview image of its own. Without it such videos come in without a thumbnail.
 - Optionally, PostgreSQL. SQLite works out of the box and is fine for a small server.
 
 ## 1. DNS and TLS for the relay

@@ -36,6 +36,7 @@ from bridge.homeserver_client import HomeserverError
 from bridge.markdown import has_markdown
 from bridge.nostr import nip19
 from bridge.safe_fetch import FetchError, UnsafeAddress
+from bridge.video_thumbnails import video_info_fields
 from bridge.users import bot_mxid
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ class Attachment:
     sha256: str | None = None
     dim: str | None = None
     alt: str | None = None
+    # A video's preview image (imeta / NIP-94 ``image``), for its thumbnail.
+    thumb: str | None = None
 
     @property
     def family(self) -> str:
@@ -106,6 +109,8 @@ def attachments_of(raw: dict[str, Any]) -> list[Attachment]:
         if url.startswith(("https://", "http://")):
             file = Attachment(url, media_type(flat.get("m"), url) or flat.get("m"), flat.get("x"), flat.get("dim"), flat.get("alt"))
             preview = flat.get("image") or flat.get("thumb") or ""
+            if file.family == "video" and preview.startswith(("https://", "http://")):
+                file.thumb = preview
             if file.family not in ("image", "video") and preview.startswith(("https://", "http://")):
                 found.append(Attachment(preview, "image/" + (preview.rsplit(".", 1)[-1].lower() if "." in preview[-6:] else "png")))
                 seen.add(preview)
@@ -122,7 +127,11 @@ def attachments_of(raw: dict[str, Any]) -> list[Attachment]:
         url = fields.get("url")
         if url and url.startswith(("https://", "http://")) and url not in seen:
             seen.add(url)
-            found.append(Attachment(url, media_type(fields.get("m"), url), fields.get("x"), fields.get("dim"), fields.get("alt")))
+            attachment = Attachment(url, media_type(fields.get("m"), url), fields.get("x"), fields.get("dim"), fields.get("alt"))
+            preview = fields.get("image") or fields.get("thumb") or ""
+            if attachment.family == "video" and preview.startswith(("https://", "http://")):
+                attachment.thumb = preview
+            found.append(attachment)
     for match in _URL_RE.finditer(raw.get("content") or ""):
         url = match.group(0).rstrip(_TRAILING)
         lower = url.lower().split("?", 1)[0]
@@ -335,24 +344,48 @@ async def copy_attachment(app: FastAPI, attachment: Attachment, *, as_user_id: s
     """An attachment in the Matrix media repository, for a Matrix media
     message (``url``/``info``/``filename``): the copy already there when
     there is one, else downloaded and uploaded once. ``None`` if it can't be
-    fetched, is too big, or its hash doesn't match its ``imeta``."""
+    fetched, is too big, or its hash doesn't match its ``imeta``.
+
+    A video also gets a thumbnail: its own preview image when the post has
+    one, else a frame of it (``bridge.video_thumbnails``, with its size and
+    duration)."""
+    copied, data = await _copy_attachment(app, attachment, as_user_id=as_user_id)
+    if copied is None or not str(copied["info"].get("mimetype", "")).startswith("video/"):
+        return copied
+    info = copied["info"]
+    if attachment.thumb:
+        thumb, _ = await _copy_attachment(app, Attachment(attachment.thumb), as_user_id=as_user_id)
+        if thumb is not None and str(thumb["info"].get("mimetype", "")).startswith("image/"):
+            info["thumbnail_url"] = thumb["url"]
+            info["thumbnail_info"] = thumb["info"]
+            return copied
+    info.update(await video_info_fields(app.state.homeserver, copied["url"], data, as_user_id=as_user_id))
+    return copied
+
+
+async def _copy_attachment(
+    app: FastAPI, attachment: Attachment, *, as_user_id: str
+) -> tuple[dict[str, Any] | None, bytes | None]:
+    """``copy_attachment`` without the video thumbnail, plus the file's
+    bytes when it had to be downloaded (``None`` for a copy already in
+    Matrix)."""
     from bridge.repository import MediaCopy
 
     existing = await _already_in_matrix(app, attachment)
     if existing is not None:
-        return existing
+        return existing, None
     limit = app.state.config.nostr.max_media_mb * 1024 * 1024
     try:
         fetched = await app.state.fetcher.get(attachment.url, max_bytes=limit)
     except (FetchError, UnsafeAddress) as exc:
         logger.info("Not copying %s: %s", attachment.url, exc)
-        return None
+        return None, None
     if fetched.status != 200 or not fetched.content:
-        return None
+        return None, None
     digest = hashlib.sha256(fetched.content).hexdigest()
     if attachment.sha256 and digest != attachment.sha256.lower():
         logger.info("Not copying %s: hash doesn't match its imeta", attachment.url)
-        return None
+        return None, None
     mime = (attachment.mime or fetched.content_type or "application/octet-stream").split(";")[0].strip()
     repository = app.state.repository
     # The same bytes from another URL: that copy will do.
@@ -365,11 +398,11 @@ async def copy_attachment(app: FastAPI, attachment: Attachment, *, as_user_id: s
             mxc = await app.state.homeserver.upload_media(fetched.content, mime, name, as_user_id=as_user_id)
         except HomeserverError:
             logger.info("Could not store %s", attachment.url, exc_info=True)
-            return None
+            return None, None
     await repository.put_media_copy(
         MediaCopy(attachment.url, digest, mxc, mime, len(fetched.content), datetime.now(timezone.utc).isoformat())
     )
-    return _media_message(attachment, mxc, mime, len(fetched.content))
+    return _media_message(attachment, mxc, mime, len(fetched.content)), fetched.content
 
 
 def _long_form(app: FastAPI, raw: dict[str, Any]) -> dict[str, Any]:
