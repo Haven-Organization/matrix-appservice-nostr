@@ -93,7 +93,8 @@ async def _set_hub(app: FastAPI, room_id: str, game: webxdc.App | None) -> None:
     homeserver = app.state.homeserver
     content: dict[str, Any] = {
         "type": "m.custom", "url": hub_url(app, game),
-        "name": f"🎮 {game.name}" if game is not None else "🎮 Nostr Games",
+        # No 🎮: the widget's avatar is a game controller already.
+        "name": game.name if game is not None else GAMES_ROOM_NAME,
         # No "title": clients show it after the name ("Nostr Games - Nostr Games").
         "data": {"game": game.id} if game is not None else {},
     }
@@ -235,14 +236,16 @@ async def open_in_room(app: FastAPI, room_id: str, game: webxdc.App, row, local=
 async def _hub_ready(app: FastAPI, room_id: str) -> None:
     """The room's Nostr Games widget there, showing its list (set only if
     it's missing, still points at a game, as it did before, or has an old
-    avatar, in which case the room's avatar is brought up to date too)."""
+    name or avatar; with an old avatar, the room's is brought up to date
+    too)."""
     config = app.state.config
     bot = bot_mxid(config)
     avatar = hub_avatar(config)
     for state_type in WIDGET_STATE_TYPES:
         current = await app.state.homeserver.get_room_state(room_id, state_type, HUB_WIDGET_ID, as_user_id=bot) or {}
         stale_avatar = bool(avatar) and current.get("avatar_url") != avatar
-        if not current.get("url") or "&game=" in current["url"] or (current.get("data") or {}).get("title") or stale_avatar:
+        if (not current.get("url") or "&game=" in current["url"] or (current.get("data") or {}).get("title")
+                or current.get("name") != GAMES_ROOM_NAME or stale_avatar):
             await ensure_hub(app, room_id)
             if stale_avatar:
                 await _set_room_avatar(app, room_id, avatar)

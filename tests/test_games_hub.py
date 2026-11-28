@@ -69,7 +69,7 @@ def auth(client):
 def test_games_room_starts_with_the_hub_and_play_brings_it_back(games, homeserver, relay_pool) -> None:
     q, alice, post, remote, shown, room = joined_games_room(games, homeserver, relay_pool)
     hub = homeserver._room(room)["state"][("im.vector.modular.widgets", HUB)]["content"]
-    assert hub["name"] == "🎮 Nostr Games" and "/xdc/hub?" in hub["url"] and "$matrix_room_id" in hub["url"]
+    assert hub["name"] == "Nostr Games" and "/xdc/hub?" in hub["url"] and "$matrix_room_id" in hub["url"]
     assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
     # A game plays in it: the widget is told to, and isn't changed. An old
     # separate game widget goes.
@@ -77,7 +77,7 @@ def test_games_room_starts_with_the_hub_and_play_brings_it_back(games, homeserve
         homeserver._store(room, state_type, {"url": "https://old.example/xdc/play"}, "@nostrbot:example.org", GAME_W)
     play(games, homeserver, remote.room_id, shown["event_id"])
     hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
-    assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "🎮 Nostr Games"
+    assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "Nostr Games"
     assert told(games, room)["game"] == GAME
     assert homeserver._room(room)["state"][("m.widget", GAME_W)]["content"] == {}
     assert layout(homeserver, room) == {HUB: {"container": "center", "index": 0, "width": 100, "height": 100}}
@@ -289,7 +289,7 @@ def test_going_back_points_the_widget_at_the_list_again(games, homeserver, relay
                                              "data": {"title": "Chess", "game": GAME}}, "@nostrbot:example.org", HUB)
     assert games.post("/xdc/api/close", headers=auth(games), json={"room_id": room}).json() == {"ok": True}
     hub = homeserver._room(room)["state"][("m.widget", HUB)]["content"]
-    assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "🎮 Nostr Games"
+    assert "&game=" not in hub["url"] and hub["data"] == {} and hub["name"] == "Nostr Games"
     other = {"Authorization": "Bearer " + session_for(games, "@admin:example.org")}
     assert games.post("/xdc/api/close", headers=other, json={"room_id": room}).status_code == 403
 

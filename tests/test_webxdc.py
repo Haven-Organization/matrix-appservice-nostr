@@ -161,7 +161,7 @@ def test_play_opens_the_game_in_the_games_room(games, homeserver, relay_pool) ->
     games_room = run(games, games.app.state.repository.get_state, "webxdc:room:@q:example.org")
     # It plays in the room's Nostr Games widget, which is told to (the widget itself isn't changed).
     widget = homeserver._room(games_room)["state"][("im.vector.modular.widgets", HUB_WIDGET_ID)]["content"]
-    assert widget["name"] == "🎮 Nostr Games" and "/xdc/hub?" in widget["url"] and "&game=" not in widget["url"]
+    assert widget["name"] == "Nostr Games" and "/xdc/hub?" in widget["url"] and "&game=" not in widget["url"]
     assert "$matrix_user_id" in widget["url"]
     told, _ = games.app.state.games_hub_pending[(games_room, "@q:example.org")]
     assert told == {"t": "play", "game": GAME, "name": "Chess", "tab": "nostr"}
