@@ -24,6 +24,9 @@ bridge:
   # homeserver.synapse_admin_token). Any other homeserver: leave it off.
   # use_synapse_admin_api: false
 
+  # Let bridge admins change settings in the widget (Admin, Settings).
+  # allow_db_setting_overrides: true
+
   # Users of other homeservers: off means none of them can use the bridge,
   # whatever "[allow" has granted. Grants are made with "[allow"; with none,
   # only this homeserver's users can use it either way.
@@ -128,6 +131,7 @@ nostr:
   # publish_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net]
   # discovery_relays: [wss://purplepag.es, wss://relay.damus.io]
   # fallback_relays: [wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net]
+  # search_relays: [wss://relay.nostr.band, wss://search.nos.today]
   # web_viewer_url: https://ditto.pub/
   # backfill_on_follow: 20
   # Let local IDs' own Nostr apps read followed accounts' posts through the

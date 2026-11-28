@@ -1,17 +1,25 @@
-"""The bridge's room widget: a small web page any widget-capable client
-(Element, ...) shows in a room, as the sibling bridges have.
+"""The bridge's room widget: a small web app any widget-capable client
+(Element, ...) shows in a room, with the same layout and sections as the
+sibling bridges' widgets (the page itself is ``bridge.widget_page``):
 
-It does what commands do (switching and creating IDs, following,
-blocking, DMs, backfill) and the things that must never go through a room
-message: importing an existing key (``nsec``, or ``ncryptsec`` with its
-password), connecting a remote signer (``bunker://``), and exporting a key.
-Those travel only over HTTPS, between the page and the bridge.
+- Home: browsing Nostr (``bridge.widget_browse``) and importing posts.
+- Profile: the user's IDs, editing their profiles, who they follow.
+- Communities: their Concord communities and NIP-29 groups.
+- Settings: what the room they're in is for, getting back into their
+  rooms, DM filters, and keys: importing an existing one (``nsec``, or
+  ``ncryptsec`` with its password), connecting a remote signer
+  (``bunker://``), and exporting one. Keys never go through a room
+  message; they travel only over HTTPS, between the page and the bridge.
+- Admin: third-party access and bans, every ID and bridge room, the
+  backstage space, and the bridge's settings (``bridge.bridge_settings``).
 
 Nothing the page's URL says is trusted. The page asks its client for a
 Matrix OpenID token, which the homeserver itself vouches for, and trades
-it for a short-lived session. Every action needs that session and works
-only in a room the user is joined to. Ordinary actions run the same
-handlers as the commands, which answer in the room as usual.
+it for a session. Every call needs that session and works only for
+someone joined to the room the widget is in (any room: Home, Profile,
+Communities and Admin aren't about the room). Actions run the same
+handlers as the commands, which answer in the room as usual. Admin calls
+check admin status on every request.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from bridge.admins import is_admin
 from bridge.homeserver_client import HomeserverError
 from bridge.nostr import nip19
 from bridge.users import bot_mxid
+from bridge.widget_page import PAGE as _PAGE
 
 logger = logging.getLogger(__name__)
 
@@ -217,55 +226,100 @@ async def ping(request: Request) -> dict[str, bool]:
 # -- what the page shows --------------------------------------------------------------
 
 
-@router.get("/widget/api/context")
-async def context(request: Request, room_id: str) -> JSONResponse:
-    user = await _member(request, room_id)
-    app = request.app
+async def _profile_fields(app, nostr_id) -> dict[str, str]:
+    """An ID's profile as it's published (its kind 0), rebuilt from the
+    index: name, about, picture and banner URLs and so on."""
+    from bridge.event_sources import rebuild
+    from bridge.remote import parse_profile
+
+    row = await app.state.repository.get_latest_event(nostr_id.pubkey, 0)
+    if row is None:
+        return {}
+    try:
+        rebuilt = await rebuild(app, row)
+    except Exception:
+        logger.info("Could not rebuild the profile of %s", nostr_id.name, exc_info=True)
+        return {}
+    return parse_profile(rebuilt.event) if rebuilt.status == "ok" else {}
+
+
+def _https(url: str | None) -> str | None:
+    return url if isinstance(url, str) and url.startswith("https://") else None
+
+
+async def _room_kind(app, user: str, room_id: str, owned) -> dict[str, Any]:
+    """What the room the widget is in is, for the Settings section's "This
+    room" card."""
+    from bridge import communities
+
     repository = app.state.repository
-    config = app.state.config
-    owned = await repository.list_ids_for_user(user)
-    active = await ids.active_id(app, user)
-    id_list = [
-        {
-            "number": n,
-            "name": i.name,
-            "handle": f"{i.name}@{config.bridge.domain}",
-            "npub": nip19.npub_encode(i.pubkey),
-            "active": active is not None and active.id == i.id,
-            "key": {"generated": "held by the bridge", "imported": "imported, held by the bridge", "bunker": "in your remote signer"}.get(i.key_origin, i.key_origin),
-            "exportable": i.key_origin != "bunker",
-            "profile_room": i.profile_room_id,
-            "followers": await repository.count_followers(i.id),
-        }
-        for n, i in enumerate(owned, start=1)
-    ]
-    room: dict[str, Any] = {"kind": "other"}
     profile = await repository.get_id_for_profile_room(room_id)
-    remote = await repository.get_remote_account_for_room(room_id)
-    dm = await repository.get_dm_room_info(room_id)
-    rooms = await repository.get_user_rooms(user)
     if profile is not None:
-        room = {"kind": "profile", "id": profile.name, "mine": profile.matrix_user_id == user}
-    elif remote is not None:
+        return {"kind": "profile", "id": profile.name, "mine": profile.matrix_user_id == user,
+                "number": ids.id_number(owned, profile) if profile.matrix_user_id == user else None}
+    remote = await repository.get_remote_account_for_room(room_id)
+    if remote is not None:
         following = [i.name for i in owned if remote.pubkey in await repository.list_follows(i.id)]
         blocked = [i.name for i in owned if remote.pubkey in await repository.list_blocks(i.id)]
         try:
             name = (await app.state.homeserver.get_profile(remote.ghost_user_id)).get("displayname")
         except HomeserverError:
             name = None
-        room = {
-            "kind": "remote", "npub": nip19.npub_encode(remote.pubkey), "nip05": remote.nip05, "name": name,
-            "following": following, "blocked": blocked,
-        }
-    elif dm is not None:
-        room = {"kind": "dm"}
-    elif room_id in (rooms.notifications_room_id, rooms.space_room_id):
-        room = {"kind": "notifications" if room_id == rooms.notifications_room_id else "space"}
+        return {"kind": "remote", "pubkey": remote.pubkey, "npub": nip19.npub_encode(remote.pubkey),
+                "nip05": remote.nip05, "name": name, "following": following, "blocked": blocked}
+    dm = await repository.get_dm_room_info(room_id)
+    if dm is not None:
+        return {"kind": "dm", "pubkey": dm[1], "npub": nip19.npub_encode(dm[1])}
+    rooms = await repository.get_user_rooms(user)
+    if room_id in (rooms.notifications_room_id, rooms.space_room_id):
+        return {"kind": "notifications" if room_id == rooms.notifications_room_id else "space"}
+    found = await communities.find(app, user, "", room_id)
+    if found is not None:
+        kind, target = found
+        return {"kind": "community" if kind == "concord" else "group", "type": kind,
+                "community_id": target.id if kind == "concord" else target.key,
+                "name": target.name or target.id}
+    return {"kind": "other"}
+
+
+@router.get("/widget/api/context")
+async def context(request: Request, room_id: str) -> JSONResponse:
+    from bridge.shadow_ids import effective_tier
+
+    user = await _member(request, room_id)
+    app = request.app
+    repository = app.state.repository
+    config = app.state.config
+    owned = await repository.list_ids_for_user(user)
+    active = await ids.active_id(app, user)
+    id_list = []
+    for n, i in enumerate(owned, start=1):
+        fields = await _profile_fields(app, i)
+        id_list.append({
+            "number": n,
+            "name": i.name,
+            "handle": f"{i.name}@{config.bridge.domain}",
+            "npub": nip19.npub_encode(i.pubkey),
+            "pubkey": i.pubkey,
+            "active": active is not None and active.id == i.id,
+            "key": {"generated": "held by the bridge", "imported": "imported, held by the bridge", "bunker": "in your remote signer"}.get(i.key_origin, i.key_origin),
+            "key_origin": i.key_origin,
+            "exportable": i.key_origin != "bunker",
+            "profile_room": i.profile_room_id,
+            "tier": await effective_tier(app, i),
+            "followers": await repository.count_followers(i.id),
+            "display_name": fields.get("name") or i.name,
+            "avatar_url": _https(fields.get("picture")),
+        })
+    admin = await is_admin(config, app.state.homeserver, user)
     return JSONResponse({
         "user": user, "domain": config.bridge.domain, "prefix": config.appservice.command_prefix,
-        "ids": id_list, "room": room, "admin": await is_admin(config, app.state.homeserver, user),
-        "max_ids": config.bridge.max_ids_per_user,
-    })
+        "ids": id_list, "room": await _room_kind(app, user, room_id, owned), "admin": admin, "is_admin": admin,
+        "has_profile": bool(owned), "max_ids": config.bridge.max_ids_per_user,
+        "web_viewer_url": config.nostr.web_viewer_url,
+        "relays": _browse().configured_relays(app),
+        "backfill_default": config.nostr.backfill_on_follow or 20,
+    }, headers={"Cache-Control": "no-store"})
 
 
 # -- ordinary actions (the command handlers answer in the room) -----------------------
@@ -334,9 +388,11 @@ async def dm(request: Request) -> JSONResponse:
 
 
 async def _admin(request: Request, room_id: str) -> str:
+    """Checked on every admin call, not only by hiding the section: nothing
+    stops a request straight at an endpoint."""
     user = await _member(request, room_id)
     if not await is_admin(request.app.state.config, request.app.state.homeserver, user):
-        raise HTTPException(403, "Only a bridge admin can manage third-party access.")
+        raise HTTPException(403, "Only a bridge admin can do that.")
     return user
 
 
@@ -489,275 +545,12 @@ async def page() -> HTMLResponse:
     return HTMLResponse(_PAGE, headers={"Cache-Control": "no-store, must-revalidate"})
 
 
-_PAGE = r"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nostr Bridge</title>
-<style>
-  :root { --bg:#f6f4fa; --card:#fff; --border:#e3dcef; --text:#14101c; --muted:#655c75; --accent:#662482; --accent-text:#fff;
-          --danger:#c4271b; --danger-bg:#fdf0ef; --ok-bg:#ecfdf3; --ok-text:#067647; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#141018; --card:#1d1724; --border:#33293f;
-          --text:#ece6f3; --muted:#a397b3; --accent:#b77ad6; --accent-text:#141018; --danger:#f97066; --danger-bg:#2b1618; --ok-bg:#0f2a1d; --ok-text:#47cd89; } }
-  :root[data-theme="dark"] { --bg:#141018; --card:#1d1724; --border:#33293f; --text:#ece6f3; --muted:#a397b3; --accent:#b77ad6;
-          --accent-text:#141018; --danger:#f97066; --danger-bg:#2b1618; --ok-bg:#0f2a1d; --ok-text:#47cd89; }
-  * { box-sizing: border-box; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
-  button { font:inherit; font-weight:600; border:1px solid var(--border); background:var(--card); color:var(--text); border-radius:8px; padding:7px 12px; cursor:pointer; }
-  button.primary { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
-  button.danger { color:var(--danger); border-color:var(--danger); }
-  button:disabled { opacity:.5; cursor:default; }
-  input, select { font:inherit; border:1px solid var(--border); background:var(--bg); color:var(--text); border-radius:8px; padding:7px 10px; flex:1; min-width:120px; }
-  .item { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; }
-  .item div { overflow-wrap:anywhere; }
-  .muted { color:var(--muted); font-size:12.5px; }
-  .badge { font-size:11px; padding:2px 8px; border-radius:999px; background:var(--accent); color:var(--accent-text); font-weight:600; margin-left:6px; }
-  .warn { background:var(--danger-bg); color:var(--danger); border-radius:8px; padding:8px 10px; font-size:13px; margin-bottom:8px; }
-  .secret { font-family:ui-monospace,monospace; word-break:break-all; background:var(--bg); padding:8px; border-radius:8px; border:1px solid var(--border); }
-  .toast { position:fixed; left:16px; right:16px; bottom:16px; padding:10px 14px; border-radius:10px; font-weight:600; display:none; }
-  .toast.ok { background:var(--ok-bg); color:var(--ok-text); display:block; } .toast.err { background:var(--danger-bg); color:var(--danger); display:block; }
-  details summary { cursor:pointer; font-weight:600; margin-bottom:8px; }
-  a { color:var(--accent); }
-</style>
-</head>
-<body>
-<div id="app"><p class="muted">Connecting&hellip;</p></div>
-<div id="toast" class="toast"></div>
-<script>
-(function () {
-  "use strict";
-  const params = new URLSearchParams(location.search);
-  const widgetId = params.get("widgetId") || "";
-  const roomId = params.get("matrix_room_id") || "";
-  const theme = params.get("theme") || "";
-  if (theme.indexOf("dark") !== -1) document.documentElement.setAttribute("data-theme", "dark");
-  else if (theme.indexOf("light") !== -1) document.documentElement.setAttribute("data-theme", "light");
+from bridge.widget_api import router as _more  # noqa: E402  (the rest of the widget's API)
 
-  let counter = 0; const pending = {}; let openIdResolve = null;
-  window.addEventListener("message", (event) => {
-    const msg = event.data;
-    if (!msg || typeof msg !== "object") return;
-    if (msg.widgetId && widgetId && msg.widgetId !== widgetId) return;
-    if (msg.api === "fromWidget" && msg.requestId && pending[msg.requestId] && "response" in msg) {
-      const resolve = pending[msg.requestId]; delete pending[msg.requestId]; resolve(msg.response); return;
-    }
-    if (msg.api === "toWidget" && msg.action === "capabilities") {
-      // Signing in needs the client around it, so no pop-out button.
-      window.parent.postMessage(Object.assign({}, msg, { response: { capabilities: ["io.element.requires_client"] } }), "*"); return;
-    }
-    if (msg.api === "toWidget" && msg.action === "openid_credentials") {
-      window.parent.postMessage(Object.assign({}, msg, { response: {} }), "*");
-      if (openIdResolve) { const r = openIdResolve; openIdResolve = null; r(msg.data); } return;
-    }
-    if (msg.api === "toWidget" && msg.requestId) window.parent.postMessage(Object.assign({}, msg, { response: {} }), "*");
-  });
-  function fromWidget(action, data) {
-    return new Promise((resolve) => {
-      const requestId = "req-" + (counter++) + "-" + Date.now();
-      pending[requestId] = resolve;
-      window.parent.postMessage({ api: "fromWidget", widgetId, requestId, action, data: data || {} }, "*");
-    });
-  }
-  async function openId() {
-    const first = await fromWidget("get_openid", {});
-    if (first && first.state === "allowed") return first;
-    if (first && first.state === "blocked") throw new Error("Your client refused to tell the widget who you are.");
-    return new Promise((resolve, reject) => { openIdResolve = resolve;
-      setTimeout(() => { if (openIdResolve) { openIdResolve = null; reject(new Error("Timed out waiting for approval.")); } }, 60000); });
-  }
-  fromWidget("content_loaded", {});
+router.include_router(_more)
 
-  let session = null;
-  async function api(path, body, method) {
-    const headers = { "Content-Type": "application/json" };
-    if (session) headers["Authorization"] = "Bearer " + session;
-    const res = await fetch(path, { method: method || (body ? "POST" : "GET"), headers, body: body ? JSON.stringify(body) : undefined });
-    let data = {}; try { data = await res.json(); } catch (e) {}
-    if (!res.ok) throw new Error(data.detail || ("Request failed (" + res.status + ")"));
-    return data;
-  }
-  function toast(text, ok) { const n = document.getElementById("toast"); n.textContent = text; n.className = "toast " + (ok ? "ok" : "err");
-    clearTimeout(toast.t); toast.t = setTimeout(() => { n.className = "toast"; }, 5000); }
-  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
-  async function act(path, body, button, message) {
-    if (button) button.disabled = true;
-    try { const r = await api(path, Object.assign({ room_id: roomId }, body)); toast(r.message || message || "Done.", true); await load(); return r; }
-    catch (e) { toast(e.message, false); } finally { if (button) button.disabled = false; }
-  }
 
-  let ctx = null;
-  async function load() { ctx = await api("/widget/api/context?room_id=" + encodeURIComponent(roomId)); render(); }
+def _browse():
+    from bridge import widget_browse
 
-  function idOptions() { return ctx.ids.map((i) => `<option value="${i.number}">${esc(i.handle)}</option>`).join(""); }
-
-  function render() {
-    const app = document.getElementById("app");
-    let out = "";
-    if (ctx.room.kind === "remote") {
-      const r = ctx.room;
-      out += `<div class="card"><h2>${esc(r.name || r.nip05 || "This account")}</h2>
-        <p class="muted">${esc(r.nip05 || "")} ${esc(r.npub)}</p>
-        <p class="muted">${r.following.length ? "Followed by your " + esc(r.following.join(", ")) : "Not followed by your IDs."}</p>
-        <div class="row"><button class="primary" id="follow">Follow as active ID</button><button id="unfollow">Unfollow</button>
-        <button id="dm">DM</button><button id="block">${r.blocked.length ? "Unblock" : "Block"}</button></div>
-        <div class="row"><input id="count" type="number" value="20" min="1" max="100"><button id="backfill">Bring in older posts</button></div></div>`;
-    }
-    out += `<div class="card"><h2>Your Nostr IDs</h2>`;
-    if (!ctx.ids.length) out += `<p class="muted">You don't have a Nostr ID yet.</p>`;
-    for (const i of ctx.ids) {
-      out += `<div class="item"><div><strong>${esc(i.handle)}</strong>${i.active ? '<span class="badge">active</span>' : ""}
-        <div class="muted">${esc(i.npub)} · key ${esc(i.key)} · ${i.followers} known followers</div></div>
-        ${i.active ? "" : `<button data-switch="${i.number}">Switch</button>`}</div>`;
-    }
-    out += `<div class="row"><input id="newname" placeholder="new ID name, e.g. ${esc(ctx.user.slice(1).split(":")[0])}">
-      <button class="primary" id="create">Create ID</button></div></div>`;
-
-    out += `<div class="card"><h2>Bring your own key</h2>
-      <p class="muted">Use a Nostr key you already have, so your existing followers come with you. Keys go straight to the bridge over HTTPS and are stored encrypted; never paste one into a chat message.</p>
-      <details><summary>Import an nsec or ncryptsec</summary>
-        <div class="row"><input id="key" type="password" placeholder="nsec1… or ncryptsec1… or hex" autocomplete="off"></div>
-        <div class="row"><input id="password" type="password" placeholder="password (only for ncryptsec)" autocomplete="off"></div>
-        ${modeFields("imp")}
-        <div class="row"><button class="primary" id="import">Import key</button></div>
-      </details>
-      <details><summary>Connect a remote signer (NIP-46)</summary>
-        <p class="muted">Your key stays in your signer app (nsec.app, Amber, …). Paste its bunker:// address. Posting and DMs need the signer to be online.</p>
-        <div class="row"><input id="uri" placeholder="bunker://…" autocomplete="off"></div>
-        ${modeFields("sig")}
-        <div class="row"><button class="primary" id="signer">Connect signer</button></div>
-        <div id="authurl"></div>
-      </details></div>`;
-
-    if (ctx.ids.some((i) => i.exportable)) {
-      out += `<div class="card"><h2>Export a key</h2>
-        <div class="warn">Anyone with this key <em>is</em> that Nostr identity. Only export it to put it in your own Nostr app or signer.</div>
-        <div class="row"><select id="exportid">${ctx.ids.filter((i) => i.exportable).map((i) => `<option value="${i.number}">${esc(i.handle)}</option>`).join("")}</select></div>
-        <div class="row"><input id="exportpw" type="password" placeholder="password to protect it (recommended)" autocomplete="off"></div>
-        <div class="row"><button class="danger" id="export">Show key</button></div><div id="exported"></div></div>`;
-    }
-    if (ctx.admin) {
-      out += `<div class="card"><h2>Third-party access</h2>
-        <p class="muted">Let a user, a homeserver, or a single already-bridged room's replies and reactions use this bridge. Mxid and homeserver grants are shadow (an identity made for them, mirroring their Matrix name and avatar) or full (their own profiles); a room is always shadow.</p>
-        <p class="muted" id="tpastatus"></p>
-        <div class="row"><select id="grantkind" style="flex:none"><option value="mxid">mxid</option><option value="homeserver">homeserver</option><option value="room">room</option></select>
-          <input id="grantvalue" placeholder="@user:example.org, example.org, !room:example.org or #alias:example.org">
-          <select id="granttier" style="flex:none"><option value="shadow">shadow</option><option value="full">full</option></select>
-          <button class="primary" id="grant">Grant</button></div>
-        <div id="grants"><p class="muted">Loading…</p></div></div>`;
-    }
-    app.innerHTML = out;
-    bind();
-    if (ctx.admin) loadGrants();
-  }
-
-  async function loadGrants() {
-    const list = document.getElementById("grants");
-    if (!list) return;
-    try {
-      const data = await api("/widget/api/admin/grants?room_id=" + encodeURIComponent(roomId));
-      document.getElementById("tpastatus").textContent = "Third-party access is currently " + (data.third_party_access ? "ON" : "OFF") + ".";
-      if (!data.grants.length) { list.innerHTML = `<p class="muted">No grants yet.</p>`; return; }
-      list.innerHTML = data.grants.map((g, n) => `<div class="item"><div><strong>${esc(g.rule_type)}: ${esc(g.value)}</strong>
-        <div class="muted">tier: ${esc(g.tier)} · granted by ${esc(g.granted_by)}</div></div>
-        <button class="danger" data-revoke="${n}">${g.tier === "banned" ? "Unban" : "Revoke"}</button></div>`).join("");
-      list.querySelectorAll("[data-revoke]").forEach((b) => { b.onclick = async () => {
-        const g = data.grants[Number(b.dataset.revoke)];
-        // A ban is lifted by granting again, as "[allow mxid" does.
-        const path = g.tier === "banned" ? "/widget/api/admin/allow" : "/widget/api/admin/disallow";
-        const body = g.tier === "banned" ? { rule_type: g.rule_type, value: g.value, tier: "shadow" } : { rule_type: g.rule_type, value: g.value };
-        await act(path, body, b, "Done: see the room for details.");
-      }; });
-    } catch (e) { list.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
-  }
-
-  function modeFields(p) {
-    return `<div class="row"><select id="${p}mode"><option value="new">as a new ID</option>${ctx.ids.length ? '<option value="replace">replacing an ID\'s key</option>' : ""}</select></div>
-      <div class="row" id="${p}new"><input id="${p}name" placeholder="name for the new ID"></div>
-      <div class="row" id="${p}replace" style="display:none"><select id="${p}id">${idOptions()}</select>
-        <input id="${p}confirm" placeholder="type the ID's name to confirm"></div>
-      <div class="warn" id="${p}warn" style="display:none">Replacing a key loses the followers of the old key: they follow the key, not the handle.</div>
-      <div class="row"><label><input type="checkbox" id="${p}follows" checked style="flex:none;min-width:0"> bring in who this key follows</label></div>
-      <div class="row"><label><input type="checkbox" id="${p}posts" checked style="flex:none;min-width:0"> bring in its latest posts</label></div>`;
-  }
-
-  function modeBody(p) {
-    const mode = document.getElementById(p + "mode").value;
-    const body = { mode, import_follows: document.getElementById(p + "follows").checked, import_posts: document.getElementById(p + "posts").checked ? 20 : 0 };
-    if (mode === "new") body.name = document.getElementById(p + "name").value;
-    else { body.id = document.getElementById(p + "id").value; body.confirm = document.getElementById(p + "confirm").value; }
-    return body;
-  }
-
-  function bind() {
-    const on = (id, fn) => { const n = document.getElementById(id); if (n) n.onclick = () => fn(n); };
-    document.querySelectorAll("[data-switch]").forEach((b) => { b.onclick = () => act("/widget/api/switch", { id: b.dataset.switch }, b); });
-    on("create", (b) => act("/widget/api/create", { name: document.getElementById("newname").value }, b));
-    const kind = document.getElementById("grantkind");
-    if (kind) {
-      const syncTier = () => { document.getElementById("granttier").style.display = kind.value === "room" ? "none" : ""; };
-      kind.onchange = syncTier; syncTier();
-      on("grant", (b) => {
-        const value = document.getElementById("grantvalue").value.trim();
-        if (!value) return;
-        const body = { rule_type: kind.value, value };
-        if (kind.value !== "room") body.tier = document.getElementById("granttier").value;
-        act("/widget/api/admin/allow", body, b, kind.value === "homeserver" ? "Reply \"confirm\" to my message in the room to go ahead." : "Done: see the room for details.");
-      });
-    }
-    if (ctx.room.kind === "remote") {
-      const account = ctx.room.npub;
-      on("follow", (b) => act("/widget/api/follow", { account }, b));
-      on("unfollow", (b) => act("/widget/api/unfollow", { account }, b));
-      on("dm", (b) => act("/widget/api/dm", { account }, b));
-      on("block", (b) => act("/widget/api/block", { account, block: !ctx.room.blocked.length }, b));
-      on("backfill", (b) => act("/widget/api/backfill", { count: document.getElementById("count").value }, b));
-    }
-    for (const p of ["imp", "sig"]) {
-      const sel = document.getElementById(p + "mode");
-      if (sel) sel.onchange = () => { const r = sel.value === "replace";
-        document.getElementById(p + "new").style.display = r ? "none" : "";
-        document.getElementById(p + "replace").style.display = r ? "" : "none";
-        document.getElementById(p + "warn").style.display = r ? "" : "none"; };
-    }
-    on("import", async (b) => {
-      const body = Object.assign(modeBody("imp"), { key: document.getElementById("key").value, password: document.getElementById("password").value });
-      await act("/widget/api/key/import", body, b);
-      document.getElementById("key") && (document.getElementById("key").value = "");
-    });
-    on("signer", async (b) => {
-      b.disabled = true;
-      try {
-        const r = await api("/widget/api/key/import", Object.assign(modeBody("sig"), { room_id: roomId, uri: document.getElementById("uri").value }));
-        if (r.auth_url) { document.getElementById("authurl").innerHTML = `<div class="warn">Approve the bridge in your signer: <a href="${esc(r.auth_url)}" target="_blank" rel="noopener">${esc(r.auth_url)}</a>, then press Connect again.</div>`; }
-        else { toast(r.message, true); await load(); }
-      } catch (e) { toast(e.message, false); } finally { b.disabled = false; }
-    });
-    on("export", async (b) => {
-      b.disabled = true;
-      try {
-        const r = await api("/widget/api/key/export", { room_id: roomId, id: document.getElementById("exportid").value, password: document.getElementById("exportpw").value });
-        document.getElementById("exported").innerHTML = `<p class="muted">${r.encrypted ? "Protected with your password (NIP-49):" : "Unprotected secret key:"}</p><div class="secret">${esc(r.key)}</div>`;
-      } catch (e) { toast(e.message, false); } finally { b.disabled = false; }
-    });
-  }
-
-  (async () => {
-    try {
-      if (window.parent === window) throw new Error("Open this from its room in your Matrix client: it signs in through the client, so it can't work in a window of its own.");
-      const creds = await openId();
-      const s = await api("/widget/api/session", { access_token: creds.access_token, matrix_server_name: creds.matrix_server_name });
-      session = s.session_id;
-      // Checking in, so the session lasts while the widget is open.
-      setInterval(() => { api("/widget/api/ping").catch(() => {}); }, 5 * 60 * 1000);
-      await load();
-    } catch (e) { document.getElementById("app").innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`; }
-  })();
-})();
-</script>
-</body>
-</html>
-"""
+    return widget_browse

@@ -423,6 +423,37 @@ async def _join_quietly(app: FastAPI, group: Group, sender: str, room_id: str):
     return member
 
 
+async def leave(app: FastAPI, group: Group, sender: str) -> list[str]:
+    """``sender`` leaves ``group`` with every ID of theirs in it: each asks
+    the relay to remove it (kind 9022) and stops being a member here, and
+    ``sender`` is taken out of the group's room. The handles that left;
+    none if ``sender`` had no ID in it."""
+    repository = app.state.repository
+    mine = [m for i in list(group.members) if (m := await repository.get_id(i)) is not None and m.matrix_user_id == sender]
+    if not mine:
+        return []
+    for member in mine:
+        request = await app.state.signer.sign(member.pubkey, kind=LEAVE_REQUEST, content="", created_at=int(time.time()),
+                                              tags=[["h", group.id]])
+        if request is None:
+            logger.info("Could not sign the leave request of %s for %s", member.name, group.key)
+        else:
+            await app.state.relay_pool.publish(request, [group.relay])
+        group.members.remove(member.id)
+        if member.pubkey in group.present:
+            group.present.remove(member.pubkey)
+    await save(app, group)
+    if group.room:
+        try:
+            await app.state.homeserver.kick_user(group.room, sender, as_user_id=bot_mxid(app.state.config),
+                                                 reason="left the group")
+        except HomeserverError:
+            logger.info("Could not take %s out of %s", sender, group.room, exc_info=True)
+    app.state.feeds.changed()
+    logger.info("%s left %s", sender, group.key)
+    return [f"{m.name}@{app.state.config.bridge.domain}" for m in mine]
+
+
 def _esc(text: str) -> str:
     import html
 

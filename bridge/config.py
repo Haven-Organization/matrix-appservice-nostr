@@ -40,6 +40,8 @@ DEFAULT_DISCOVERY_RELAYS = ("wss://purplepag.es", "wss://relay.damus.io")
 # For reading accounts that publish no relay list. Not poster.place: it
 # requires authentication even to read.
 DEFAULT_FALLBACK_RELAYS = ("wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net")
+# Relays that answer NIP-50 search, for the widget's search box.
+DEFAULT_SEARCH_RELAYS = ("wss://relay.nostr.band", "wss://search.nos.today")
 
 # Smallest secret accepted for encrypting keys at rest (see bridge.key_vault).
 _MIN_KEY_SECRET_LENGTH = 32
@@ -66,6 +68,10 @@ class BridgeSection:
     # Synapse's Admin API. Synapse-only, so off by default; everything
     # else works on any homeserver. Needs homeserver.synapse_admin_token.
     use_synapse_admin_api: bool = False
+    # Let bridge admins change settings from the widget (Admin, Settings),
+    # stored in the database over this file. Off: stored changes are
+    # ignored (not deleted) and the editor is read-only.
+    allow_db_setting_overrides: bool = True
     # Master switch for users of OTHER homeservers. Who among them may use
     # the bridge, and at which tier, is set by the [allow / [disallow
     # grants (bridge.shadow_ids); this only says whether those grants count
@@ -247,6 +253,8 @@ class NostrSection:
     discovery_relays: list[str] = field(default_factory=lambda: list(DEFAULT_DISCOVERY_RELAYS))
     # Relays read for accounts that publish no relay list.
     fallback_relays: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_RELAYS))
+    # Relays the widget's search box asks for accounts and posts (NIP-50).
+    search_relays: list[str] = field(default_factory=lambda: list(DEFAULT_SEARCH_RELAYS))
     # How many of an account's latest posts are mirrored when it's followed.
     backfill_on_follow: int = 20
     # Let local IDs' own Nostr apps read their followed accounts' posts
@@ -487,6 +495,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         internal_base_url=(str(bridge_raw.get("internal_base_url") or "")).rstrip("/") or None,
         admins=[str(mxid) for mxid in bridge_raw.get("admins") or []],
         use_synapse_admin_api=bool(bridge_raw.get("use_synapse_admin_api", False)),
+        allow_db_setting_overrides=bool(bridge_raw.get("allow_db_setting_overrides", True)),
         third_party_access=bool(bridge_raw.get("third_party_access", True)),
         space_name=str(bridge_raw.get("space_name") or "Nostr"),
         space_avatar_mxc=bridge_raw.get("space_avatar_mxc") or None,
@@ -602,6 +611,7 @@ def parse_config(raw: dict[str, Any]) -> BridgeConfig:
         skip_relays=_relay_list(nostr_raw, "skip_relays", DEFAULT_SKIP_RELAYS),
         discovery_relays=_relay_list(nostr_raw, "discovery_relays", DEFAULT_DISCOVERY_RELAYS),
         fallback_relays=_relay_list(nostr_raw, "fallback_relays", DEFAULT_FALLBACK_RELAYS),
+        search_relays=_relay_list(nostr_raw, "search_relays", DEFAULT_SEARCH_RELAYS),
         web_viewer_url=str(nostr_raw.get("web_viewer_url") or "https://ditto.pub/").rstrip("/") + "/",
         backfill_on_follow=int(nostr_raw.get("backfill_on_follow", 20)),
         shared_block_lists=_pubkeys(nostr_raw, "shared_block_lists"),

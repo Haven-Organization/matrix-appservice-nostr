@@ -1018,6 +1018,38 @@ async def _announce_join(app: FastAPI, community: Community, member, bundle: dic
     await app.state.relay_pool.publish(wrap, community.relays)
 
 
+async def leave(app: FastAPI, community: Community, sender: str) -> list[str]:
+    """``sender`` leaves ``community`` with every ID of theirs in it, as
+    Armada does: a Leave on the Guestbook (CORD-02 §5) signed by each, the
+    community taken off each one's Community List, and the ID dropped here
+    with ``sender`` taken out of its Space and channel rooms, as a removed
+    member is. The handles that left; none if ``sender`` had no ID in it.
+    The owner can't leave a community made here: nobody could write for
+    it after."""
+    repository = app.state.repository
+    mine = [m for i in list(community.members)
+            if (m := await repository.get_id(i)) is not None and m.matrix_user_id == sender]
+    if not mine:
+        return []
+    if community.control_root and any(m.pubkey == community.owner for m in mine):
+        raise ConcordProblem("you own it, and a community can't be handed over yet")
+    from bridge.concord_owner import unlist_membership
+
+    for member in mine:
+        secret = await app.state.signer.secret_key(member.pubkey)
+        if secret is not None:
+            wrap, _rumor = make_wrap(community.guestbook(), secret, JOIN_KIND, "leave", [])
+            await app.state.relay_pool.publish(wrap, community.relays)
+            await unlist_membership(app, community, member)
+        if member.pubkey in community.present:
+            community.present.remove(member.pubkey)
+        await _drop_member(app, community, member.pubkey, "left the community")
+    await save(app, community)
+    app.state.feeds.changed()
+    logger.info("%s left %s", sender, community.id)
+    return [f"{m.name}@{app.state.config.bridge.domain}" for m in mine]
+
+
 # -- incoming --------------------------------------------------------------------------------
 
 

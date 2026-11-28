@@ -2,6 +2,8 @@
 
 Every setting in `config.yaml`. `config.example.yaml` has the ones needed to start, and the rest commented out with their defaults. The config path is the first argument to `main.py`, else `$BRIDGE_CONFIG`, else `./config.yaml`.
 
+**Changing settings from the widget.** Bridge admins can also change most settings in the widget (Admin, Settings), which lists every setting with its description. A change is stored in the database, over this file's value, and applies straight away; "Reset" goes back to the file's value. Secrets, privileges (`bridge.admins`, `bridge.use_synapse_admin_api`, `bridge.allow_db_setting_overrides`) and what's set once at deployment (domain, URLs, ports, storage, registration, `nostr.relay_url`, `nostr.allow_private_addresses`, `webxdc.sandbox_domain`, `bridge.trusted_proxies`, `logging.level`) can only be set here.
+
 ## `bridge`
 
 | Setting | Default | Meaning |
@@ -12,6 +14,7 @@ Every setting in `config.yaml`. `config.example.yaml` has the ones needed to sta
 | `internal_base_url` | `http://<listen_host>:<listen_port>` | Where the homeserver pushes AppService transactions; goes into the registration file. Only set it if the homeserver can't reach the default. |
 | `admins` | `[]` | Matrix user IDs that are bridge admins: they can use the admin commands, manage the relay over NIP-86, aren't limited by `max_ids_per_user`, and are told when the relay's shields go up. |
 | `use_synapse_admin_api` | `false` | Also count Synapse server admins as bridge admins, by asking Synapse's Admin API. **Synapse only**, and the only Synapse-specific thing the bridge does; everything else works on any homeserver. Needs `homeserver.synapse_admin_token`. |
+| `allow_db_setting_overrides` | `true` | Let bridge admins change settings from the widget (see above). Off, changes stored earlier are ignored but kept, the widget's settings editor is read-only, and changes are refused. Always read from this file. |
 | `third_party_access` | `true` | Master switch for users of **other** homeservers. Who among them may use the bridge, and whether they get `full` or `shadow` access, is set per user, homeserver or room with the [`[allow`](COMMANDS.md#allow-mxidhomeserverroom-value-fullshadow) command; this only says whether those grants count right now. With no grants, only this homeserver's users can use the bridge whether it's on or off. Turning it off deletes nothing: anyone already allowed just has everything they send to Nostr refused with a notice until it's back on. |
 | `space_name` | `Nostr` | Name of the space the bridge keeps for each user, holding their Profile Rooms, notifications room and the rooms of accounts they follow. |
 | `space_avatar_mxc` | the bot's avatar | Avatar (`mxc://`) of that space. |
@@ -89,7 +92,8 @@ To move an existing SQLite database to Postgres: stop the bridge, run `python -m
 | `key_encryption_secret` | required | Secret (at least 32 characters) that every Nostr secret key in the database is encrypted with. **Back it up with the database**: without it, the keys can't be decrypted. Changing it makes existing keys unreadable. |
 | `publish_relays` | Damus, nos.lol, Primal, poster.place (both addresses) | Public relays local identities' events are also sent to, for reach. |
 | `discovery_relays` | purplepag.es, Damus | Relays asked for other accounts' relay lists and profiles. |
-| `fallback_relays` | Damus, nos.lol, Primal | Relays read for accounts that publish no relay list. |
+| `fallback_relays` | Damus, nos.lol, Primal | Relays read for accounts that publish no relay list. With `publish_relays`, also what the widget's Global feed reads. |
+| `search_relays` | relay.nostr.band, search.nos.today | Relays the widget's search box asks for accounts and posts by text (NIP-50). An npub, `name@domain` or post link is looked up directly instead. |
 | `backfill_on_follow` | `20` | How many of an account's latest posts are brought in when it's first followed. `0` turns it off. |
 | `serve_followed_to_local_clients` | `false` | Let a local ID's own Nostr apps read the posts of the accounts it follows through the bridge's relay (after NIP-42 login). Off by default: every such read is fetched from the homeserver, and a timeline can be hundreds of events. Off, those apps read the accounts' own relays, as usual. |
 | `relay_max_limit` | `500` | Most events one `REQ` filter can return (NIP-11 `max_limit`). |

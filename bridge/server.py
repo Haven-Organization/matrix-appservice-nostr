@@ -84,6 +84,12 @@ async def _ensure_bot_user(homeserver: HomeserverClient, config: BridgeConfig) -
                 exc,
             )
             return
+    await sync_bot_profile(homeserver, config)
+
+
+async def sync_bot_profile(homeserver: HomeserverClient, config: BridgeConfig) -> None:
+    """Apply the configured bot name and avatar, only where they differ.
+    Unset ones are left as they are. Also run when an admin changes them."""
     mxid = bot_mxid(config)
     try:
         profile = await homeserver.get_profile(mxid)
@@ -253,8 +259,15 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        from bridge.bridge_settings import effective_config
+
+        # The file's config, never changed; app.state.config is it with the
+        # settings admins changed in the widget (bridge.bridge_settings).
+        app.state.base_config = config
         app.state.config = config
         app.state.repository = repository or open_repository(config)
+        app.state.config = await effective_config(config, app.state.repository)
+        settings = app.state.config
         app.state.vault = KeyVault(config.nostr.key_encryption_secret)
         app.state.signer = Signer(app.state.repository, app.state.vault)
         from bridge.widget import load_sessions
@@ -283,7 +296,7 @@ def create_app(
         app.state.relay_hub = RelayHub(app)
         app.state.feeds = Feeds(app)
         app.state.spam = SpamGuard(
-            config.spam, app.state.repository, on_shields_change=lambda up, count: _shields_changed(app, up, count)
+            settings.spam, app.state.repository, on_shields_change=lambda up, count: _shields_changed(app, up, count)
         )
         app.state.homeserver = homeserver or HomeserverClient(
             config.homeserver.base_url, as_token=config.appservice.as_token
@@ -292,7 +305,7 @@ def create_app(
         try:
             if run_startup_checks:
                 await _wait_for_homeserver(app.state.homeserver, config.homeserver.base_url)
-                await _ensure_bot_user(app.state.homeserver, config)
+                await _ensure_bot_user(app.state.homeserver, settings)
                 tasks.append(asyncio.create_task(_ping_soon(app.state.homeserver, config.appservice.id)))
                 tasks.append(asyncio.create_task(self_check_soon(app)))
                 # Catches a changed bridge.domain, relay or media URL, and

@@ -443,6 +443,43 @@ async def list_membership(app: FastAPI, community: Community, member) -> bool:
     return True
 
 
+async def unlist_membership(app: FastAPI, community: Community, member) -> None:
+    """Take a community ``member`` left off their Community List (a
+    tombstone, CORD-02 §8), so their other Concord apps stop showing it.
+    Best-effort: a list that can't be read whole is left alone."""
+    await app.state.repository.delete_state(_LISTED.format(member.id, community.id))
+    secret = await app.state.signer.secret_key(member.pubkey)
+    if secret is None:
+        return
+    try:
+        await _remove_from_community_list(app, community, secret)
+    except ConcordProblem as exc:
+        logger.warning("Didn't take %s off the Community List of %s: %s", community.id, member.pubkey, exc)
+
+
+async def _remove_from_community_list(app: FastAPI, community: Community, secret: bytes) -> None:
+    relays = list(dict.fromkeys([*app.state.config.nostr.publish_relays, *RELAY_DICTIONARY.values()]))
+    copies = await _read_own(app, secret, COMMUNITY_LIST_KIND, relays)
+    key = _b64u(community.id)
+    newest: dict[int, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for raw, plain in copies:
+        d = next((t[1] for t in raw.get("tags") or [] if len(t) >= 2 and t[0] == "d"), "")
+        if d.isdigit() and isinstance(plain, dict) and (int(d) not in newest or raw["created_at"] > newest[int(d)][0]["created_at"]):
+            newest[int(d)] = (raw, plain)
+    now_ms = int(time.time() * 1000)
+    for index, (raw, plain) in newest.items():
+        entries = plain.get("entries") or []
+        if not any(isinstance(e, dict) and e.get("community_id") == key for e in entries):
+            continue
+        plain = dict(plain)
+        plain["entries"] = [e for e in entries if not (isinstance(e, dict) and e.get("community_id") == key)]
+        tombstones = [t for t in plain.get("tombstones") or [] if not (isinstance(t, dict) and t.get("community_id") == key)]
+        plain["tombstones"] = [*tombstones, {"community_id": key, "removed_at": now_ms}]
+        event = _self_encrypted(secret, COMMUNITY_LIST_KIND, plain, max(int(time.time()), int(raw["created_at"]) + 1),
+                                [["d", str(index)]])
+        await app.state.relay_pool.publish(event, relays)
+
+
 async def list_all_memberships(app: FastAPI) -> int:
     """At startup: every membership not yet in its ID's Community List (ones
     joined before the bridge wrote them there) is added, once."""
@@ -562,13 +599,17 @@ async def move_channel(app: FastAPI, room_id: str, sender: str, argument: str) -
 # -- [concord channel ---------------------------------------------------------------------
 
 
-async def add_channel(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+async def add_channel(app: FastAPI, room_id: str, sender: str, argument: str, *, community_id: str | None = None) -> None:
+    """``community_id`` (the widget): that community, and all of
+    ``argument`` is the name."""
     from bridge.commands import bridged_as
 
     p = app.state.config.appservice.command_prefix
     managing = await managed(app, sender)
+    if community_id is not None:
+        managing = [(c, m) for c, m in managing if c.id == community_id]
     mine = [c for c, _ in managing]
-    name, which = _split_in(argument, [c.name for c in mine])
+    name, which = (argument, None) if community_id is not None else _split_in(argument, [c.name for c in mine])
     name = _cut(name.strip().lstrip("#"))
     if not name:
         await notice(app, room_id, f'Usage: run "{p}concord channel <name>" in the room that becomes the channel.')
@@ -901,10 +942,14 @@ async def _publish_registry(app: FastAPI, community: Community, secret: bytes) -
                           locator(community.id, "concord/invite-links", bytes.fromhex(community.owner)), live)
 
 
-async def make_link(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+async def make_link(app: FastAPI, room_id: str, sender: str, argument: str, *, community_id: str | None = None) -> None:
     p = app.state.config.appservice.command_prefix
-    label, which = _split_in(argument, [c.name for c in await owned(app, sender)])
-    community = await _owned_one(app, room_id, sender, which, f"{p}concord link [label] in <community>")
+    if community_id is not None:
+        label = argument
+        community = await _owned_by_id(app, room_id, sender, community_id)
+    else:
+        label, which = _split_in(argument, [c.name for c in await owned(app, sender)])
+        community = await _owned_one(app, room_id, sender, which, f"{p}concord link [label] in <community>")
     if community is None:
         return
     secret = await _owner_secret(app, community)
@@ -951,6 +996,13 @@ async def make_link(app: FastAPI, room_id: str, sender: str, argument: str) -> N
                  f"{len(_live(community))}</code> retires it.")
 
 
+async def _owned_by_id(app: FastAPI, room_id: str, sender: str, community_id: str) -> Community | None:
+    community = next((c for c in await owned(app, sender) if c.id == community_id), None)
+    if community is None:
+        await notice(app, room_id, "You don't own that community, or it wasn't made here.")
+    return community
+
+
 def _live(community: Community) -> list[dict[str, Any]]:
     return [link for link in community.links if not link.get("revoked")]
 
@@ -994,10 +1046,14 @@ async def list_links(app: FastAPI, room_id: str, sender: str, argument: str) -> 
     await notice(app, room_id, "\n".join(lines))
 
 
-async def revoke(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+async def revoke(app: FastAPI, room_id: str, sender: str, argument: str, *, community_id: str | None = None) -> None:
     p = app.state.config.appservice.command_prefix
-    reference, which = _split_in(argument, [c.name for c in await owned(app, sender)])
-    community = await _owned_one(app, room_id, sender, which, f"{p}concord revoke <number> in <community>")
+    if community_id is not None:
+        reference = argument.strip()
+        community = await _owned_by_id(app, room_id, sender, community_id)
+    else:
+        reference, which = _split_in(argument, [c.name for c in await owned(app, sender)])
+        community = await _owned_one(app, room_id, sender, which, f"{p}concord revoke <number> in <community>")
     if community is None:
         return
     live = _live(community)
@@ -1099,15 +1155,17 @@ def _label(remote, pubkey: str) -> str:
     return (remote.nip05 if remote is not None and remote.nip05 else None) or short_npub(pubkey)
 
 
-async def invite(app: FastAPI, room_id: str, sender: str, argument: str) -> None:
+async def invite(app: FastAPI, room_id: str, sender: str, argument: str, *, community_id: str | None = None) -> None:
     from bridge.commands import _resolve
 
     p = app.state.config.appservice.command_prefix
     memberships = await member_of(app, sender)
+    if community_id is not None:
+        memberships = [m for m in memberships if m[0].id == community_id]
     if not memberships:
         await notice(app, room_id, f'You\'re not in a community I can invite to. "{p}concord create <name>" makes one.')
         return
-    who, which = _split_in(argument, [c.name for c, _ in memberships])
+    who, which = (argument, None) if community_id is not None else _split_in(argument, [c.name for c, _ in memberships])
     chosen = [m for m in memberships if which is None or m[0].name.casefold() == which.casefold()]
     if len(chosen) > 1:
         here = await _by_room(app, [c for c, _ in chosen], room_id)

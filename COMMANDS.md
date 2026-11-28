@@ -24,6 +24,7 @@ Where a command takes an `<account>`, any of these work: `npub1…`, `nprofile1�
   - [`[following`](#following)
   - [`[dm <account>`](#dm-account)
   - [`[join <invite link>`](#join-invite-link)
+  - [`[leave [<community or group>]`](#leave-community-or-group)
   - [`[concord`](#concord)
   - [`[play [<link>]`](#play-link)
   - [`[import <link|nevent|note|naddr>`](#import-linkneventnotenaddr)
@@ -142,6 +143,10 @@ When someone invites one of your identities directly from a Concord app (a Direc
 Concord communities are end-to-end encrypted, but the bridge can't encrypt Matrix rooms, so their messages are stored readable on this homeserver. The bot says so when you join. Identities that sign through a remote signer (NIP-46) can't join yet. To make a community of your own, add channels, or invite people, see [`[concord`](#concord).
 
 It also joins NIP-29 groups (the relay-hosted groups of Flotilla, Chachi, 0xchat and others), by their `naddr1…` link (with `?invite=<code>` for a closed group) or as `relay.example'groupid`. The bridge sends the relay your join request, makes a room for the group in a Space for its relay, and brings in its recent messages. What you say there goes to the group as you.
+
+### `[leave [<community or group>]`
+
+Leaves a Concord community or NIP-29 group, with every identity of yours that's in it. Name it, or run it in one of its rooms. For a NIP-29 group, the bridge sends the relay a leave request (kind 9022); for a Concord community, it posts a Leave on the community's Guestbook and takes it off your identity's Concord community list, so your other Concord apps stop showing it. Either way you're taken out of its rooms. The owner of a community made here can't leave it. The widget's Communities section has a Leave button too.
 
 ### `[concord`
 

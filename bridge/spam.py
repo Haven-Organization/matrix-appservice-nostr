@@ -384,6 +384,21 @@ class SpamGuard:
         self._now = now
         self._wall_now = wall_now
         self.on_shields_change = on_shields_change
+        self._build(config)
+
+        self._strikes: dict[tuple[str, str], deque[float]] = {}
+        # content hash -> {pubkey: last seen}
+        self._duplicates: OrderedDict[str, dict[str, float]] = OrderedDict()
+        self._max_duplicate_hashes = 50000
+        # Strangers that passed the cheap checks: pubkey -> last seen.
+        self._wave: OrderedDict[str, float] = OrderedDict()
+        self._shields_up = False
+        self._last_wave_crossing = 0.0
+        self._ban_cache: dict[tuple[str, str], tuple[float, Ban | None]] = {}
+        self._last_sweep = now()
+
+    def _build(self, config: SpamConfig) -> None:
+        """The compiled patterns and rate limiters ``config`` asks for."""
         self._patterns = [re.compile(pattern) for pattern in config.spam_patterns]
         self._scam_patterns = [re.compile(pattern) for pattern in config.stranger_scam_patterns]
 
@@ -400,16 +415,14 @@ class SpamGuard:
             self._trusted_pubkey_events, self._trusted_target_events,
         )
 
-        self._strikes: dict[tuple[str, str], deque[float]] = {}
-        # content hash -> {pubkey: last seen}
-        self._duplicates: OrderedDict[str, dict[str, float]] = OrderedDict()
-        self._max_duplicate_hashes = 50000
-        # Strangers that passed the cheap checks: pubkey -> last seen.
-        self._wave: OrderedDict[str, float] = OrderedDict()
-        self._shields_up = False
-        self._last_wave_crossing = 0.0
-        self._ban_cache: dict[tuple[str, str], tuple[float, Ban | None]] = {}
-        self._last_sweep = now()
+    def reconfigure(self, config: SpamConfig) -> None:
+        """Use changed settings from now on (an admin edited them in the
+        widget). Bans, strikes and shields are kept; rate limit buckets
+        start full again."""
+        if config == self.config:
+            return
+        self.config = config
+        self._build(config)
 
     # -- public state -------------------------------------------------------
 
