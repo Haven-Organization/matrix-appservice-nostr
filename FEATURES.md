@@ -202,7 +202,7 @@ Outside your Profile Rooms and DM rooms, these are done as your active ID.
 
 Each Matrix user has one **notifications room**, a private room with the bot, filed in their Nostr space. It's kept apart from Profile Rooms, so other people in a Profile Room can't see who is interacting with its owner. With several IDs, each notification names the ID it's for.
 
-A notification leads with an emoji for its type (👤 follow, 👍 like, 🔁 repost, 💬 reply, 💬 mention, 🔁 quote, ⚡ zap; a reaction leads with the reaction itself), then a pill of who did it, then what they did, with "your post" linking to the post in Matrix. Under that is a quote: their words for a reply, mention or quote; your post's for a like, reaction or repost. If the quoted post has an image or video, the notification shows it at preview size.
+A notification leads with an emoji for its type (👤 follow, 👍 like, 🔁 repost, ⤵️ reply, 🔔 mention, 🔁 quote, ⚡ zap; a reaction leads with the reaction itself), then a pill of who did it, then what they did, with "your post" linking to the post in Matrix. Under that is a quote: their words for a reply, mention or quote; your post's for a like, reaction or repost. If the quoted post has an image or video, the notification shows it at preview size.
 
 A local user replying to or reacting to another local user's post notifies them the same way.
 

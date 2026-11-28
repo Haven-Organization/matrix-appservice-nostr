@@ -4,7 +4,7 @@
     > the post's text
 
 Every notification leads with an emoji for its type (👤 follow, 👍 like,
-🔁 repost, 💬 reply, 💬 mention, 🔁 quote, ⚡ zap; a reaction leads with the
+🔁 repost, ⤵️ reply, 🔔 mention, 🔁 quote, ⚡ zap; a reaction leads with the
 reaction itself), then a pill of who did it (their name as its text, their
 handle as its title), then what they did, with "your post" linking to the
 post in Matrix. Under that, a quote: their words for a reply, mention or
@@ -29,7 +29,7 @@ PREVIEW_TEXT_LIMIT = 200
 PREVIEW_IMAGE_SIZE = 96
 PREVIEW_VIDEO_MAX_DIMENSION = 240
 
-TYPE_EMOJI = {"follow": "👤", "like": "👍", "repost": "🔁", "reply": "💬", "reaction_reply": "💬", "mention": "💬",
+TYPE_EMOJI = {"follow": "👤", "like": "👍", "repost": "🔁", "reply": "⤵️", "reaction_reply": "⤵️", "mention": "🔔",
               "quote": "🔁", "zap": "⚡"}
 PHRASES = {
     "follow": "followed you",

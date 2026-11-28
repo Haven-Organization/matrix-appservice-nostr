@@ -160,8 +160,8 @@ def test_reply_threads_under_local_post(client, homeserver, relay_pool, style) -
     # "your post" linked, then a quote of what they said.
     room = run(client, client.app.state.repository.get_user_rooms, "@q:example.org").notifications_room_id
     [notice] = [c for c in homeserver.sent_to(room) if "replied to your post" in c["body"]]
-    assert notice["body"].startswith("💬 ") and "replied to your post\n> Sup dude\nhttps://matrix.to/#/" in notice["body"]
-    assert notice["formatted_body"].startswith(f'<p>💬 <a href="https://matrix.to/#/@nostr_{stranger.pubkey}:example.org" title="')
+    assert notice["body"].startswith("⤵️ ") and "replied to your post\n> Sup dude\nhttps://matrix.to/#/" in notice["body"]
+    assert notice["formatted_body"].startswith(f'<p>⤵️ <a href="https://matrix.to/#/@nostr_{stranger.pubkey}:example.org" title="')
     assert f'<a href="https://matrix.to/#/{q.profile_room_id}/{message["event_id"]}?via=example.org">your post</a>' in notice["formatted_body"]
     assert notice["formatted_body"].endswith("<blockquote>Sup dude</blockquote>")
     assert "View" not in notice["formatted_body"]
