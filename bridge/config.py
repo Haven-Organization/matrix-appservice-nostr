@@ -124,13 +124,10 @@ class BridgeSection:
     use_msc4501_post_event_type: bool = False
     set_msc4501_profile_room: bool = False
     msc4144_per_message_profiles: bool = True
-    # Whether to set org.matrix.msc4589.formatted_displayname (still a
-    # draft MSC with no known client support) on a ghost whose profile
-    # name has a :shortcode: custom emoji with a matching image, so a
-    # compliant client can render it inline instead of the literal text.
-    # Off by default: this also means an extra write per room the ghost
-    # is in (see bridge.remote._sync_formatted_displayname_member), for
-    # no benefit until a client actually renders it.
+    # Formatted names for ghosts whose profile name has :shortcode: custom
+    # emoji with images: the displayname (draft MSC4589) and, together
+    # with it, their Remote User Room's name (draft MSC4591). Off by
+    # default: an extra write per room the ghost is in.
     use_msc4589_formatted_displayname: bool = False
     # Whether a quoted post that isn't in Matrix is imported: "known" (only
     # if its author already has a room here), "always" or "never".

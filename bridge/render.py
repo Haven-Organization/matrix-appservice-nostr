@@ -156,6 +156,20 @@ def _emoji_map(raw: dict[str, Any]) -> dict[str, str]:
 FORMATTED_DISPLAYNAME_FIELD = "org.matrix.msc4589.formatted_displayname"
 _MSC4589_MAX_BYTES = 1024
 _MSC4589_MAX_IMAGES = 10
+# MSC4591 (Formatted Room Names, draft): the same formatted object inside
+# m.room.name content. A Remote User Room carries its ghost's formatted
+# display name, under the same setting as MSC4589.
+FORMATTED_ROOM_NAME_FIELD = "org.matrix.msc4591.formatted_name"
+
+
+def room_name_content(name: str, formatted_body: str | None) -> dict[str, Any]:
+    """``m.room.name`` content for a room named after its owner: the plain
+    name, plus the owner's formatted display name (MSC4591) when there is
+    one. Sending it without the field clears any earlier one."""
+    content: dict[str, Any] = {"name": name}
+    if formatted_body is not None:
+        content[FORMATTED_ROOM_NAME_FIELD] = {"format": "org.matrix.custom.html", "formatted_body": formatted_body}
+    return content
 
 
 async def build_formatted_displayname(

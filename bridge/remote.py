@@ -48,7 +48,12 @@ from bridge.msc4501 import (
 )
 from bridge.nostr import event as nostr_event
 from bridge.nostr import nip19
-from bridge.render import FORMATTED_DISPLAYNAME_FIELD, build_formatted_displayname
+from bridge.render import (
+    FORMATTED_DISPLAYNAME_FIELD,
+    FORMATTED_ROOM_NAME_FIELD,
+    build_formatted_displayname,
+    room_name_content,
+)
 from bridge.nostr.nip05 import parse_identifier
 from bridge.nostr.relay_pool import normalize_relay_url
 from bridge.repository import EventRow, RemoteAccount
@@ -349,8 +354,15 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
     # Also when the name is unchanged but a shortcode name still has no
     # formatted version (last renamed before MSC4589 was turned on).
     missing_formatted = bool(name) and ":" in name and FORMATTED_DISPLAYNAME_FIELD not in current
+    # The room name's formatted version (MSC4591) goes with the
+    # displayname's: on means the profile's current one (or the one made
+    # below), off means whatever the room already has is left alone.
+    room_formatted: str | None | object = _KEEP
+    if config.bridge.use_msc4589_formatted_displayname and not name_changed:
+        room_formatted = (current.get(FORMATTED_DISPLAYNAME_FIELD) or {}).get("formatted_body")
     if (name_changed or missing_formatted) and config.bridge.use_msc4589_formatted_displayname:
         formatted_body = await build_formatted_displayname(app, raw, ghost, name)
+        room_formatted = formatted_body
         # Nothing to set now, and `current` (already fetched above) shows no
         # stale value to clear either -- skip the profile write and the room
         # sync entirely rather than pay for both on every single name
@@ -374,7 +386,7 @@ async def apply_profile(app: FastAPI, remote: RemoteAccount, raw: dict[str, Any]
     await app.state.repository.save_remote_account(remote)
     await apply_profile_fields(app, remote)
     if remote.room_id:
-        await _dress_room(app, remote, raw, profile, name, avatar_mxc)
+        await _dress_room(app, remote, raw, profile, name, avatar_mxc, room_formatted)
     return remote
 
 
@@ -466,11 +478,17 @@ async def _sync_formatted_displayname_rooms(
             logger.info("Could not update formatted display name for %s in %s", ghost, room, exc_info=True)
 
 
+_KEEP = object()  # _dress_room: leave the room name's formatted version as it is
+
+
 async def _dress_room(
-    app: FastAPI, remote: RemoteAccount, raw: dict[str, Any], profile: dict[str, str], name: str, avatar_mxc: str | None
+    app: FastAPI, remote: RemoteAccount, raw: dict[str, Any], profile: dict[str, str], name: str,
+    avatar_mxc: str | None, formatted_name: str | None | object = _KEEP,
 ) -> None:
     """Make the Remote User Room match the profile, and keep the raw kind 0
-    in its state (the relay serves it from there)."""
+    in its state (the relay serves it from there). ``formatted_name`` is
+    the ghost's formatted display name for the room name (MSC4591): None
+    for none, or ``_KEEP`` to keep the room's own while its name matches."""
     assert remote.room_id is not None
     homeserver = app.state.homeserver
     ghost = remote.ghost_user_id
@@ -485,7 +503,17 @@ async def _dress_room(
             logger.info("Could not set %s in %s", event_type, room, exc_info=True)
             return None
 
-    await set_state("m.room.name", {"name": name})
+    if formatted_name is _KEEP:
+        try:
+            existing = await homeserver.get_room_state(room, "m.room.name", as_user_id=ghost) or {}
+        except HomeserverError:
+            existing = {}
+        name_content: dict[str, Any] = {"name": name}
+        if existing.get("name") == name and FORMATTED_ROOM_NAME_FIELD in existing:
+            name_content[FORMATTED_ROOM_NAME_FIELD] = existing[FORMATTED_ROOM_NAME_FIELD]
+    else:
+        name_content = room_name_content(name, formatted_name)  # type: ignore[arg-type]
+    await set_state("m.room.name", name_content)
     await set_state("m.room.topic", {"topic": profile.get("about", "")})
     if avatar_mxc:
         await set_state("m.room.avatar", {"url": avatar_mxc})

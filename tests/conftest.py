@@ -194,6 +194,9 @@ class FakeHomeserver(HomeserverClient):
     async def set_profile_field(self, user_id, key, value):
         self.profiles.setdefault(user_id, {})[key] = value
 
+    async def delete_profile_field(self, user_id, key):
+        self.profiles.setdefault(user_id, {}).pop(key, None)
+
     async def redact_event(self, room_id, event_id, *, as_user_id, reason=None):
         self.redactions.append((room_id, event_id, as_user_id))
         event = self._room(room_id)["events"].get(event_id)
