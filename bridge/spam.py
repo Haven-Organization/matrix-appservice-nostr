@@ -53,12 +53,14 @@ REACTION_KIND = 7
 
 _POLICIES = ("open", "pow", "web_of_trust")
 # Wallet-drainer bait: an airdrop or "verify your wallet", a coin
-# giveaway, or an amount of a coin said to be waiting. Only counts in a
-# stranger's post with a link. The default for stranger_scam_patterns.
+# giveaway, free coins, ETH named at all, or an amount of a coin said to
+# be waiting. Only counts in a stranger's post with a link. The default
+# for stranger_scam_patterns.
 DEFAULT_SCAM_PATTERNS = (
     r"(?i)\b(?:airdrops?|verify (?:your |the )?wallets?|unverified wallets?|connect (?:your )?wallets?"
     r"|claim your|seed phrase|eligible (?:address|wallet))\b",
     r"(?i)\b(?:eth|ether|ethereum|crypto|token|btc|bitcoin|usdc|usdt|sol|solana)\W+(?:\w+\W+)?giveaways?\b",
+    r"(?i)\b(?:w?eth|free\W+(?:\w+\W+)?(?:crypto|coins?|tokens?|ether|ethereum|btc|bitcoin|usdc|usdt|sol|solana))\b",
     r"(?i)\b\d[\d,.]*\s*(?:usdc|usdt|w?eth|w?btc|cbbtc|sol)\b.{0,40}?\b(?:waiting|held|unclaimed|reward|release|free)\b",
 )
 _LINK_RE = re.compile(r"https?://", re.IGNORECASE)

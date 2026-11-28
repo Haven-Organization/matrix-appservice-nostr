@@ -377,12 +377,15 @@ async def test_bot_tells_from_strangers() -> None:
     guard, _, _ = make_guard()
     scam = "💎 an exclusive ether airdrop. Claim your ETH spot now: https://gweiportal.example/?ref=x"
     drainer = "2,000 USDC (~$2,000) waiting. No fee, one tap.\nhttps://genesis.example/a/USDC/"
-    for i, text in enumerate([scam, drainer]):
+    free_eth = "🔥 Just checked my eligibility and got FREE ETH! 👉 https://ai.evmnest.example/?ref=34isln"
+    free_btc = "Free bitcoin for the first 100 https://x.example"
+    for i, text in enumerate([scam, drainer, free_eth, free_btc]):
         verdict = await guard.check_event(note(key(f"scam{i}"), text), tier=Tier.STRANGER)
         assert verdict.reply == "blocked: looks like a crypto giveaway scam"
     # The same words without a link, or a link without them, are fine.
     assert (await guard.check_event(note(key("talk"), "that airdrop was a scam lol"), tier=Tier.STRANGER)).ok
     assert (await guard.check_event(note(key("link"), "art giveaway: https://example.org"), tier=Tier.STRANGER)).ok
+    assert (await guard.check_event(note(key("eth"), "Ethics talk tonight https://example.org"), tier=Tier.STRANGER)).ok
     # A reply within a minute of the post is a bot; after that, people.
     fast = await guard.check_event(note(key("fast"), "One more episode"), tier=Tier.STRANGER, reply_delay=9)
     assert fast.reply == "blocked: replies this fast from accounts nobody here follows are bots"
