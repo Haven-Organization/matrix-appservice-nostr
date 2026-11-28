@@ -23,18 +23,14 @@ PROTOCOL_ID = "nostr"
 PROTOCOL_DISPLAY_NAME = "Nostr"
 
 
-async def send_bridge_info(
-    app: FastAPI, *, room_id: str, pubkey: str, display_name: str | None, avatar_mxc: str | None
-) -> None:
+async def send_bridge_info(app: FastAPI, *, room_id: str, pubkey: str) -> None:
     """Tag ``room_id`` as bridged to the Nostr key ``pubkey``. Best-effort,
     and a no-op where the state already says this."""
     config = app.state.config
     bot = bot_mxid(config)
+    # The channel is only its ID: a name or avatar here would go stale,
+    # and keeping it current costs state events on every profile edit.
     channel: dict = {"id": pubkey}
-    if display_name:
-        channel["displayname"] = display_name
-    if avatar_mxc:
-        channel["avatar_url"] = avatar_mxc
     protocol: dict = {"id": PROTOCOL_ID, "displayname": PROTOCOL_DISPLAY_NAME}
     if config.appservice.bot_avatar_mxc:
         protocol["avatar_url"] = config.appservice.bot_avatar_mxc
@@ -43,8 +39,18 @@ async def send_bridge_info(
     homeserver = app.state.homeserver
     for event_type in _EVENT_TYPES:
         try:
-            if await homeserver.get_room_state(room_id, event_type, state_key, as_user_id=bot) == content:
+            if _same(await homeserver.get_room_state(room_id, event_type, state_key, as_user_id=bot), content):
                 continue
             await homeserver.send_state_event(room_id, event_type, content, as_user_id=bot, state_key=state_key)
         except HomeserverError:
             logger.info("Could not set %s in %s", event_type, room_id, exc_info=True)
+
+
+def _same(current: dict | None, content: dict) -> bool:
+    """Whether ``current`` already says what ``content`` does. A channel
+    name or avatar left by older versions doesn't count as a difference:
+    rewriting every room just to drop them would be the noise they cost."""
+    if not current:
+        return False
+    channel = {k: v for k, v in (current.get("channel") or {}).items() if k not in ("displayname", "avatar_url")}
+    return {**current, "channel": channel} == content

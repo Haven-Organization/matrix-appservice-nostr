@@ -103,7 +103,7 @@ def test_create_profile_default(client, homeserver, relay_pool) -> None:
     assert homeserver.state_of(q.profile_room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE) == {"user_id": "@q:example.org"}
     assert homeserver.state_of(q.profile_room_id, "m.room.name") == {"name": "Q Person"}
     bridge_info = homeserver.rooms[q.profile_room_id]["state"][("m.bridge", f"nostr://{q.pubkey}")]["content"]
-    assert bridge_info["channel"] == {"id": q.pubkey, "displayname": "Q Person"}
+    assert bridge_info["channel"] == {"id": q.pubkey}
     assert bridge_info["protocol"]["id"] == "nostr"
 
     # Their space and notifications room exist, and they're invited to all three.

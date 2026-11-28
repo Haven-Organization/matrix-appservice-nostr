@@ -531,7 +531,7 @@ async def _dress_room(
             ),
             replace=True,
         )
-    await send_bridge_info(app, room_id=room, pubkey=remote.pubkey, display_name=name, avatar_mxc=avatar_mxc)
+    await send_bridge_info(app, room_id=room, pubkey=remote.pubkey)
 
 
 # -- rooms ----------------------------------------------------------------------------
@@ -588,7 +588,7 @@ async def ensure_room(app: FastAPI, remote: RemoteAccount) -> RemoteAccount:
         except nostr_event.InvalidEvent:
             pass
     else:
-        await send_bridge_info(app, room_id=room_id, pubkey=remote.pubkey, display_name=None, avatar_mxc=remote.avatar_mxc)
+        await send_bridge_info(app, room_id=room_id, pubkey=remote.pubkey)
     return remote
 
 

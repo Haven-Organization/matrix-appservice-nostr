@@ -315,3 +315,14 @@ def test_bridge_info_uses_bot_avatar(repository, homeserver, relay_pool) -> None
         info = homeserver.rooms[q.profile_room_id]["state"][("m.bridge", f"nostr://{q.pubkey}")]["content"]
         assert info["protocol"] == {"id": "nostr", "displayname": "Nostr", "avatar_url": "mxc://example.org/logo"}
         assert info["bridgebot"] == "@nostrbot:example.org"
+
+
+def test_bridge_info_ignores_old_channel_name_and_avatar() -> None:
+    from bridge.bridge_info import _same
+
+    content = {"bridgebot": "@nostrbot:example.org", "creator": "@nostrbot:example.org",
+               "protocol": {"id": "nostr", "displayname": "Nostr"}, "channel": {"id": "ab" * 32}}
+    old = {**content, "channel": {"id": "ab" * 32, "displayname": "q", "avatar_url": "mxc://example.org/a"}}
+    assert _same(content, content) and _same(old, content)
+    assert not _same(None, content)
+    assert not _same({**old, "channel": {"id": "cd" * 32, "displayname": "q"}}, content)

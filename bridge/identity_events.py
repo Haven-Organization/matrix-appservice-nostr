@@ -259,7 +259,7 @@ async def _sync_identity(app: FastAPI, nostr_id: NostrId) -> list[Event]:
             if event is not None:
                 published.append(event)
         if not mirrored:
-            await _update_bridge_info(app, nostr_id, source)
+            await send_bridge_info(app, room_id=nostr_id.profile_room_id, pubkey=nostr_id.pubkey)
 
     lists = [
         (RELAY_LIST_KIND, relay_list_tags(app), "relay list"),
@@ -283,21 +283,6 @@ async def _sync_identity(app: FastAPI, nostr_id: NostrId) -> list[Event]:
     return published
 
 
-async def _update_bridge_info(app: FastAPI, nostr_id: NostrId, source: dict[str, Any]) -> None:
-    assert nostr_id.profile_room_id is not None
-    try:
-        name = await app.state.homeserver.get_room_state(
-            nostr_id.profile_room_id, "m.room.name", as_user_id=bot_mxid(app.state.config)
-        )
-    except HomeserverError:
-        name = None
-    await send_bridge_info(
-        app,
-        room_id=nostr_id.profile_room_id,
-        pubkey=nostr_id.pubkey,
-        display_name=(name or {}).get("name") or handle(app, nostr_id),
-        avatar_mxc=(source.get("avatar_image") or {}).get("mxc"),
-    )
 
 
 async def sync_all_identities(app: FastAPI) -> None:
