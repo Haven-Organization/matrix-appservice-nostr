@@ -306,6 +306,8 @@ class WebxdcSection:
     # Where the Nostr Games widget finds games to browse, besides the
     # bridge's own relays. Public relays that serve reads without auth.
     catalog_relays: tuple[str, ...] = ("wss://relay.ditto.pub", "wss://relay.nostr.net")
+    # Avatar (mxc://) of the Games rooms and the Nostr Games widget. Empty: the bot's.
+    avatar_mxc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -354,7 +356,8 @@ def _webxdc_section(raw: dict[str, Any], domain: str) -> WebxdcSection:
     return WebxdcSection(enabled=bool(raw.get("enabled", False)), sandbox_domain=sandbox,
                          active_days=active_days, max_update_kb=max_update_kb,
                          max_app_mb=max(1, int(raw.get("max_app_mb", 100))),
-                         catalog_relays=_catalog_relays(raw))
+                         catalog_relays=_catalog_relays(raw),
+                         avatar_mxc=raw.get("avatar_mxc") or None)
 
 
 def _catalog_relays(raw: dict[str, Any]) -> tuple[str, ...]:

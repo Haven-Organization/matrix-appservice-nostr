@@ -51,7 +51,7 @@ async def ensure_games_room(app: FastAPI, matrix_user_id: str) -> tuple[str | No
     try:
         room_id = await app.state.homeserver.create_room(
             as_user_id=bot_mxid(config), name=GAMES_ROOM_NAME, invite=[matrix_user_id], preset="private_chat",
-            avatar_mxc=config.appservice.bot_avatar_mxc, power_level_users={matrix_user_id: 50},
+            avatar_mxc=hub_avatar(config), power_level_users={matrix_user_id: 50},
         )
     except HomeserverError:
         logger.warning("Could not create a Games room for %s", matrix_user_id, exc_info=True)
@@ -82,6 +82,11 @@ async def ensure_hub(app: FastAPI, room_id: str) -> None:
     await _set_hub(app, room_id, None)
 
 
+def hub_avatar(config) -> str | None:
+    """The avatar of Games rooms and the Nostr Games widget: their own, else the bot's."""
+    return config.webxdc.avatar_mxc or config.appservice.bot_avatar_mxc
+
+
 async def _set_hub(app: FastAPI, room_id: str, game: webxdc.App | None) -> None:
     config = app.state.config
     bot = bot_mxid(config)
@@ -92,8 +97,9 @@ async def _set_hub(app: FastAPI, room_id: str, game: webxdc.App | None) -> None:
         # No "title": clients show it after the name ("Nostr Games - Nostr Games").
         "data": {"game": game.id} if game is not None else {},
     }
-    if config.appservice.bot_avatar_mxc:
-        content["avatar_url"] = config.appservice.bot_avatar_mxc
+    avatar = hub_avatar(config)
+    if avatar:
+        content["avatar_url"] = avatar
     for state_type in WIDGET_STATE_TYPES:
         await homeserver.send_state_event(room_id, state_type, content, state_key=HUB_WIDGET_ID, as_user_id=bot)
     # Games used to have a widget of their own: gone now that they play in this one.
@@ -228,15 +234,30 @@ async def open_in_room(app: FastAPI, room_id: str, game: webxdc.App, row, local=
 
 async def _hub_ready(app: FastAPI, room_id: str) -> None:
     """The room's Nostr Games widget there, showing its list (set only if
-    it's missing, or still points at a game, as it did before)."""
-    bot = bot_mxid(app.state.config)
+    it's missing, still points at a game, as it did before, or has an old
+    avatar, in which case the room's avatar is brought up to date too)."""
+    config = app.state.config
+    bot = bot_mxid(config)
+    avatar = hub_avatar(config)
     for state_type in WIDGET_STATE_TYPES:
         current = await app.state.homeserver.get_room_state(room_id, state_type, HUB_WIDGET_ID, as_user_id=bot) or {}
-        if not current.get("url") or "&game=" in current["url"] or (current.get("data") or {}).get("title"):
+        stale_avatar = bool(avatar) and current.get("avatar_url") != avatar
+        if not current.get("url") or "&game=" in current["url"] or (current.get("data") or {}).get("title") or stale_avatar:
             await ensure_hub(app, room_id)
+            if stale_avatar:
+                await _set_room_avatar(app, room_id, avatar)
             return
     if await _has_widget(app, room_id, GAME_WIDGET_ID):
         await ensure_hub(app, room_id)  # takes the old game widget away
+
+
+async def _set_room_avatar(app: FastAPI, room_id: str, avatar: str) -> None:
+    """Best-effort: the Games room's avatar set to ``avatar``."""
+    try:
+        await app.state.homeserver.send_state_event(
+            room_id, "m.room.avatar", {"url": avatar}, state_key="", as_user_id=bot_mxid(app.state.config))
+    except HomeserverError:
+        logger.info("Could not set the avatar of %s", room_id, exc_info=True)
 
 
 async def game_opened(app: FastAPI, room_id: str, game: webxdc.App, row, local=None) -> None:

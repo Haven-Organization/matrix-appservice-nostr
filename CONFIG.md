@@ -149,6 +149,7 @@ Games: webxdc mini apps over Nostr (NIP-DC). See [FEATURES.md](FEATURES.md#games
 | `sandbox_domain` | `xdc.` + `bridge.domain` | The hostname games run on. It must be its own hostname, never the relay's or the homeserver's, so an app can't reach either's storage. Route it to the bridge like the relay host (see INSTALL.md); a wildcard certificate for the domain covers it. |
 | `active_days` | `14` | How long after a game was last opened the bridge keeps following its moves on other relays. |
 | `max_update_kb` | `128` | The largest move accepted, in KB (the webxdc default for `sendUpdateMaxSize`). |
+| `avatar_mxc` | the bot's avatar | Avatar (`mxc://`) of Games rooms and the Nostr Games widget. An existing Games room and its widget pick it up the next time a game is opened there. |
 | `max_app_mb` | `100` | The largest game the bridge downloads for a player whose browser can't download it from where it was posted (a host without CORS). It's passed through, never stored. |
 
 ## `encrypted_media`

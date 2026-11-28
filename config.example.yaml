@@ -187,6 +187,8 @@ nostr:
 #   # Where the Nostr Games widget finds games to browse, besides the bridge's
 #   # relays. Use relays that serve reads without auth.
 #   catalog_relays: ["wss://relay.ditto.pub", "wss://relay.nostr.net"]
+#   # Avatar (mxc://) of the Games rooms and the Nostr Games widget. Empty: the bot's.
+#   avatar_mxc: "mxc://example.org/abc"
 
 # Files forwarded from end-to-end encrypted rooms. With the sibling bridges
 # on this server, list all of their bots (this one included) in the order
